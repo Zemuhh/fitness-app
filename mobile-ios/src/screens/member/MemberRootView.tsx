@@ -1,61 +1,204 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import {
-  CalendarCheck2,
+  Activity,
+  Calendar,
   CreditCard,
-  LayoutDashboard,
+  Home,
+  Megaphone,
   QrCode,
+  User,
+  Users,
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
+import { CleanAppHeader } from '@/components/CleanAppHeader';
+import {
+  DrawerMenuItemConfig,
+  registerMemberQrOpener,
+  SlideOverDrawer,
+} from '@/components/SlideOverDrawer';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { COLORS } from '@/theme/colors';
 import {
+  AnnouncementItem,
   AppUser,
   AvailableSession,
   BookingActionResponse,
   MemberBookingItem,
   MemberDashboardData,
+  MemberDrawerRoute,
+  MemberWaitlistItem,
+  WaitlistActionResponse,
 } from '@/types/fitness';
 import { MemberDashboardTab } from '@/screens/member/MemberDashboardTab';
 import { MemberBookingTab } from '@/screens/member/MemberBookingTab';
-import { MemberQrTab } from '@/screens/member/MemberQrTab';
-import { PackageStoreScreen } from '@/screens/payment/PackageStoreScreen';
+import { MemberTrainersScreen } from '@/screens/member/MemberTrainersScreen';
+import { MemberPackageRenewScreen } from '@/screens/member/MemberPackageRenewScreen';
+import { MemberNewsScreen } from '@/screens/member/MemberNewsScreen';
+import { MemberProgressTab } from '@/screens/member/MemberProgressTab';
+import { MemberProfileTab } from '@/screens/member/MemberProfileTab';
+import {
+  MemberNotificationsModal,
+  MemberQrModal,
+} from '@/screens/member/MemberQrTab';
+import { TrainerDetailModal } from '@/screens/member/TrainerDetailModal';
 
-type MemberTabKey = 'dashboard' | 'schedule' | 'qr' | 'store';
+export const MEMBER_DRAWER_MENU: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
+  { key: 'home', Icon: Home, label: 'Ana Sayfa' },
+  { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
+  { key: 'packages', Icon: CreditCard, label: 'Paketler' },
+  { key: 'qr', Icon: QrCode, label: 'QR Giriş', isQrAction: true },
+  { key: 'metrics', Icon: Activity, label: 'Gelişim' },
+  { key: 'trainers', Icon: Users, label: 'Eğitmenler' },
+  { key: 'news', Icon: Megaphone, label: 'Duyurular' },
+  { key: 'profile', Icon: User, label: 'Profil' },
+];
 
-interface Props {
+export const MEMBER_CONCISE_TITLES: Record<MemberDrawerRoute, string> = {
+  home: 'Ana Sayfa',
+  schedule: 'Ders Programı',
+  packages: 'Paketler',
+  metrics: 'Gelişim',
+  trainers: 'Eğitmenler',
+  news: 'Duyurular',
+  profile: 'Profil',
+};
+
+export interface MemberRootViewProps {
   member: AppUser;
+  activeRoute?: MemberDrawerRoute;
+  onNavigate?: (route: MemberDrawerRoute) => void;
+  onRouteChange?: (route: MemberDrawerRoute) => void;
+  hideInternalHeader?: boolean;
+  qrModalVisible?: boolean;
+  onOpenQr?: () => void;
+  onCloseQr?: () => void;
+  notificationsModalVisible?: boolean;
+  onOpenNotifications?: () => void;
+  onCloseNotifications?: () => void;
+  onUnreadCountChange?: (count: number) => void;
+  onPackageSummaryChange?: (summary: string) => void;
+  onOpenGateway?: () => void;
+  onOpenAdmin?: () => void;
 }
 
-export function MemberRootView({ member }: Props) {
+export function MemberRootView({
+  member,
+  activeRoute,
+  onNavigate,
+  onRouteChange,
+  hideInternalHeader = false,
+  qrModalVisible,
+  onOpenQr,
+  onCloseQr,
+  notificationsModalVisible,
+  onOpenNotifications,
+  onCloseNotifications,
+  onUnreadCountChange,
+  onPackageSummaryChange,
+  onOpenGateway,
+  onOpenAdmin,
+}: MemberRootViewProps) {
   const { refreshSignal, triggerGlobalRefresh } = useAuthDemo();
-  const [activeTab, setActiveTab] = useState<MemberTabKey>('dashboard');
+
+  const [internalRoute, setInternalRoute] = useState<MemberDrawerRoute>('home');
+  const [internalDrawerOpen, setInternalDrawerOpen] = useState<boolean>(false);
+  const [internalQrOpen, setInternalQrOpen] = useState<boolean>(false);
+  const [internalNotifOpen, setInternalNotifOpen] = useState<boolean>(false);
+
   const [dashboard, setDashboard] = useState<MemberDashboardData | null>(null);
+  const [announcements, setAnnouncements] = useState<AnnouncementItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const loadedMemberIdRef = useRef<number | null>(null);
+
   const [busyBookingId, setBusyBookingId] = useState<number | null>(null);
   const [busySessionId, setBusySessionId] = useState<number | null>(null);
-  const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [busyWaitlistId, setBusyWaitlistId] = useState<number | null>(null);
 
-  const showBanner = useCallback((type: 'success' | 'error', text: string) => {
-    setBanner({ type, text });
-    setTimeout(() => {
-      setBanner((prev) => (prev?.text === text ? null : prev));
-    }, 3500);
-  }, []);
+  const [selectedTrainerId, setSelectedTrainerId] = useState<number | null>(null);
+
+  const [banner, setBanner] = useState<{
+    type: 'success' | 'warning' | 'error';
+    text: string;
+  } | null>(null);
+
+  const currentRoute: MemberDrawerRoute = activeRoute ?? internalRoute;
+  const showBuiltInChrome = activeRoute === undefined && !hideInternalHeader;
+
+  const isQrOpen = qrModalVisible ?? internalQrOpen;
+  const isNotifOpen = notificationsModalVisible ?? internalNotifOpen;
+
+  const handleNavigate = useCallback(
+    (nextRoute: MemberDrawerRoute) => {
+      setInternalRoute(nextRoute);
+      onNavigate?.(nextRoute);
+      onRouteChange?.(nextRoute);
+    },
+    [onNavigate, onRouteChange]
+  );
+
+  const handleTriggerOpenQr = useCallback(() => {
+    if (onOpenQr && qrModalVisible !== undefined) {
+      onOpenQr();
+    } else {
+      setInternalQrOpen(true);
+      onOpenQr?.();
+    }
+  }, [onOpenQr, qrModalVisible]);
+
+  useEffect(() => {
+    registerMemberQrOpener(handleTriggerOpenQr);
+    return () => {
+      registerMemberQrOpener(null);
+    };
+  }, [handleTriggerOpenQr]);
+
+  const handleTriggerCloseQr = useCallback(() => {
+    setInternalQrOpen(false);
+    onCloseQr?.();
+  }, [onCloseQr]);
+
+  const handleTriggerOpenNotifications = useCallback(() => {
+    if (onOpenNotifications && notificationsModalVisible !== undefined) {
+      onOpenNotifications();
+    } else {
+      setInternalNotifOpen(true);
+      onOpenNotifications?.();
+    }
+  }, [onOpenNotifications, notificationsModalVisible]);
+
+  const handleTriggerCloseNotifications = useCallback(() => {
+    setInternalNotifOpen(false);
+    onCloseNotifications?.();
+  }, [onCloseNotifications]);
+
+  const showBanner = useCallback(
+    (type: 'success' | 'warning' | 'error', text: string) => {
+      setBanner({ type, text });
+      setTimeout(() => {
+        setBanner((prev) => (prev?.text === text ? null : prev));
+      }, 3800);
+    },
+    []
+  );
 
   const fetchDashboard = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const res = await apiRequest<MemberDashboardData>(`/member/${member.id}/dashboard`);
-        setDashboard(res);
+        const [dashRes, annRes] = await Promise.all([
+          apiRequest<MemberDashboardData>(`/member/${member.id}/dashboard`),
+          apiRequest<AnnouncementItem[]>('/announcements').catch(() => []),
+        ]);
+        setDashboard(dashRes);
+        setAnnouncements(annRes);
+        loadedMemberIdRef.current = dashRes.member.id;
       } catch (err: any) {
         showBanner('error', err?.message || 'Üye verileri yüklenemedi.');
       } finally {
@@ -67,8 +210,31 @@ export function MemberRootView({ member }: Props) {
   );
 
   useEffect(() => {
-    fetchDashboard(false);
-  }, [fetchDashboard, refreshSignal]);
+    const isSilent = loadedMemberIdRef.current === member.id;
+    fetchDashboard(isSilent);
+  }, [fetchDashboard, refreshSignal, member.id]);
+
+  const unreadCount = useMemo(() => {
+    const activeCount = (dashboard?.my_bookings ?? []).filter(
+      (b) => b.status === 'booked'
+    ).length;
+    const waitCount = dashboard?.waitlist_items?.length ?? 0;
+    return activeCount + waitCount + Math.min(announcements.length, 3);
+  }, [dashboard?.my_bookings, dashboard?.waitlist_items, announcements.length]);
+
+  const packageSummary = useMemo(() => {
+    const pkg = dashboard?.active_package;
+    if (!pkg) return '';
+    return `${pkg.remaining_credits} seans`;
+  }, [dashboard?.active_package]);
+
+  useEffect(() => {
+    onUnreadCountChange?.(unreadCount);
+  }, [unreadCount, onUnreadCountChange]);
+
+  useEffect(() => {
+    onPackageSummaryChange?.(packageSummary);
+  }, [packageSummary, onPackageSummaryChange]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
@@ -83,10 +249,10 @@ export function MemberRootView({ member }: Props) {
           method: 'POST',
           body: JSON.stringify({ booking_id: booking.booking_id }),
         });
-        showBanner(
-          'success',
-          `${booking.title} randevunuz iptal edildi. Kalan ders hakkınız: ${res.remaining_credits}`
-        );
+        const msg = res.promoted_from_waitlist_member_name
+          ? `${booking.title} iptal edildi (+1 kredi iade). Yedek listeden ${res.promoted_from_waitlist_member_name} otomatik derse alındı!`
+          : `${booking.title} randevunuz iptal edildi. Kalan ders hakkınız: ${res.remaining_credits}`;
+        showBanner('success', msg);
         await fetchDashboard(true);
         triggerGlobalRefresh();
       } catch (err: any) {
@@ -126,17 +292,20 @@ export function MemberRootView({ member }: Props) {
 
   const handleCancelBySession = useCallback(
     async (session: AvailableSession) => {
-      if (!session.booking_id) return;
       setBusySessionId(session.id);
       try {
         const res = await apiRequest<BookingActionResponse>('/bookings/cancel', {
           method: 'POST',
-          body: JSON.stringify({ booking_id: session.booking_id }),
+          body: JSON.stringify({
+            booking_id: session.booking_id ?? undefined,
+            member_id: member.id,
+            session_id: session.id,
+          }),
         });
-        showBanner(
-          'success',
-          `${session.title} kaydınız iptal edildi. Kalan ders hakkınız: ${res.remaining_credits}`
-        );
+        const msg = res.promoted_from_waitlist_member_name
+          ? `${session.title} kaydınız iptal edildi (+1 kredi iade). Yedek listeden ${res.promoted_from_waitlist_member_name} otomatik derse alındı!`
+          : `${session.title} kaydınız iptal edildi. Kalan ders hakkınız: ${res.remaining_credits}`;
+        showBanner('success', msg);
         await fetchDashboard(true);
         triggerGlobalRefresh();
       } catch (err: any) {
@@ -145,173 +314,243 @@ export function MemberRootView({ member }: Props) {
         setBusySessionId(null);
       }
     },
+    [member.id, fetchDashboard, showBanner, triggerGlobalRefresh]
+  );
+
+  const handleJoinWaitlist = useCallback(
+    async (session: AvailableSession) => {
+      setBusySessionId(session.id);
+      try {
+        const res = await apiRequest<WaitlistActionResponse>('/bookings/waitlist', {
+          method: 'POST',
+          body: JSON.stringify({
+            member_id: member.id,
+            session_id: session.id,
+          }),
+        });
+        showBanner(
+          'warning',
+          `${session.title} için yedek listeye #${res.position}. sıradan yazıldınız!`
+        );
+        await fetchDashboard(true);
+        triggerGlobalRefresh();
+      } catch (err: any) {
+        showBanner('error', err?.message || 'Yedek listeye yazılamadı.');
+      } finally {
+        setBusySessionId(null);
+      }
+    },
+    [member.id, fetchDashboard, showBanner, triggerGlobalRefresh]
+  );
+
+  const handleCancelWaitlist = useCallback(
+    async (session: AvailableSession) => {
+      setBusySessionId(session.id);
+      try {
+        await apiRequest<WaitlistActionResponse>('/bookings/waitlist/cancel', {
+          method: 'POST',
+          body: JSON.stringify({
+            waitlist_id: session.waitlist_id ?? undefined,
+            member_id: member.id,
+            session_id: session.id,
+          }),
+        });
+        showBanner('success', `${session.title} yedek listesinden çıkıldı.`);
+        await fetchDashboard(true);
+        triggerGlobalRefresh();
+      } catch (err: any) {
+        showBanner('error', err?.message || 'Yedek listeden çıkılamadı.');
+      } finally {
+        setBusySessionId(null);
+      }
+    },
+    [member.id, fetchDashboard, showBanner, triggerGlobalRefresh]
+  );
+
+  const handleCancelWaitlistItem = useCallback(
+    async (item: MemberWaitlistItem) => {
+      setBusyWaitlistId(item.waitlist_id);
+      try {
+        await apiRequest<WaitlistActionResponse>('/bookings/waitlist/cancel', {
+          method: 'POST',
+          body: JSON.stringify({ waitlist_id: item.waitlist_id }),
+        });
+        showBanner('success', `${item.title} yedek listesinden çıkıldı.`);
+        await fetchDashboard(true);
+        triggerGlobalRefresh();
+      } catch (err: any) {
+        showBanner('error', err?.message || 'Yedek listeden çıkılamadı.');
+      } finally {
+        setBusyWaitlistId(null);
+      }
+    },
     [fetchDashboard, showBanner, triggerGlobalRefresh]
   );
 
   const memberAccessCode = `FIT-${1000 + member.id}`;
+  const remainingCredits = dashboard?.active_package?.remaining_credits ?? 0;
 
   return (
     <View style={styles.container}>
+      {showBuiltInChrome && (
+        <>
+          <CleanAppHeader
+            user={dashboard?.member ?? member}
+            activeRoute={currentRoute}
+            activePageTitle={MEMBER_CONCISE_TITLES[currentRoute]}
+            unreadNotificationCount={unreadCount}
+            onOpenDrawer={() => setInternalDrawerOpen(true)}
+            onOpenNotifications={handleTriggerOpenNotifications}
+            onOpenQr={handleTriggerOpenQr}
+          />
+          <SlideOverDrawer
+            visible={internalDrawerOpen}
+            user={dashboard?.member ?? member}
+            activeMemberRoute={currentRoute}
+            packageSummaryText={packageSummary}
+            menuItems={MEMBER_DRAWER_MENU}
+            onSelectMemberRoute={handleNavigate}
+            onOpenQr={handleTriggerOpenQr}
+            onClose={() => setInternalDrawerOpen(false)}
+            onOpenGateway={onOpenGateway}
+            onOpenAdmin={onOpenAdmin}
+          />
+        </>
+      )}
+
       {banner && (
         <View
           style={[
             styles.bannerBox,
-            banner.type === 'success' ? styles.bannerSuccess : styles.bannerError,
+            banner.type === 'success'
+              ? styles.bannerSuccess
+              : banner.type === 'warning'
+              ? styles.bannerWarning
+              : styles.bannerError,
           ]}
         >
-          <Text style={styles.bannerText}>{banner.text}</Text>
+          <Text
+            style={[
+              styles.bannerText,
+              {
+                color:
+                  banner.type === 'success'
+                    ? COLORS.primary
+                    : banner.type === 'warning'
+                    ? COLORS.warningText
+                    : COLORS.dangerText,
+              },
+            ]}
+          >
+            {banner.text}
+          </Text>
         </View>
       )}
 
       <View style={styles.body}>
-        {activeTab === 'store' ? (
-          <PackageStoreScreen
-            member={member}
-            onPurchaseCompleted={() => {
-              fetchDashboard(true);
-              triggerGlobalRefresh();
-            }}
-            onClose={() => setActiveTab('dashboard')}
-          />
-        ) : loading || !dashboard ? (
+        {loading || !dashboard ? (
           <View style={styles.centerLoader}>
             <ActivityIndicator size="large" color={COLORS.primary} />
-            <Text style={styles.loaderText}>Üyelik bilgileriniz yükleniyor...</Text>
+            <Text style={styles.loaderText}>Stüdyo deneyiminiz hazırlanıyor...</Text>
           </View>
-        ) : activeTab === 'dashboard' ? (
+        ) : currentRoute === 'home' ? (
           <MemberDashboardTab
-            data={dashboard}
-            refreshing={refreshing}
-            onRefresh={handleRefresh}
+            member={dashboard.member}
+            dashboard={dashboard}
+            onRefreshParent={() => fetchDashboard(true)}
+            onNavigate={handleNavigate}
+            onOpenQr={handleTriggerOpenQr}
             onCancelBooking={handleCancelBooking}
             busyBookingId={busyBookingId}
-            onGoToSchedule={() => setActiveTab('schedule')}
-            onOpenPackageStore={() => setActiveTab('store')}
           />
-        ) : activeTab === 'schedule' ? (
+        ) : currentRoute === 'schedule' ? (
           <MemberBookingTab
             data={dashboard}
             refreshing={refreshing}
             onRefresh={handleRefresh}
             onBookSession={handleBookSession}
             onCancelBySession={handleCancelBySession}
+            onJoinWaitlist={handleJoinWaitlist}
+            onCancelWaitlist={handleCancelWaitlist}
+            onOpenPackageRenew={() => handleNavigate('packages')}
+            onOpenTrainerDetail={(tId) => setSelectedTrainerId(tId)}
             busySessionId={busySessionId}
           />
+        ) : currentRoute === 'trainers' ? (
+          <MemberTrainersScreen
+            member={dashboard.member}
+            onOpenTrainerDetail={(tId) => setSelectedTrainerId(tId)}
+          />
+        ) : currentRoute === 'packages' ? (
+          <MemberPackageRenewScreen
+            data={dashboard}
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            onRenewCompleted={async () => {
+              await fetchDashboard(true);
+            }}
+            onShowBanner={showBanner}
+          />
+        ) : currentRoute === 'news' ? (
+          <MemberNewsScreen onNavigate={handleNavigate} />
+        ) : currentRoute === 'metrics' ? (
+          <MemberProgressTab
+            member={dashboard.member}
+            onGoToSchedule={() => handleNavigate('schedule')}
+            onOpenTrainerDetail={(tId) => setSelectedTrainerId(tId)}
+          />
         ) : (
-          <MemberQrTab data={dashboard} accessCode={memberAccessCode} />
+          <MemberProfileTab
+            data={dashboard}
+            refreshing={refreshing}
+            onRefresh={handleRefresh}
+            onOpenPackageRenew={() => handleNavigate('packages')}
+            onOpenQr={handleTriggerOpenQr}
+            onShowBanner={showBanner}
+          />
         )}
       </View>
 
-      {/* Athletic Dark Mode 4 Sekmeli Alt Bar */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('dashboard')}
-          activeOpacity={0.82}
-        >
-          <View
-            style={[
-              styles.tabIconPill,
-              activeTab === 'dashboard' && styles.tabIconPillActive,
-            ]}
-          >
-            <LayoutDashboard
-              size={19}
-              color={activeTab === 'dashboard' ? COLORS.primary : COLORS.textMuted}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'dashboard' && styles.tabLabelActive,
-            ]}
-            numberOfLines={1}
-          >
-            Paketim
-          </Text>
-        </TouchableOpacity>
+      {/* EĞİTMEN DETAY & AÇIK DERSLER MODALI */}
+      <TrainerDetailModal
+        visible={selectedTrainerId !== null}
+        trainerId={selectedTrainerId}
+        member={dashboard?.member ?? member}
+        remainingCredits={remainingCredits}
+        onClose={() => setSelectedTrainerId(null)}
+        onSessionMutated={async () => {
+          await fetchDashboard(true);
+          triggerGlobalRefresh();
+        }}
+        onOpenPackageStore={() => {
+          setSelectedTrainerId(null);
+          handleNavigate('packages');
+        }}
+      />
 
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('schedule')}
-          activeOpacity={0.82}
-        >
-          <View
-            style={[
-              styles.tabIconPill,
-              activeTab === 'schedule' && styles.tabIconPillActive,
-            ]}
-          >
-            <CalendarCheck2
-              size={19}
-              color={activeTab === 'schedule' ? COLORS.primary : COLORS.textMuted}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'schedule' && styles.tabLabelActive,
-            ]}
-            numberOfLines={1}
-          >
-            Dersler
-          </Text>
-        </TouchableOpacity>
+      {/* AYDINLIK QR GİRİŞ MODALI */}
+      <MemberQrModal
+        visible={isQrOpen}
+        data={dashboard}
+        accessCode={memberAccessCode}
+        onClose={handleTriggerCloseQr}
+        onOpenPackageRenew={() => handleNavigate('packages')}
+      />
 
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('qr')}
-          activeOpacity={0.82}
-        >
-          <View
-            style={[
-              styles.tabIconPill,
-              activeTab === 'qr' && styles.tabIconPillActive,
-            ]}
-          >
-            <QrCode
-              size={19}
-              color={activeTab === 'qr' ? COLORS.primary : COLORS.textMuted}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'qr' && styles.tabLabelActive,
-            ]}
-            numberOfLines={1}
-          >
-            Giriş QR
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('store')}
-          activeOpacity={0.82}
-        >
-          <View
-            style={[
-              styles.tabIconPill,
-              activeTab === 'store' && styles.tabIconPillVoltActive,
-            ]}
-          >
-            <CreditCard
-              size={19}
-              color={activeTab === 'store' ? COLORS.accentVolt : COLORS.textMuted}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'store' && styles.tabLabelVoltActive,
-            ]}
-            numberOfLines={1}
-          >
-            Paket Mağazası
-          </Text>
-        </TouchableOpacity>
-      </View>
+      {/* AYDINLIK BİLDİRİMLER MODALI */}
+      <MemberNotificationsModal
+        visible={isNotifOpen}
+        dashboard={dashboard}
+        announcements={announcements}
+        onClose={handleTriggerCloseNotifications}
+        onGoToSchedule={() => handleNavigate('schedule')}
+        onGoToNews={() => handleNavigate('news')}
+        onGoToProfile={() => handleNavigate('profile')}
+        onCancelBooking={handleCancelBooking}
+        onCancelWaitlistItem={handleCancelWaitlistItem}
+        busyBookingId={busyBookingId}
+        busyWaitlistId={busyWaitlistId}
+      />
     </View>
   );
 }
@@ -336,64 +575,28 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   bannerBox: {
-    marginHorizontal: 16,
-    marginTop: 10,
+    marginHorizontal: 18,
+    marginTop: 12,
     paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingVertical: 11,
+    borderRadius: 14,
     borderWidth: 1,
   },
   bannerSuccess: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primaryLight,
+    borderColor: '#E5CB90',
+  },
+  bannerWarning: {
+    backgroundColor: COLORS.warningBg,
+    borderColor: '#EDD092',
   },
   bannerError: {
-    backgroundColor: 'rgba(239, 68, 68, 0.14)',
-    borderColor: COLORS.danger,
+    backgroundColor: COLORS.dangerBg,
+    borderColor: '#F0BFC3',
   },
   bannerText: {
-    color: COLORS.textPrimary,
     fontSize: 12.5,
     fontWeight: '800',
     textAlign: 'center',
-  },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.surface,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingTop: 8,
-    paddingBottom: 11,
-    paddingHorizontal: 6,
-  },
-  tabItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-  },
-  tabIconPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  tabIconPillActive: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-  },
-  tabIconPillVoltActive: {
-    backgroundColor: 'rgba(163, 230, 53, 0.14)',
-  },
-  tabLabel: {
-    color: COLORS.textMuted,
-    fontSize: 10.5,
-    fontWeight: '700',
-  },
-  tabLabelActive: {
-    color: COLORS.primary,
-    fontWeight: '800',
-  },
-  tabLabelVoltActive: {
-    color: COLORS.accentVolt,
-    fontWeight: '800',
   },
 });

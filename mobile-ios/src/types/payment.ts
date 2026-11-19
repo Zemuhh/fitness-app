@@ -4,6 +4,19 @@ export type PaymentMethodType = 'credit_card' | 'apple_pay' | 'bank_transfer';
 
 export type InstallmentCount = 1 | 3 | 6;
 
+export type CheckoutSessionStatus =
+  | 'pending'
+  | 'requires_3ds'
+  | 'succeeded'
+  | 'failed'
+  | 'cancelled';
+
+export type PaymentGatewayProvider =
+  | 'stripe'
+  | 'iyzico'
+  | 'erya_3ds_gateway'
+  | string;
+
 export interface PackageCatalogPlan {
   id: number;
   code: string;
@@ -20,15 +33,32 @@ export interface PackageCatalogPlan {
   is_active: boolean;
 }
 
-export interface PaymentCheckoutRequestPayload {
+export interface CreateCheckoutSessionPayload {
+  member_id: number;
+  plan_id?: number;
+  plan_code?: string;
+  installment_count?: InstallmentCount;
+  payment_method?: PaymentMethodType;
+  return_url?: string;
+  cancel_url?: string;
+  prefer_hosted_gateway?: boolean;
+}
+
+export interface CheckoutSessionCreatedResponse {
+  session_id: string;
+  checkout_url: string;
+  status: CheckoutSessionStatus;
+  amount: number;
+  currency: string;
+  provider: PaymentGatewayProvider;
+  expires_at: string;
   member_id: number;
   plan_id: number;
-  payment_method: PaymentMethodType;
-  card_holder_name?: string;
-  card_number?: string;
-  expiry_mm_yy?: string;
-  cvv?: string;
-  installment_count: InstallmentCount;
+  plan_code: string;
+  plan_name: string;
+  plan_credits: number;
+  installment_count: number;
+  return_url?: string | null;
 }
 
 export interface DigitalReceipt {
@@ -50,16 +80,68 @@ export interface DigitalReceipt {
   installment_count: number;
   purchased_credits: number;
   carried_credits: number;
+  booked_hold_count?: number;
+  new_remaining_credits: number;
   new_total_credits: number;
   expiry_date: string;
   status: 'completed' | 'failed' | string;
   created_at: string;
 }
 
+export interface CheckoutSessionStatusResponse {
+  session_id: string;
+  status: CheckoutSessionStatus;
+  provider: PaymentGatewayProvider;
+  member_id: number;
+  member_name: string;
+  plan_id: number;
+  plan_code: string;
+  plan_name: string;
+  plan_credits: number;
+  amount: number;
+  currency: string;
+  installment_count: number;
+  monthly_installment_try: number;
+  payment_method: string;
+  card_last4?: string | null;
+  card_brand?: string | null;
+  bank_name?: string | null;
+  checkout_url: string;
+  return_url?: string | null;
+  created_at: string;
+  expires_at: string;
+  completed_at?: string | null;
+  failure_reason?: string | null;
+  transaction_code?: string | null;
+  credited_package_id?: number | null;
+  credited_package_name?: string | null;
+  purchased_credits: number;
+  carried_credits: number;
+  booked_hold_count?: number;
+  new_remaining_credits?: number | null;
+  new_total_credits?: number | null;
+  package_expiry_date?: string | null;
+  active_package?: MemberPackage | null;
+  receipt?: DigitalReceipt | null;
+}
+
+export interface PaymentCheckoutRequestPayload {
+  member_id: number;
+  plan_id: number;
+  payment_method: PaymentMethodType;
+  card_holder_name?: string;
+  card_number?: string;
+  expiry_mm_yy?: string;
+  cvv?: string;
+  installment_count: InstallmentCount;
+}
+
 export interface PaymentCheckoutResponse {
   message: string;
   purchased_credits: number;
   carried_credits: number;
+  booked_hold_count?: number;
+  new_remaining_credits: number;
   new_total_credits: number;
   active_package: MemberPackage;
   receipt: DigitalReceipt;

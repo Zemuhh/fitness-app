@@ -1,8 +1,7 @@
-import React, { useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
-  LayoutAnimation,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -11,45 +10,49 @@ import {
   View,
 } from 'react-native';
 import {
-  AlertTriangle,
+  ArrowRight,
+  Award,
   Calendar,
-  CheckCircle2,
   Clock,
-  Dumbbell,
   Flame,
-  ShieldCheck,
+  MapPin,
+  QrCode,
   Sparkles,
-  Users,
+  User,
   XCircle,
 } from 'lucide-react-native';
 import { ActivityRing } from '@/components/ActivityRing';
-import { COLORS } from '@/theme/colors';
-import { MemberBookingItem, MemberDashboardData } from '@/types/fitness';
-import { formatTurkishDateLabel } from '@/utils/dateHelpers';
+import { EryaBrandLogo } from '@/components/EryaBrandLogo';
+import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
+import {
+  AppUser,
+  MemberBookingItem,
+  MemberDashboardData,
+  MemberDrawerRoute,
+} from '@/types/fitness';
+import { formatTurkishDateLabel, getDaysRemaining } from '@/utils/dateHelpers';
+import { getCategoryVisuals } from '@/screens/member/MemberAvatar';
 
-interface Props {
-  data: MemberDashboardData;
-  refreshing: boolean;
-  onRefresh: () => void;
+export interface MemberDashboardTabProps {
+  member: AppUser;
+  dashboard: MemberDashboardData;
+  onRefreshParent: () => Promise<void> | void;
+  onNavigate: (route: MemberDrawerRoute) => void;
+  onOpenQr: () => void;
   onCancelBooking: (booking: MemberBookingItem) => Promise<void>;
   busyBookingId: number | null;
-  onGoToSchedule: () => void;
-  onOpenPackageStore?: () => void;
 }
 
 export function MemberDashboardTab({
-  data,
-  refreshing,
-  onRefresh,
+  member,
+  dashboard,
+  onRefreshParent,
+  onNavigate,
+  onOpenQr,
   onCancelBooking,
   busyBookingId,
-  onGoToSchedule,
-  onOpenPackageStore,
-}: Props) {
-  const pkg = data.active_package;
-  const remaining = pkg?.remaining_credits ?? 0;
-  const total = pkg?.total_credits ?? 0;
-  const isLow = remaining <= 2;
+}: MemberDashboardTabProps) {
+  const [refreshing, setRefreshing] = useState<boolean>(false);
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(10)).current;
@@ -58,23 +61,52 @@ export function MemberDashboardTab({
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 320,
+        duration: 280,
         useNativeDriver: true,
       }),
       Animated.timing(slideAnim, {
         toValue: 0,
-        duration: 320,
+        duration: 280,
         useNativeDriver: true,
       }),
     ]).start();
   }, [fadeAnim, slideAnim]);
 
-  const handleAnimatedCancel = async (booking: MemberBookingItem) => {
-    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    await onCancelBooking(booking);
-  };
+  const handlePullRefresh = useCallback(async () => {
+    setRefreshing(true);
+    await Promise.resolve(onRefreshParent());
+    setRefreshing(false);
+  }, [onRefreshParent]);
 
-  const upcomingBookings = data.my_bookings;
+  const firstName = useMemo(() => {
+    const clean = (dashboard.member?.full_name || member.full_name || '').trim();
+    return clean.split(/\s+/)[0] || 'Üyemiz';
+  }, [dashboard.member?.full_name, member.full_name]);
+
+  const greetingWord = useMemo(() => {
+    const hour = new Date().getHours();
+    if (hour >= 5 && hour < 12) return 'Günaydın';
+    if (hour >= 12 && hour < 18) return 'Merhaba';
+    return 'İyi akşamlar';
+  }, []);
+
+  const streakDays = dashboard.member?.streak_days ?? member.streak_days ?? 0;
+  const pkg = dashboard.active_package;
+  const remainingCredits = pkg?.remaining_credits ?? 0;
+  const totalCredits = pkg?.total_credits ?? 0;
+  const isLowCredits = remainingCredits <= 2;
+  const daysLeft = getDaysRemaining(pkg?.expiry_date);
+
+  const upcomingBooking = useMemo(() => {
+    return dashboard.my_bookings.find((b) => b.status === 'booked') ?? null;
+  }, [dashboard.my_bookings]);
+
+  const upcomingCatVis = upcomingBooking
+    ? getCategoryVisuals(upcomingBooking.category)
+    : null;
+
+  const isCancellingUpcoming =
+    upcomingBooking !== null && busyBookingId === upcomingBooking.booking_id;
 
   return (
     <ScrollView
@@ -84,7 +116,7 @@ export function MemberDashboardTab({
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
-          onRefresh={onRefresh}
+          onRefresh={handlePullRefresh}
           tintColor={COLORS.primary}
         />
       }
@@ -95,234 +127,262 @@ export function MemberDashboardTab({
           transform: [{ translateY: slideAnim }],
         }}
       >
-        {/* Hero Kredi & Paket Bento Kartı */}
-        <View style={styles.heroBentoCard}>
-          <View style={styles.heroMainRow}>
-            {/* Sol Bilgi Sütunu */}
-            <View style={styles.heroLeftCol}>
+        {/* 1. ZARİF KARŞILAMA BAŞLIĞI & DÜZENLİ SERİ ROZETİ */}
+        <View style={styles.greetingSection}>
+          <View style={styles.greetingTextCol}>
+            <Text style={styles.greetingTitle}>
+              {greetingWord}, {firstName}
+            </Text>
+            <Text style={styles.greetingSubtitle}>
+              Güçlü beden, dik duruş ve zihinsel denge için stüdyonuz hazır.
+            </Text>
+          </View>
+
+          <View style={styles.streakBadge}>
+            <Flame size={14} color={COLORS.primary} fill={COLORS.primaryMetallic} />
+            <Text style={styles.streakBadgeText}>{streakDays} Haftalık Seri</Text>
+          </View>
+        </View>
+
+        {/* 2. ERYA PİLATES İMZA MİMARİ KEMERLİ STÜDYO KARTI */}
+        <View style={styles.studioSignatureBanner}>
+          <View style={styles.archHaloTopLine} />
+          <View style={styles.signatureTopRow}>
+            <EryaBrandLogo size={38} />
+            <View style={styles.signatureTextWrap}>
+              <Text style={styles.signatureMotto}>
+                DENGEYLE GÜÇLEN • ZARAFETLE PARLA
+              </Text>
+              <Text style={styles.signatureScriptQuote}>
+                “A journey to your best self”
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.signatureMetaRow}>
+            <View style={styles.locationChip}>
+              <MapPin size={12} color={COLORS.primary} />
+              <Text style={styles.locationChipText}>
+                Eryaman Port AVM D:2/2C • 09:00–22:00
+              </Text>
+            </View>
+            <View style={styles.multisportChip}>
+              <Award size={12} color={COLORS.secondary} />
+              <Text style={styles.multisportChipText}>MultiSport Geçerli</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* 3. KALAN SEANS & AKTİF REFORMER/CADILLAC PAKET KARTI */}
+        <View style={styles.creditsCard}>
+          <View style={styles.creditsCardRow}>
+            <View style={styles.creditsInfoCol}>
               <View
                 style={[
-                  styles.membershipBadge,
-                  !pkg?.is_active && styles.membershipBadgeInactive,
+                  styles.pkgStatusPill,
+                  (!pkg || isLowCredits) && styles.pkgStatusPillWarning,
                 ]}
               >
-                <ShieldCheck
-                  size={13}
-                  color={pkg?.is_active ? COLORS.primary : COLORS.warning}
+                <Sparkles
+                  size={12}
+                  color={!pkg || isLowCredits ? COLORS.secondary : COLORS.primary}
                 />
                 <Text
                   style={[
-                    styles.membershipBadgeText,
-                    !pkg?.is_active && { color: COLORS.warning },
+                    styles.pkgStatusPillText,
+                    (!pkg || isLowCredits) && { color: COLORS.secondary },
                   ]}
                 >
-                  {pkg?.is_active ? 'Aktif Üyelik' : 'Paket Bekleniyor'}
+                  {pkg
+                    ? isLowCredits
+                      ? 'Seans Hakkı Azalıyor'
+                      : `${Math.max(0, daysLeft)} Gün Geçerli`
+                    : 'Aktif Paket Yok'}
                 </Text>
               </View>
 
-              <Text style={styles.packageTitle} numberOfLines={2}>
-                {pkg ? pkg.package_name : 'Tanımlı Paket Bulunamadı'}
+              <Text style={styles.pkgNameTitle} numberOfLines={2}>
+                {pkg ? pkg.package_name : 'Henüz Aktif Paketiniz Yok'}
               </Text>
 
-              <View style={styles.expiryRow}>
-                <Calendar size={13} color={COLORS.textSecondary} />
-                <Text style={styles.expiryText}>
-                  {pkg
-                    ? `Bitiş: ${formatTurkishDateLabel(pkg.expiry_date).full}`
-                    : 'Yeni bir paket seçerek başlayın'}
-                </Text>
-              </View>
+              <Text style={styles.pkgExpiryText}>
+                {pkg
+                  ? `Son Geçerlilik: ${formatTurkishDateLabel(pkg.expiry_date).full}`
+                  : 'Reformer & Cadillac seansları için paket seçin'}
+              </Text>
 
-              <View style={styles.memberMetaChip}>
-                <Dumbbell size={13} color={COLORS.accentVolt} />
-                <Text style={styles.memberMetaName} numberOfLines={1}>
-                  {data.member.full_name}
-                  {data.member.instagram_handle ? ` • ${data.member.instagram_handle}` : ''}
-                </Text>
-              </View>
-
-              {isLow && (
-                <View style={styles.lowWarningBadge}>
-                  <AlertTriangle size={13} color={COLORS.warning} />
-                  <Text style={styles.lowWarningText}>Paketiniz Azalıyor</Text>
-                </View>
-              )}
+              <TouchableOpacity
+                style={styles.renewInlineLink}
+                onPress={() => onNavigate('packages')}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+                accessibilityLabel="Üyelik paketini yenile"
+              >
+                <Text style={styles.renewInlineLinkText}>Paketi Yenile</Text>
+                <ArrowRight size={14} color={COLORS.primary} />
+              </TouchableOpacity>
             </View>
 
-            {/* Sağ Parlayan Neon Activity Progress Ring */}
-            <View style={styles.heroRightCol}>
-              <ActivityRing remaining={remaining} total={total} size={132} strokeWidth={12} />
+            <View style={styles.ringWrapper}>
+              <ActivityRing
+                remaining={remainingCredits}
+                total={totalCredits}
+                size={128}
+                strokeWidth={11}
+              />
             </View>
           </View>
+        </View>
 
-          {/* Opsiyonel Paket Satın Al / Yenile Aksiyon Butonu */}
-          {onOpenPackageStore && (
-            <TouchableOpacity
-              style={[
-                styles.storeActionButton,
-                isLow && styles.storeActionButtonUrgent,
-              ]}
-              onPress={onOpenPackageStore}
-              activeOpacity={0.86}
-            >
-              <Sparkles
-                size={16}
-                color={isLow ? '#090D16' : COLORS.accentVolt}
-              />
-              <Text
+        {/* 4. YAKLAŞAN SEANS RANDEVU KARTI */}
+        <View style={styles.upcomingCard}>
+          <View style={styles.cardHeaderRow}>
+            <View style={styles.cardHeaderLeft}>
+              <View style={styles.headerIconBadge}>
+                <Calendar size={15} color={COLORS.primary} />
+              </View>
+              <Text style={styles.cardSectionTitle}>Yaklaşan Seansım</Text>
+            </View>
+
+            {upcomingBooking && upcomingCatVis && (
+              <View
                 style={[
-                  styles.storeActionButtonText,
-                  isLow && { color: '#090D16' },
+                  styles.categoryBadge,
+                  {
+                    backgroundColor: upcomingCatVis.bg,
+                    borderColor: upcomingCatVis.border,
+                  },
                 ]}
               >
-                Paket Satın Al / Yenile
+                <Text
+                  style={[styles.categoryBadgeText, { color: upcomingCatVis.color }]}
+                >
+                  {upcomingCatVis.label}
+                </Text>
+              </View>
+            )}
+          </View>
+
+          {upcomingBooking ? (
+            <View style={styles.upcomingBody}>
+              <Text style={styles.upcomingClassTitle}>{upcomingBooking.title}</Text>
+
+              <View style={styles.upcomingMetaBox}>
+                <View style={styles.upcomingMetaRow}>
+                  <Clock size={14} color={COLORS.primary} />
+                  <Text style={styles.upcomingTimeText}>
+                    {formatTurkishDateLabel(upcomingBooking.date).full} •{' '}
+                    {upcomingBooking.start_time} - {upcomingBooking.end_time}
+                  </Text>
+                </View>
+
+                <View style={styles.upcomingMetaSplit}>
+                  <View style={styles.upcomingMetaRow}>
+                    <User size={14} color={COLORS.secondary} />
+                    <Text style={styles.upcomingSubText}>
+                      {upcomingBooking.trainer_name}
+                    </Text>
+                  </View>
+
+                  <View style={styles.upcomingMetaRow}>
+                    <MapPin size={14} color={COLORS.walnut} />
+                    <Text style={styles.upcomingSubText}>
+                      {upcomingBooking.room || 'Kemerli Ayna Reformer Salonu'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[
+                  styles.cancelBookingBtn,
+                  isCancellingUpcoming && { opacity: 0.65 },
+                ]}
+                disabled={isCancellingUpcoming}
+                onPress={() => onCancelBooking(upcomingBooking)}
+                activeOpacity={0.82}
+                accessibilityRole="button"
+                accessibilityLabel="Randevuyu iptal et ve 1 seans iade al"
+              >
+                {isCancellingUpcoming ? (
+                  <ActivityIndicator size="small" color={COLORS.danger} />
+                ) : (
+                  <>
+                    <XCircle size={15} color={COLORS.danger} />
+                    <Text style={styles.cancelBookingBtnText}>
+                      Randevuyu İptal Et (+1 Seans İade)
+                    </Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          ) : (
+            <View style={styles.emptyUpcomingBox}>
+              <Text style={styles.emptyUpcomingTitle}>
+                Planlanmış aktif seansınız bulunmuyor
               </Text>
-            </TouchableOpacity>
+              <Text style={styles.emptyUpcomingDesc}>
+                Reformer, Cadillac, Düet veya Bireysel ders saatlerini inceleyip yerinizi hemen ayırtabilirsiniz.
+              </Text>
+              <TouchableOpacity
+                style={styles.chooseClassBtn}
+                onPress={() => onNavigate('schedule')}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+              >
+                <Calendar size={15} color={COLORS.white} />
+                <Text style={styles.chooseClassBtnText}>Seans Saatlerini İncele</Text>
+              </TouchableOpacity>
+            </View>
           )}
         </View>
 
-        {/* Hızlı Özet Metrik Şeridi */}
-        <View style={styles.quickMetricsRow}>
-          <View style={styles.metricMiniBento}>
-            <Flame size={16} color={COLORS.accentVolt} />
-            <View>
-              <Text style={styles.metricNumeric}>
-                {remaining}/{total}
-              </Text>
-              <Text style={styles.metricLabel}>Kalan Kredi</Text>
+        {/* 5. YAN YANA 2 ADET HIZLI STÜDYO KISAYOLU (VEKTÖR İKONLU) */}
+        <View style={styles.shortcutsRow}>
+          <TouchableOpacity
+            style={styles.shortcutCard}
+            onPress={() => onNavigate('schedule')}
+            activeOpacity={0.84}
+            accessibilityRole="button"
+            accessibilityLabel="Seans seç ve rezervasyon yap"
+          >
+            <View
+              style={[
+                styles.shortcutIconCircle,
+                {
+                  backgroundColor: COLORS.primaryLight,
+                  borderColor: COLORS.primaryBorder,
+                },
+              ]}
+            >
+              <Calendar size={21} color={COLORS.primary} />
             </View>
-          </View>
+            <Text style={styles.shortcutTitle}>Seans Seç</Text>
+            <Text style={styles.shortcutSub}>Reformer & Cadillac Takvimi</Text>
+          </TouchableOpacity>
 
-          <View style={styles.metricMiniBento}>
-            <Calendar size={16} color={COLORS.primary} />
-            <View>
-              <Text style={styles.metricNumeric}>{upcomingBookings.length}</Text>
-              <Text style={styles.metricLabel}>Aktif Randevu</Text>
+          <TouchableOpacity
+            style={styles.shortcutCard}
+            onPress={onOpenQr}
+            activeOpacity={0.84}
+            accessibilityRole="button"
+            accessibilityLabel="Dijital stüdyo QR giriş kartını aç"
+          >
+            <View
+              style={[
+                styles.shortcutIconCircle,
+                {
+                  backgroundColor: COLORS.secondaryLight,
+                  borderColor: COLORS.secondaryBorder,
+                },
+              ]}
+            >
+              <QrCode size={21} color={COLORS.secondary} />
             </View>
-          </View>
-        </View>
-
-        {/* Yaklaşan Randevularım Başlığı */}
-        <View style={styles.sectionHeader}>
-          <View style={styles.sectionTitleRow}>
-            <Text style={styles.sectionTitle}>Yaklaşan Randevularım</Text>
-            <View style={styles.countBadge}>
-              <Text style={styles.countBadgeText}>{upcomingBookings.length}</Text>
-            </View>
-          </View>
-
-          <TouchableOpacity onPress={onGoToSchedule} activeOpacity={0.8}>
-            <Text style={styles.scheduleLinkText}>+ Yeni Ders Seç</Text>
+            <Text style={styles.shortcutTitle}>QR Stüdyo Giriş</Text>
+            <Text style={styles.shortcutSub}>Dijital Üyelik Kartım</Text>
           </TouchableOpacity>
         </View>
-
-        {/* Randevu Kartları */}
-        {upcomingBookings.length === 0 ? (
-          <View style={styles.emptyCard}>
-            <View style={styles.emptyIconCircle}>
-              <Dumbbell size={26} color={COLORS.primary} />
-            </View>
-            <Text style={styles.emptyTitle}>Henüz aktif randevunuz yok</Text>
-            <Text style={styles.emptySubtitle}>
-              Antrenman ritminizi korumak için ders programından hemen yerinizi ayırtın.
-            </Text>
-            <TouchableOpacity
-              style={styles.ctaButton}
-              onPress={onGoToSchedule}
-              activeOpacity={0.85}
-            >
-              <Calendar size={15} color="#090D16" />
-              <Text style={styles.ctaButtonText}>Ders Programına Göz At</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          upcomingBookings.map((item) => {
-            const dateInfo = formatTurkishDateLabel(item.date);
-            const isBusy = busyBookingId === item.booking_id;
-            const canCancel = item.status === 'booked';
-
-            return (
-              <View key={item.booking_id} style={styles.bookingCard}>
-                <View style={styles.bookingHeaderRow}>
-                  <View style={styles.timeCluster}>
-                    <Clock size={14} color={COLORS.primary} />
-                    <Text style={styles.athleticTimeText}>
-                      {item.start_time} - {item.end_time}
-                    </Text>
-                  </View>
-
-                  <View
-                    style={[
-                      styles.statusBadge,
-                      item.status === 'attended'
-                        ? styles.statusAttended
-                        : item.status === 'no_show'
-                        ? styles.statusNoShow
-                        : styles.statusBooked,
-                    ]}
-                  >
-                    {item.status === 'attended' ? (
-                      <CheckCircle2 size={13} color={COLORS.primary} />
-                    ) : null}
-                    <Text
-                      style={[
-                        styles.statusBadgeText,
-                        item.status === 'attended'
-                          ? { color: COLORS.primary }
-                          : item.status === 'no_show'
-                          ? { color: COLORS.danger }
-                          : { color: COLORS.accentVolt },
-                      ]}
-                    >
-                      {item.status === 'attended'
-                        ? 'Tamamlandı'
-                        : item.status === 'no_show'
-                        ? 'Gelmedi'
-                        : 'Onaylı Kayıt'}
-                    </Text>
-                  </View>
-                </View>
-
-                <Text style={styles.bookingTitle}>{item.title}</Text>
-
-                <View style={styles.bookingMetaStrip}>
-                  <View style={styles.metaItem}>
-                    <Calendar size={13} color={COLORS.textSecondary} />
-                    <Text style={styles.metaText}>{dateInfo.full}</Text>
-                  </View>
-
-                  <View style={styles.metaItem}>
-                    <Users size={13} color={COLORS.trainerAccent} />
-                    <Text style={styles.metaText}>{item.trainer_name}</Text>
-                    <Text style={styles.capacityInline}>
-                      • {item.current_enrolled}/{item.capacity}
-                    </Text>
-                  </View>
-                </View>
-
-                {canCancel && (
-                  <TouchableOpacity
-                    style={[styles.cancelButton, isBusy && { opacity: 0.6 }]}
-                    disabled={isBusy}
-                    onPress={() => handleAnimatedCancel(item)}
-                    activeOpacity={0.82}
-                  >
-                    {isBusy ? (
-                      <ActivityIndicator size="small" color={COLORS.danger} />
-                    ) : (
-                      <>
-                        <XCircle size={15} color={COLORS.danger} />
-                        <Text style={styles.cancelButtonText}>
-                          Randevuyu İptal Et (+1 Kredi İade)
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                )}
-              </View>
-            );
-          })
-        )}
       </Animated.View>
     </ScrollView>
   );
@@ -334,346 +394,394 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   content: {
-    padding: 16,
+    padding: 18,
     paddingBottom: 36,
   },
-  heroBentoCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.15,
-    shadowRadius: 20,
-    elevation: 8,
+  greetingSection: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
     marginBottom: 14,
-  },
-  heroMainRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 14,
-  },
-  heroLeftCol: {
-    flex: 1,
-    gap: 8,
-  },
-  heroRightCol: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  membershipBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.30)',
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-  },
-  membershipBadgeInactive: {
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
-    borderColor: 'rgba(245, 158, 11, 0.35)',
-  },
-  membershipBadgeText: {
-    color: COLORS.primary,
-    fontSize: 11.5,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
-  packageTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: -0.4,
-    lineHeight: 24,
-  },
-  expiryRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  expiryText: {
-    color: COLORS.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '600',
-  },
-  memberMetaChip: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: COLORS.surfaceElevated,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  memberMetaName: {
-    color: COLORS.textPrimary,
-    fontSize: 12,
-    fontWeight: '700',
-    maxWidth: 170,
-  },
-  lowWarningBadge: {
-    alignSelf: 'flex-start',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
-    borderWidth: 1,
-    borderColor: COLORS.warning,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
-  },
-  lowWarningText: {
-    color: COLORS.warning,
-    fontSize: 11.5,
-    fontWeight: '800',
-  },
-  storeActionButton: {
-    marginTop: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(163, 230, 53, 0.40)',
-    borderRadius: 12,
-    paddingVertical: 12,
-    paddingHorizontal: 16,
-  },
-  storeActionButtonUrgent: {
-    backgroundColor: COLORS.accentVolt,
-    borderColor: COLORS.accentVolt,
-  },
-  storeActionButtonText: {
-    color: COLORS.textPrimary,
-    fontSize: 13.5,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-  },
-  quickMetricsRow: {
-    flexDirection: 'row',
     gap: 12,
-    marginBottom: 20,
   },
-  metricMiniBento: {
+  greetingTextCol: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    gap: 4,
   },
-  metricNumeric: {
+  greetingTitle: {
+    fontFamily: FONTS.serif,
     color: COLORS.textPrimary,
-    fontSize: 18,
-    fontWeight: '800',
-    letterSpacing: -0.5,
+    fontSize: 27,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+    lineHeight: 31,
   },
-  metricLabel: {
-    color: COLORS.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '600',
-    marginTop: 1,
-  },
-  sectionHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 12,
-  },
-  sectionTitleRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  sectionTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 17,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  countBadge: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 12,
-  },
-  countBadgeText: {
-    color: COLORS.accentVolt,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  scheduleLinkText: {
-    color: COLORS.primary,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  emptyCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 18,
-    paddingVertical: 26,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  emptyIconCircle: {
-    width: 52,
-    height: 52,
-    borderRadius: 26,
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
-    borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  emptyTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 16,
-    fontWeight: '800',
-    marginTop: 12,
-  },
-  emptySubtitle: {
+  greetingSubtitle: {
+    fontFamily: FONTS.sans,
     color: COLORS.textSecondary,
     fontSize: 13,
-    textAlign: 'center',
-    marginTop: 6,
-    lineHeight: 19,
-    paddingHorizontal: 8,
+    fontWeight: '500',
+    lineHeight: 18.5,
   },
-  ctaButton: {
-    marginTop: 16,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 18,
-    paddingVertical: 11,
-    borderRadius: 12,
-  },
-  ctaButtonText: {
-    color: '#090D16',
-    fontSize: 13.5,
-    fontWeight: '800',
-  },
-  bookingCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    marginBottom: 12,
-  },
-  bookingHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  timeCluster: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  athleticTimeText: {
-    color: COLORS.textPrimary,
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  statusBadge: {
+  streakBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 12,
+    backgroundColor: COLORS.primaryLight,
     borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 999,
   },
-  statusBooked: {
-    backgroundColor: 'rgba(163, 230, 53, 0.12)',
-    borderColor: 'rgba(163, 230, 53, 0.28)',
-  },
-  statusAttended: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderColor: 'rgba(16, 185, 129, 0.30)',
-  },
-  statusNoShow: {
-    backgroundColor: 'rgba(239, 68, 68, 0.14)',
-    borderColor: 'rgba(239, 68, 68, 0.30)',
-  },
-  statusBadgeText: {
+  streakBadgeText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
     fontSize: 11.5,
     fontWeight: '800',
   },
-  bookingTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 17,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-    marginBottom: 12,
+  studioSignatureBanner: {
+    backgroundColor: COLORS.espresso,
+    borderRadius: 24,
+    paddingHorizontal: 18,
+    paddingVertical: 16,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#3E3326',
+    gap: 12,
+    overflow: 'hidden',
+    ...CARD_SHADOW,
   },
-  bookingMetaStrip: {
+  archHaloTopLine: {
+    position: 'absolute',
+    top: 0,
+    left: 28,
+    right: 28,
+    height: 2.5,
+    borderBottomLeftRadius: 4,
+    borderBottomRightRadius: 4,
+    backgroundColor: COLORS.primaryMetallic,
+  },
+  signatureTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  signatureTextWrap: {
+    flex: 1,
+    gap: 2,
+  },
+  signatureMotto: {
+    fontFamily: FONTS.sans,
+    color: '#FAF0D7',
+    fontSize: 11.5,
+    fontWeight: '800',
+    letterSpacing: 1.3,
+  },
+  signatureScriptQuote: {
+    fontFamily: FONTS.serif,
+    fontStyle: 'italic',
+    color: '#E5CB90',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  signatureMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     flexWrap: 'wrap',
     gap: 8,
-    backgroundColor: COLORS.surfaceElevated,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(229, 203, 144, 0.18)',
+  },
+  locationChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  locationChipText: {
+    fontFamily: FONTS.sans,
+    color: '#D8CEBF',
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  multisportChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(248, 236, 238, 0.94)',
+    paddingHorizontal: 9,
+    paddingVertical: 3.5,
+    borderRadius: 999,
+  },
+  multisportChipText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.secondary,
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  creditsCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 22,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
+    ...CARD_SHADOW,
   },
-  metaItem: {
+  creditsCardRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 14,
+  },
+  creditsInfoCol: {
+    flex: 1,
+    gap: 8,
+  },
+  pkgStatusPill: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 4.5,
+    borderRadius: 999,
+  },
+  pkgStatusPillWarning: {
+    backgroundColor: COLORS.secondaryLight,
+    borderColor: COLORS.secondaryBorder,
+  },
+  pkgStatusPillText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  pkgNameTitle: {
+    fontFamily: FONTS.serif,
+    color: COLORS.textPrimary,
+    fontSize: 21,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+    lineHeight: 25,
+  },
+  pkgExpiryText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  renewInlineLink: {
+    alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    marginTop: 4,
+    minHeight: 38,
+    paddingVertical: 7,
+    paddingHorizontal: 13,
+    borderRadius: 12,
+    backgroundColor: COLORS.primarySurface,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
   },
-  metaText: {
-    color: COLORS.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  capacityInline: {
-    color: COLORS.textPrimary,
+  renewInlineLinkText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
     fontSize: 12.5,
     fontWeight: '800',
-    letterSpacing: -0.5,
   },
-  cancelButton: {
-    marginTop: 12,
+  ringWrapper: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  upcomingCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 14,
+    ...CARD_SHADOW,
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  cardHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+  },
+  headerIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardSectionTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 15.5,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  categoryBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  categoryBadgeText: {
+    fontFamily: FONTS.sans,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  upcomingBody: {
+    gap: 12,
+  },
+  upcomingClassTitle: {
+    fontFamily: FONTS.serif,
+    color: COLORS.textPrimary,
+    fontSize: 20.5,
+    fontWeight: '700',
+    letterSpacing: -0.2,
+  },
+  upcomingMetaBox: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 8,
+  },
+  upcomingMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+  },
+  upcomingMetaSplit: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 16,
+  },
+  upcomingTimeText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  upcomingSubText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  cancelBookingBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
-    backgroundColor: 'transparent',
+    minHeight: 46,
+    backgroundColor: COLORS.dangerBg,
     borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.55)',
-    borderRadius: 12,
-    paddingVertical: 11,
+    borderColor: COLORS.dangerBorder,
+    borderRadius: 14,
+    paddingVertical: 12,
   },
-  cancelButtonText: {
-    color: COLORS.danger,
+  cancelBookingBtnText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.dangerText,
     fontSize: 13,
     fontWeight: '800',
+  },
+  emptyUpcomingBox: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 16,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    gap: 8,
+  },
+  emptyUpcomingTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  emptyUpcomingDesc: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  chooseClassBtn: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    minHeight: 44,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 18,
+    paddingVertical: 11,
+    borderRadius: 14,
+  },
+  chooseClassBtnText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.white,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  shortcutsRow: {
+    flexDirection: 'row',
+    gap: 14,
+  },
+  shortcutCard: {
+    flex: 1,
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'flex-start',
+    gap: 7,
+    ...CARD_SHADOW,
+  },
+  shortcutIconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  shortcutTitle: {
+    fontFamily: FONTS.serif,
+    color: COLORS.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+    letterSpacing: -0.1,
+  },
+  shortcutSub: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
   },
 });

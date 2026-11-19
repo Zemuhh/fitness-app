@@ -14,13 +14,19 @@ import {
   CheckCircle2,
   Clock,
   Dumbbell,
+  Filter,
   Flame,
+  Hourglass,
+  MapPin,
+  RotateCcw,
   Sparkles,
+  UserCheck,
   Users,
 } from 'lucide-react-native';
-import { COLORS } from '@/theme/colors';
+import { CARD_SHADOW, COLORS } from '@/theme/colors';
 import { AvailableSession, MemberDashboardData } from '@/types/fitness';
 import { formatTurkishDateLabel, getTodayIso, getTomorrowIso } from '@/utils/dateHelpers';
+import { getCategoryVisuals, MemberAvatar } from '@/screens/member/MemberAvatar';
 
 interface CalendarPillItem {
   key: string;
@@ -29,12 +35,30 @@ interface CalendarPillItem {
   count: number;
 }
 
+const CATEGORY_FILTERS = [
+  'Tümü',
+  'Grup Reformer',
+  'Bireysel Reformer',
+  'Cadillac & Tower',
+  'Düet & Trio',
+] as const;
+
+interface TrainerFilterOption {
+  id: number;
+  name: string;
+  avatar_url?: string | null;
+}
+
 interface Props {
   data: MemberDashboardData;
   refreshing: boolean;
   onRefresh: () => void;
   onBookSession: (session: AvailableSession) => Promise<void>;
   onCancelBySession: (session: AvailableSession) => Promise<void>;
+  onJoinWaitlist: (session: AvailableSession) => Promise<void>;
+  onCancelWaitlist: (session: AvailableSession) => Promise<void>;
+  onOpenPackageRenew: () => void;
+  onOpenTrainerDetail: (trainerId: number) => void;
   busySessionId: number | null;
 }
 
@@ -44,12 +68,32 @@ export function MemberBookingTab({
   onRefresh,
   onBookSession,
   onCancelBySession,
+  onJoinWaitlist,
+  onCancelWaitlist,
+  onOpenPackageRenew,
+  onOpenTrainerDetail,
   busySessionId,
 }: Props) {
   const todayIso = getTodayIso();
   const tomorrowIso = getTomorrowIso();
 
-  const [selectedKey, setSelectedKey] = useState<string>(todayIso);
+  const [selectedDateKey, setSelectedDateKey] = useState<string>(todayIso);
+  const [selectedCategory, setSelectedCategory] = useState<string>('Tümü');
+  const [selectedTrainerId, setSelectedTrainerId] = useState<number | 'all'>('all');
+
+  const trainerOptions: TrainerFilterOption[] = useMemo(() => {
+    const map = new Map<number, TrainerFilterOption>();
+    data.available_sessions.forEach((s) => {
+      if (!map.has(s.trainer_id)) {
+        map.set(s.trainer_id, {
+          id: s.trainer_id,
+          name: s.trainer_name,
+          avatar_url: s.trainer_avatar_url,
+        });
+      }
+    });
+    return Array.from(map.values()).sort((a, b) => a.id - b.id);
+  }, [data.available_sessions]);
 
   const calendarPills: CalendarPillItem[] = useMemo(() => {
     const uniqueDates = new Set<string>([todayIso, tomorrowIso]);
@@ -78,45 +122,67 @@ export function MemberBookingTab({
   }, [data.available_sessions, todayIso, tomorrowIso]);
 
   const filteredSessions = useMemo(() => {
-    if (selectedKey === 'all') return data.available_sessions;
-    return data.available_sessions.filter((s) => s.date === selectedKey);
-  }, [data.available_sessions, selectedKey]);
+    return data.available_sessions.filter((s) => {
+      if (selectedDateKey !== 'all' && s.date !== selectedDateKey) {
+        return false;
+      }
+      if (selectedCategory !== 'Tümü') {
+        const sessCat = (s.category || 'Fonksiyonel').toLocaleLowerCase('tr-TR');
+        const targetCat = selectedCategory.toLocaleLowerCase('tr-TR');
+        if (!sessCat.includes(targetCat) && sessCat !== targetCat) {
+          return false;
+        }
+      }
+      if (selectedTrainerId !== 'all' && s.trainer_id !== selectedTrainerId) {
+        return false;
+      }
+      return true;
+    });
+  }, [data.available_sessions, selectedDateKey, selectedCategory, selectedTrainerId]);
 
   const remainingCredits = data.active_package?.remaining_credits ?? 0;
   const totalCredits = data.active_package?.total_credits ?? 0;
+  const hasActiveFilter = selectedCategory !== 'Tümü' || selectedTrainerId !== 'all';
 
   const handleSelectDay = (key: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    setSelectedKey(key);
+    setSelectedDateKey(key);
   };
 
-  const handleBookPress = async (session: AvailableSession) => {
+  const handleSelectCategory = (cat: string) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    await onBookSession(session);
+    setSelectedCategory(cat);
   };
 
-  const handleCancelPress = async (session: AvailableSession) => {
+  const handleSelectTrainer = (id: number | 'all') => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    await onCancelBySession(session);
+    setSelectedTrainerId(id);
+  };
+
+  const handleResetFilters = () => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setSelectedDateKey('all');
+    setSelectedCategory('Tümü');
+    setSelectedTrainerId('all');
   };
 
   return (
     <View style={styles.container}>
-      {/* Yatay Hap (Pill) Calendar Strip */}
+      {/* 1. FERAH YATAY GÜN SEÇİCİ ŞERİT */}
       <View style={styles.calendarStripWrapper}>
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.calendarStripContent}
+          contentContainerStyle={styles.horizontalStripContent}
         >
           {calendarPills.map((pill) => {
-            const active = selectedKey === pill.key;
+            const active = selectedDateKey === pill.key;
             return (
               <TouchableOpacity
                 key={pill.key}
                 style={[styles.dayPill, active && styles.dayPillActive]}
                 onPress={() => handleSelectDay(pill.key)}
-                activeOpacity={0.85}
+                activeOpacity={0.84}
               >
                 <Text style={[styles.dayPillTop, active && styles.dayPillTopActive]}>
                   {pill.topLabel}
@@ -135,30 +201,134 @@ export function MemberBookingTab({
         </ScrollView>
       </View>
 
-      {/* Kredi Durum Şeridi */}
-      <View style={styles.creditStrip}>
-        <View style={styles.creditStripLeft}>
-          <Sparkles size={14} color={COLORS.accentVolt} />
-          <Text style={styles.creditStripLabel}>Kullanılabilir Ders Bakiyesi</Text>
-        </View>
-        <View
-          style={[
-            styles.creditCountBadge,
-            remainingCredits <= 2 && styles.creditCountBadgeWarn,
-          ]}
+      {/* 2. KATEGORİ & EĞİTMEN FİLTRE ÇİPLERİ */}
+      <View style={styles.filterBlock}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.horizontalStripContent}
         >
-          <Text
+          {CATEGORY_FILTERS.map((cat) => {
+            const active = selectedCategory === cat;
+            return (
+              <TouchableOpacity
+                key={cat}
+                style={[styles.categoryChip, active && styles.categoryChipActive]}
+                onPress={() => handleSelectCategory(cat)}
+                activeOpacity={0.84}
+              >
+                <Dumbbell
+                  size={12}
+                  color={active ? COLORS.white : COLORS.primary}
+                />
+                <Text
+                  style={[
+                    styles.categoryChipText,
+                    active && styles.categoryChipTextActive,
+                  ]}
+                >
+                  {cat}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.horizontalStripContent}
+        >
+          <TouchableOpacity
             style={[
-              styles.creditCountText,
-              remainingCredits <= 2 && { color: COLORS.warning },
+              styles.trainerFilterChip,
+              selectedTrainerId === 'all' && styles.trainerFilterChipActive,
             ]}
+            onPress={() => handleSelectTrainer('all')}
+            activeOpacity={0.84}
           >
-            {remainingCredits}/{totalCredits} Ders
-          </Text>
-        </View>
+            <Filter
+              size={12}
+              color={selectedTrainerId === 'all' ? COLORS.white : COLORS.secondary}
+            />
+            <Text
+              style={[
+                styles.trainerFilterText,
+                selectedTrainerId === 'all' && styles.trainerFilterTextActive,
+              ]}
+            >
+              Tüm Hocalar
+            </Text>
+          </TouchableOpacity>
+
+          {trainerOptions.map((tr) => {
+            const active = selectedTrainerId === tr.id;
+            return (
+              <TouchableOpacity
+                key={tr.id}
+                style={[
+                  styles.trainerFilterChip,
+                  active && styles.trainerFilterChipActive,
+                ]}
+                onPress={() => handleSelectTrainer(tr.id)}
+                activeOpacity={0.84}
+              >
+                <UserCheck
+                  size={12}
+                  color={active ? COLORS.white : COLORS.secondary}
+                />
+                <Text
+                  style={[
+                    styles.trainerFilterText,
+                    active && styles.trainerFilterTextActive,
+                  ]}
+                >
+                  {tr.name}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
       </View>
 
-      {/* Aciliyet Hissi Veren Ders Kartları */}
+      {/* 3. KREDİ BAKİYE ŞERİDİ */}
+      <View style={styles.creditStrip}>
+        <View style={styles.creditStripLeft}>
+          <Sparkles size={14} color={COLORS.primary} />
+          <Text style={styles.creditStripLabel}>
+            Kalan Bakiye:{' '}
+            <Text
+              style={{
+                color: remainingCredits <= 2 ? COLORS.warningText : COLORS.primary,
+                fontWeight: '800',
+              }}
+            >
+              {remainingCredits} / {totalCredits} Ders
+            </Text>
+          </Text>
+        </View>
+
+        {data.waitlist_items.length > 0 ? (
+          <View style={styles.waitlistSummaryBadge}>
+            <Hourglass size={12} color={COLORS.warningText} />
+            <Text style={styles.waitlistSummaryText}>
+              {data.waitlist_items.length} Yedek Sıra
+            </Text>
+          </View>
+        ) : remainingCredits <= 2 ? (
+          <TouchableOpacity
+            style={styles.topUpMiniBtn}
+            onPress={onOpenPackageRenew}
+            activeOpacity={0.84}
+          >
+            <Text style={styles.topUpMiniBtnText}>+ Paket Yenile</Text>
+          </TouchableOpacity>
+        ) : (
+          <Text style={styles.sessionCountHint}>{filteredSessions.length} Açık Seans</Text>
+        )}
+      </View>
+
+      {/* 4. FERAH BEYAZ DERS KARTLARI LİSTESİ */}
       <ScrollView
         style={styles.list}
         contentContainerStyle={styles.listContent}
@@ -174,10 +344,20 @@ export function MemberBookingTab({
         {filteredSessions.length === 0 ? (
           <View style={styles.emptyCard}>
             <Calendar size={30} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>Seçili günde açık ders yok</Text>
+            <Text style={styles.emptyTitle}>Bu filtrede açık ders bulunamadı</Text>
             <Text style={styles.emptySub}>
-              Üstteki takvim şeridinden diğer günleri veya &ldquo;Tümü&rdquo; sekmesini seçebilirsiniz.
+              {hasActiveFilter
+                ? 'Seçtiğiniz kategori veya eğitmen filtresinde bu tarihte seans görünmüyor.'
+                : 'Üstteki takvim şeridinden diğer günleri veya "Tümü" sekmesini seçebilirsiniz.'}
             </Text>
+            <TouchableOpacity
+              style={styles.resetFiltersBtn}
+              onPress={handleResetFilters}
+              activeOpacity={0.85}
+            >
+              <RotateCcw size={14} color={COLORS.white} />
+              <Text style={styles.resetFiltersBtnText}>Tüm Dersleri Göster</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           filteredSessions.map((session) => {
@@ -191,6 +371,7 @@ export function MemberBookingTab({
               computedSpots <= 0;
             const isLastSpot = !isFull && computedSpots === 1;
             const isBooked = session.is_booked_by_member;
+            const isWaitlisted = Boolean(session.is_waitlisted_by_member);
             const isBusy = busySessionId === session.id;
 
             const fillRatio =
@@ -198,113 +379,224 @@ export function MemberBookingTab({
                 ? Math.max(0, Math.min(1, session.current_enrolled / session.capacity))
                 : 1;
 
-            const accentColor = isFull
-              ? COLORS.danger
-              : isLastSpot
+            const statusColor = isBooked
+              ? COLORS.primary
+              : isFull || isLastSpot || isWaitlisted
+              ? COLORS.warningText
+              : COLORS.primary;
+
+            const barFillColor = isBooked
+              ? COLORS.primary
+              : isFull || isLastSpot || isWaitlisted
               ? COLORS.warning
               : COLORS.primary;
 
+            const catVis = getCategoryVisuals(session.category);
             const dateLabel = formatTurkishDateLabel(session.date);
 
             return (
               <View key={session.id} style={styles.sessionCard}>
-                {/* Sol Kenar Dikey Aciliyet Renk Şeridi */}
-                <View style={[styles.leftAccentBar, { backgroundColor: accentColor }]} />
-
-                <View style={styles.cardInner}>
-                  {/* Üst Satır: Saat & Kontenjan + Scarcity Bar */}
-                  <View style={styles.topRow}>
-                    <View style={styles.timeBadge}>
-                      <Clock size={14} color={COLORS.primary} />
-                      <Text style={styles.timeText}>{session.start_time}</Text>
-                      <Text style={styles.timeEndText}>- {session.end_time}</Text>
-                    </View>
-
-                    <View style={styles.scarcityCol}>
-                      <View style={styles.capacityHeaderRow}>
-                        <Users size={12} color={accentColor} />
-                        <Text style={[styles.capacityText, { color: accentColor }]}>
-                          {session.current_enrolled}/{session.capacity}{' '}
-                          {isFull ? 'Dolu' : 'Kontenjan'}
-                        </Text>
-                      </View>
-                      {/* İnce Doluluk Çubuğu (Scarcity Progress Bar) */}
-                      <View style={styles.scarcityTrack}>
-                        <View
-                          style={[
-                            styles.scarcityFill,
-                            {
-                              width: `${fillRatio * 100}%`,
-                              backgroundColor: accentColor,
-                            },
-                          ]}
-                        />
-                      </View>
-                    </View>
+                {/* Üst Satır: Saat & Kategori Rozeti */}
+                <View style={styles.topRow}>
+                  <View style={styles.timeBadge}>
+                    <Clock size={14} color={COLORS.primary} />
+                    <Text style={styles.timeText}>{session.start_time}</Text>
+                    <Text style={styles.timeEndText}>- {session.end_time}</Text>
                   </View>
 
-                  {/* Son 1 Kişilik Yer Aciliyet Rozeti */}
-                  {isLastSpot && (
-                    <View style={styles.lastSpotBadge}>
-                      <Flame size={13} color={COLORS.warning} />
-                      <Text style={styles.lastSpotBadgeText}>🔥 Son 1 Kişilik Yer!</Text>
-                    </View>
-                  )}
+                  <View
+                    style={[
+                      styles.categoryBadge,
+                      { backgroundColor: catVis.bg, borderColor: catVis.border },
+                    ]}
+                  >
+                    <Text style={[styles.categoryBadgeText, { color: catVis.color }]}>
+                      {catVis.label}
+                    </Text>
+                  </View>
+                </View>
 
-                  {/* Ders Başlığı & Eğitmen Bilgisi */}
-                  <Text style={styles.sessionTitle}>{session.title}</Text>
+                {/* Son 1 Kişilik Yer veya Yedek Liste Bilgi Rozeti */}
+                {isLastSpot && !isBooked ? (
+                  <View style={styles.lastSpotBadge}>
+                    <Flame size={13} color={COLORS.warningText} />
+                    <Text style={styles.lastSpotBadgeText}>🔥 Son 1 Kişilik Yer!</Text>
+                  </View>
+                ) : isFull && !isBooked ? (
+                  <View style={styles.waitlistInfoBadge}>
+                    <Hourglass size={12} color={COLORS.warningText} />
+                    <Text style={styles.waitlistInfoBadgeText}>
+                      Kontenjan Dolu
+                      {(session.waitlist_count ?? 0) > 0
+                        ? ` • ${session.waitlist_count} kişi yedek listede`
+                        : ' • Yedek liste açık'}
+                    </Text>
+                  </View>
+                ) : null}
 
-                  <View style={styles.metaRow}>
-                    <View style={styles.trainerChip}>
-                      <Dumbbell size={13} color={COLORS.trainerAccent} />
-                      <Text style={styles.trainerText}>{session.trainer_name}</Text>
+                {/* Ders Başlığı */}
+                <Text style={styles.sessionTitle}>{session.title}</Text>
+
+                {/* Eğitmen & Stüdyo & Tarih Satırı */}
+                <View style={styles.detailsGrid}>
+                  <TouchableOpacity
+                    style={styles.trainerChipBtn}
+                    onPress={() => onOpenTrainerDetail(session.trainer_id)}
+                    activeOpacity={0.8}
+                  >
+                    <MemberAvatar
+                      uri={session.trainer_avatar_url}
+                      name={session.trainer_name}
+                      size={28}
+                      borderRadius={9}
+                      accentColor={COLORS.secondary}
+                    />
+                    <Text style={styles.trainerText}>{session.trainer_name}</Text>
+                  </TouchableOpacity>
+
+                  <View style={styles.roomDateRight}>
+                    <View style={styles.roomInline}>
+                      <MapPin size={12} color={COLORS.secondary} />
+                      <Text style={styles.roomText} numberOfLines={1}>
+                        {session.room || 'Ana Stüdyo'}
+                      </Text>
                     </View>
                     <Text style={styles.dateSubText}>{dateLabel.full}</Text>
                   </View>
+                </View>
 
-                  {/* Aksiyon Butonu */}
-                  {isBooked ? (
-                    <TouchableOpacity
-                      style={[styles.bookedCancelBtn, isBusy && { opacity: 0.65 }]}
-                      disabled={isBusy}
-                      onPress={() => handleCancelPress(session)}
-                      activeOpacity={0.82}
-                    >
-                      {isBusy ? (
-                        <ActivityIndicator size="small" color={COLORS.danger} />
-                      ) : (
-                        <>
-                          <CheckCircle2 size={15} color={COLORS.danger} />
-                          <Text style={styles.bookedCancelBtnText}>
-                            ✓ Kayıtlısın (İptal Et)
-                          </Text>
-                        </>
-                      )}
-                    </TouchableOpacity>
-                  ) : isFull ? (
-                    <View style={styles.fullDisabledBtn}>
-                      <Text style={styles.fullDisabledBtnText}>Kontenjan Dolu</Text>
+                {/* Görsel Doluluk Çubuğu */}
+                <View style={styles.occupancyWrap}>
+                  <View style={styles.occupancyTopRow}>
+                    <View style={styles.occupancyLabelLeft}>
+                      <Users size={13} color={statusColor} />
+                      <Text style={[styles.occupancyText, { color: statusColor }]}>
+                        {session.current_enrolled}/{session.capacity}{' '}
+                        {isFull ? 'Dolu' : 'Kayıtlı'}
+                      </Text>
                     </View>
-                  ) : (
-                    <TouchableOpacity
+                    <Text style={styles.spotsRemainText}>
+                      {isFull ? 'Yedek Liste Aktif' : `${computedSpots} boş kontenjan`}
+                    </Text>
+                  </View>
+                  <View style={styles.scarcityTrack}>
+                    <View
                       style={[
-                        styles.bookNowBtn,
-                        (isBusy || remainingCredits <= 0) && styles.bookNowBtnDisabled,
+                        styles.scarcityFill,
+                        {
+                          width: `${fillRatio * 100}%`,
+                          backgroundColor: barFillColor,
+                        },
                       ]}
-                      disabled={isBusy || remainingCredits <= 0}
-                      onPress={() => handleBookPress(session)}
-                      activeOpacity={0.86}
+                    />
+                  </View>
+                </View>
+
+                {/* AKSİYON BUTONLARI */}
+                {isBooked ? (
+                  <TouchableOpacity
+                    style={[styles.bookedCancelBtn, isBusy && styles.disabledBtn]}
+                    disabled={isBusy}
+                    onPress={async () => {
+                      LayoutAnimation.configureNext(
+                        LayoutAnimation.Presets.easeInEaseOut
+                      );
+                      await onCancelBySession(session);
+                    }}
+                    activeOpacity={0.82}
+                  >
+                    {isBusy ? (
+                      <ActivityIndicator size="small" color={COLORS.danger} />
+                    ) : (
+                      <>
+                        <CheckCircle2 size={15} color={COLORS.danger} />
+                        <Text style={styles.bookedCancelBtnText}>
+                          ✓ Kayıtlısın (İptal Et)
+                        </Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                ) : isFull ? (
+                  isWaitlisted ? (
+                    <TouchableOpacity
+                      style={[styles.waitlistedLeaveBtn, isBusy && styles.disabledBtn]}
+                      disabled={isBusy}
+                      onPress={async () => {
+                        LayoutAnimation.configureNext(
+                          LayoutAnimation.Presets.easeInEaseOut
+                        );
+                        await onCancelWaitlist(session);
+                      }}
+                      activeOpacity={0.84}
                     >
                       {isBusy ? (
-                        <ActivityIndicator size="small" color="#090D16" />
+                        <ActivityIndicator size="small" color={COLORS.warningText} />
                       ) : (
-                        <Text style={styles.bookNowBtnText}>
-                          {remainingCredits <= 0 ? 'Kredi Yetersiz' : 'Hemen Kayıt Ol'}
+                        <Text style={styles.waitlistedLeaveBtnText}>
+                          ⏳ Yedek Listedesin (#{session.waitlist_position ?? 1} • Çık)
                         </Text>
                       )}
                     </TouchableOpacity>
-                  )}
-                </View>
+                  ) : remainingCredits <= 0 ? (
+                    <TouchableOpacity
+                      style={styles.waitlistJoinBtn}
+                      onPress={onOpenPackageRenew}
+                      activeOpacity={0.86}
+                    >
+                      <Text style={styles.waitlistJoinBtnText}>
+                        ⏳ Paket Yenile & Yedek Listeye Yazıl
+                      </Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.waitlistJoinBtn, isBusy && styles.disabledBtn]}
+                      disabled={isBusy}
+                      onPress={async () => {
+                        LayoutAnimation.configureNext(
+                          LayoutAnimation.Presets.easeInEaseOut
+                        );
+                        await onJoinWaitlist(session);
+                      }}
+                      activeOpacity={0.86}
+                    >
+                      {isBusy ? (
+                        <ActivityIndicator size="small" color={COLORS.warningText} />
+                      ) : (
+                        <Text style={styles.waitlistJoinBtnText}>
+                          ⏳ Yedek Listeye Yazıl
+                        </Text>
+                      )}
+                    </TouchableOpacity>
+                  )
+                ) : remainingCredits <= 0 ? (
+                  <TouchableOpacity
+                    style={styles.topUpActionBtn}
+                    onPress={onOpenPackageRenew}
+                    activeOpacity={0.86}
+                  >
+                    <Text style={styles.topUpActionBtnText}>
+                      Kredi Yetersiz • Paket Yenile
+                    </Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.bookNowBtn, isBusy && styles.disabledBtn]}
+                    disabled={isBusy}
+                    onPress={async () => {
+                      LayoutAnimation.configureNext(
+                        LayoutAnimation.Presets.easeInEaseOut
+                      );
+                      await onBookSession(session);
+                    }}
+                    activeOpacity={0.86}
+                  >
+                    {isBusy ? (
+                      <ActivityIndicator size="small" color={COLORS.white} />
+                    ) : (
+                      <Text style={styles.bookNowBtnText}>Hemen Kayıt Ol</Text>
+                    )}
+                  </TouchableOpacity>
+                )}
               </View>
             );
           })
@@ -321,19 +613,19 @@ const styles = StyleSheet.create({
   },
   calendarStripWrapper: {
     paddingTop: 12,
-    paddingBottom: 10,
+    paddingBottom: 8,
   },
-  calendarStripContent: {
+  horizontalStripContent: {
     paddingHorizontal: 16,
-    gap: 10,
+    gap: 8,
   },
   dayPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    gap: 7,
     backgroundColor: COLORS.surface,
     paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingVertical: 9,
     borderRadius: 999,
     borderWidth: 1,
     borderColor: COLORS.border,
@@ -341,289 +633,425 @@ const styles = StyleSheet.create({
   dayPillActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.38,
-    shadowRadius: 12,
-    elevation: 6,
   },
   dayPillTop: {
     color: COLORS.textPrimary,
-    fontSize: 13,
+    fontSize: 12.5,
     fontWeight: '800',
-    letterSpacing: -0.3,
   },
   dayPillTopActive: {
-    color: '#090D16',
+    color: COLORS.white,
   },
   dayPillBottom: {
     color: COLORS.textSecondary,
     fontSize: 11.5,
-    fontWeight: '700',
+    fontWeight: '600',
   },
   dayPillBottomActive: {
-    color: 'rgba(9, 13, 22, 0.78)',
+    color: 'rgba(255, 255, 255, 0.88)',
   },
   dayDotBadge: {
     backgroundColor: COLORS.surfaceElevated,
-    paddingHorizontal: 7,
+    paddingHorizontal: 6,
     paddingVertical: 2,
-    borderRadius: 12,
+    borderRadius: 10,
   },
   dayDotBadgeActive: {
-    backgroundColor: 'rgba(9, 13, 22, 0.18)',
+    backgroundColor: 'rgba(255, 255, 255, 0.22)',
   },
   dayDotText: {
     color: COLORS.textSecondary,
-    fontSize: 11,
+    fontSize: 10.5,
     fontWeight: '800',
-    letterSpacing: -0.5,
   },
   dayDotTextActive: {
-    color: '#090D16',
+    color: COLORS.white,
+  },
+  filterBlock: {
+    gap: 8,
+    marginBottom: 10,
+  },
+  categoryChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 13,
+    paddingVertical: 7,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  categoryChipActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  categoryChipText: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  categoryChipTextActive: {
+    color: COLORS.white,
+    fontWeight: '800',
+  },
+  trainerFilterChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 12,
+    paddingVertical: 6.5,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  trainerFilterChipActive: {
+    backgroundColor: COLORS.secondary,
+    borderColor: COLORS.secondary,
+  },
+  trainerFilterText: {
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  trainerFilterTextActive: {
+    color: COLORS.white,
+    fontWeight: '800',
   },
   creditStrip: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     marginHorizontal: 16,
-    marginBottom: 10,
+    marginBottom: 12,
     backgroundColor: COLORS.surface,
     paddingHorizontal: 14,
     paddingVertical: 10,
-    borderRadius: 12,
+    borderRadius: 14,
     borderWidth: 1,
     borderColor: COLORS.border,
   },
   creditStripLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 7,
+    gap: 6,
   },
   creditStripLabel: {
     color: COLORS.textSecondary,
     fontSize: 12.5,
     fontWeight: '700',
   },
-  creditCountBadge: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
+  waitlistSummaryBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.warningBg,
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.30)',
+    borderColor: '#EDD092',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  waitlistSummaryText: {
+    color: COLORS.warningText,
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  topUpMiniBtn: {
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: '#E5CB90',
     paddingHorizontal: 10,
     paddingVertical: 4,
-    borderRadius: 12,
+    borderRadius: 10,
   },
-  creditCountBadgeWarn: {
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
-    borderColor: 'rgba(245, 158, 11, 0.35)',
-  },
-  creditCountText: {
+  topUpMiniBtnText: {
     color: COLORS.primary,
-    fontSize: 12.5,
+    fontSize: 11.5,
     fontWeight: '800',
-    letterSpacing: -0.5,
+  },
+  sessionCountHint: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '700',
   },
   list: {
     flex: 1,
   },
   listContent: {
     paddingHorizontal: 16,
-    paddingTop: 4,
+    paddingTop: 2,
     paddingBottom: 34,
   },
   emptyCard: {
     backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 18,
-    paddingVertical: 28,
+    borderRadius: 22,
+    padding: 24,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginTop: 8,
+    gap: 10,
+    ...CARD_SHADOW,
   },
   emptyTitle: {
     color: COLORS.textPrimary,
     fontSize: 16,
     fontWeight: '800',
-    marginTop: 10,
   },
   emptySub: {
     color: COLORS.textSecondary,
     fontSize: 13,
     textAlign: 'center',
-    marginTop: 6,
     lineHeight: 19,
   },
-  sessionCard: {
+  resetFiltersBtn: {
+    marginTop: 4,
     flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 12,
+  },
+  resetFiltersBtnText: {
+    color: COLORS.white,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  sessionCard: {
     backgroundColor: COLORS.surface,
-    borderRadius: 20,
+    borderRadius: 22,
+    padding: 20,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginBottom: 14,
-    overflow: 'hidden',
-  },
-  leftAccentBar: {
-    width: 5,
-  },
-  cardInner: {
-    flex: 1,
-    padding: 18,
+    gap: 13,
+    ...CARD_SHADOW,
   },
   topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 10,
-    gap: 12,
+    gap: 10,
   },
   timeBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
+    gap: 6,
     backgroundColor: COLORS.surfaceElevated,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 11,
   },
   timeText: {
     color: COLORS.textPrimary,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '800',
-    letterSpacing: -0.5,
   },
   timeEndText: {
     color: COLORS.textSecondary,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  scarcityCol: {
-    minWidth: 108,
-    alignItems: 'flex-end',
-    gap: 5,
-  },
-  capacityHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-  },
-  capacityText: {
     fontSize: 12.5,
+    fontWeight: '600',
+  },
+  categoryBadge: {
+    paddingHorizontal: 11,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  categoryBadgeText: {
+    fontSize: 11.5,
     fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  scarcityTrack: {
-    width: 108,
-    height: 5,
-    borderRadius: 999,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    overflow: 'hidden',
-  },
-  scarcityFill: {
-    height: '100%',
-    borderRadius: 999,
   },
   lastSpotBadge: {
     alignSelf: 'flex-start',
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    backgroundColor: COLORS.warningBg,
     borderWidth: 1,
-    borderColor: COLORS.warning,
+    borderColor: '#EDD092',
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
-    marginBottom: 8,
+    borderRadius: 10,
   },
   lastSpotBadgeText: {
-    color: COLORS.warning,
+    color: COLORS.warningText,
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  waitlistInfoBadge: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  waitlistInfoBadgeText: {
+    color: COLORS.warningText,
     fontSize: 11.5,
     fontWeight: '800',
   },
   sessionTitle: {
     color: COLORS.textPrimary,
-    fontSize: 17.5,
+    fontSize: 18,
     fontWeight: '800',
     letterSpacing: -0.3,
-    marginBottom: 8,
   },
-  metaRow: {
+  detailsGrid: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 8,
-    marginBottom: 16,
+    gap: 10,
   },
-  trainerChip: {
+  trainerChipBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
+    gap: 8,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 12,
   },
   trainerText: {
-    color: COLORS.textSecondary,
+    color: COLORS.textPrimary,
     fontSize: 13,
+    fontWeight: '700',
+  },
+  roomDateRight: {
+    alignItems: 'flex-end',
+    gap: 2,
+    flexShrink: 1,
+  },
+  roomInline: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  roomText: {
+    color: COLORS.textPrimary,
+    fontSize: 12.5,
     fontWeight: '700',
   },
   dateSubText: {
     color: COLORS.textSecondary,
-    fontSize: 12.5,
+    fontSize: 11.5,
     fontWeight: '600',
   },
+  occupancyWrap: {
+    gap: 6,
+  },
+  occupancyTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  occupancyLabelLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+  },
+  occupancyText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  spotsRemainText: {
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  scarcityTrack: {
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: '#EAE0D0',
+    overflow: 'hidden',
+  },
+  scarcityFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
   bookNowBtn: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 14,
+    paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: COLORS.primary,
-    borderRadius: 12,
-    paddingVertical: 13,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.28,
-    shadowRadius: 10,
-    elevation: 4,
-  },
-  bookNowBtnDisabled: {
-    opacity: 0.55,
-    shadowOpacity: 0,
   },
   bookNowBtnText: {
-    color: '#090D16',
+    color: COLORS.white,
     fontSize: 14,
     fontWeight: '800',
-    letterSpacing: -0.2,
   },
   bookedCancelBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     gap: 7,
-    backgroundColor: 'transparent',
-    borderWidth: 1.5,
-    borderColor: COLORS.danger,
-    borderRadius: 12,
-    paddingVertical: 12,
+    backgroundColor: COLORS.dangerBg,
+    borderWidth: 1,
+    borderColor: '#F0BFC3',
+    borderRadius: 14,
+    paddingVertical: 12.5,
   },
   bookedCancelBtnText: {
-    color: COLORS.danger,
+    color: COLORS.dangerText,
     fontSize: 13.5,
     fontWeight: '800',
   },
-  fullDisabledBtn: {
+  waitlistJoinBtn: {
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    borderRadius: 14,
+    paddingVertical: 13,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(239, 68, 68, 0.10)',
-    borderWidth: 1,
-    borderColor: 'rgba(239, 68, 68, 0.30)',
-    borderRadius: 12,
-    paddingVertical: 12,
   },
-  fullDisabledBtnText: {
-    color: COLORS.danger,
+  waitlistJoinBtnText: {
+    color: COLORS.warningText,
     fontSize: 13.5,
     fontWeight: '800',
+  },
+  waitlistedLeaveBtn: {
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: COLORS.warning,
+    borderRadius: 14,
+    paddingVertical: 12.5,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waitlistedLeaveBtnText: {
+    color: COLORS.warningText,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  topUpActionBtn: {
+    backgroundColor: COLORS.secondaryLight,
+    borderWidth: 1,
+    borderColor: '#E5C5C9',
+    borderRadius: 14,
+    paddingVertical: 13,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  topUpActionBtnText: {
+    color: COLORS.secondary,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  disabledBtn: {
+    opacity: 0.6,
   },
 });

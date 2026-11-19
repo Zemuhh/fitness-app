@@ -3,45 +3,104 @@ import {
   ActivityIndicator,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
-import { ClipboardCheck, MessageSquareText } from 'lucide-react-native';
+import {
+  Calendar,
+  CalendarPlus,
+  Megaphone,
+  MessageCircle,
+  Users,
+} from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
+import { CleanAppHeader } from '@/components/CleanAppHeader';
+import {
+  DrawerMenuItemConfig,
+  SlideOverDrawer,
+} from '@/components/SlideOverDrawer';
 import { useAuthDemo } from '@/context/AuthDemoContext';
-import { COLORS } from '@/theme/colors';
-import { AppUser, TrainerScheduleData } from '@/types/fitness';
+import { CARD_SHADOW, COLORS } from '@/theme/colors';
+import {
+  AppUser,
+  AttendanceStatus,
+  TrainerScheduleData,
+  TrainerSession,
+} from '@/types/fitness';
+import { TrainerDrawerRoute } from '@/types/navigation';
 import { TrainerScheduleTab } from '@/screens/trainer/TrainerScheduleTab';
+import { TrainerStudentsCrmTab } from '@/screens/trainer/TrainerStudentsCrmTab';
+import { TrainerCreateSessionTab } from '@/screens/trainer/TrainerCreateSessionTab';
 import { InstagramDmSimulatorTab } from '@/screens/trainer/InstagramDmSimulatorTab';
+import { TrainerAnnouncementsProfileTab } from '@/screens/trainer/TrainerAnnouncementsProfileTab';
 
-type TrainerTabKey = 'schedule' | 'instagram';
+export const TRAINER_DRAWER_MENU: DrawerMenuItemConfig<TrainerDrawerRoute>[] = [
+  { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
+  { key: 'crm', Icon: Users, label: 'Üyeler' },
+  { key: 'create_session', Icon: CalendarPlus, label: 'Yeni Ders' },
+  { key: 'instagram_ai', Icon: MessageCircle, label: 'DM Asistanı' },
+  { key: 'announcements_profile', Icon: Megaphone, label: 'Duyurular' },
+];
 
-interface Props {
+export const TRAINER_CONCISE_TITLES: Record<TrainerDrawerRoute, string> = {
+  schedule: 'Ders Programı',
+  crm: 'Üyeler',
+  create_session: 'Yeni Ders',
+  instagram_ai: 'DM Asistanı',
+  announcements_profile: 'Duyurular',
+};
+
+export interface Props {
   trainer: AppUser;
+  activeRoute?: TrainerDrawerRoute;
+  onNavigateRoute?: (route: TrainerDrawerRoute) => void;
 }
 
-export function TrainerRootView({ trainer }: Props) {
+export function TrainerRootView({
+  trainer,
+  activeRoute,
+  onNavigateRoute,
+}: Props) {
   const { refreshSignal, triggerGlobalRefresh, reloadUsers } = useAuthDemo();
-  const [activeTab, setActiveTab] = useState<TrainerTabKey>('schedule');
+  const [internalRoute, setInternalRoute] = useState<TrainerDrawerRoute>('schedule');
+  const [fallbackDrawerOpen, setFallbackDrawerOpen] = useState<boolean>(false);
+
   const [schedule, setSchedule] = useState<TrainerScheduleData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [busyBookingId, setBusyBookingId] = useState<number | null>(null);
   const [savingNote, setSavingNote] = useState<boolean>(false);
-  const [banner, setBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [focusDate, setFocusDate] = useState<string | null>(null);
+
+  const currentRoute: TrainerDrawerRoute = activeRoute ?? internalRoute;
+  const isStandalone = activeRoute === undefined;
+
+  const navigateRoute = useCallback(
+    (route: TrainerDrawerRoute) => {
+      setInternalRoute(route);
+      onNavigateRoute?.(route);
+    },
+    [onNavigateRoute]
+  );
+
+  const [banner, setBanner] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
   const showBanner = useCallback((type: 'success' | 'error', text: string) => {
     setBanner({ type, text });
     setTimeout(() => {
       setBanner((prev) => (prev?.text === text ? null : prev));
-    }, 3200);
+    }, 3500);
   }, []);
 
   const fetchSchedule = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
       try {
-        const res = await apiRequest<TrainerScheduleData>(`/trainer/${trainer.id}/schedule`);
+        const res = await apiRequest<TrainerScheduleData>(
+          `/trainer/${trainer.id}/schedule`
+        );
         setSchedule(res);
       } catch (err: any) {
         showBanner('error', err?.message || 'Eğitmen takvimi yüklenemedi.');
@@ -54,8 +113,8 @@ export function TrainerRootView({ trainer }: Props) {
   );
 
   useEffect(() => {
-    fetchSchedule(false);
-  }, [fetchSchedule, refreshSignal]);
+    fetchSchedule(Boolean(schedule && schedule.trainer.id === trainer.id));
+  }, [fetchSchedule, refreshSignal, trainer.id]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
@@ -63,19 +122,22 @@ export function TrainerRootView({ trainer }: Props) {
   }, [fetchSchedule]);
 
   const handleMarkAttendance = useCallback(
-    async (bookingId: number, status: 'attended' | 'no_show') => {
+    async (bookingId: number, status: AttendanceStatus) => {
       setBusyBookingId(bookingId);
       try {
         await apiRequest('/trainer/attendance', {
           method: 'POST',
           body: JSON.stringify({ booking_id: bookingId, status }),
         });
-        showBanner(
-          'success',
+
+        const msg =
           status === 'attended'
             ? 'Yoklama "✅ Geldi" olarak kaydedildi.'
-            : 'Yoklama "❌ Gelmedi" olarak kaydedildi.'
-        );
+            : status === 'no_show'
+            ? 'Yoklama "❌ Gelmedi" olarak kaydedildi.'
+            : 'Yoklama durumu beklemede olarak güncellendi.';
+
+        showBanner('success', msg);
         await fetchSchedule(true);
         triggerGlobalRefresh();
       } catch (err: any) {
@@ -95,20 +157,56 @@ export function TrainerRootView({ trainer }: Props) {
           method: 'PUT',
           body: JSON.stringify({ member_id: memberId, notes }),
         });
-        showBanner('success', 'Müşteri sakatlık / antrenman notu güncellendi.');
+        showBanner('success', 'Öğrenci sakatlık / özel antrenman notu güncellendi.');
         await fetchSchedule(true);
         await reloadUsers();
+        triggerGlobalRefresh();
       } catch (err: any) {
         showBanner('error', err?.message || 'Not kaydedilemedi.');
       } finally {
         setSavingNote(false);
       }
     },
-    [fetchSchedule, reloadUsers, showBanner]
+    [fetchSchedule, reloadUsers, showBanner, triggerGlobalRefresh]
+  );
+
+  const handleSessionCreated = useCallback(
+    async (_created: TrainerSession) => {
+      await fetchSchedule(true);
+    },
+    [fetchSchedule]
+  );
+
+  const handleJumpToScheduleDate = useCallback(
+    (dateIso: string) => {
+      setFocusDate(dateIso);
+      navigateRoute('schedule');
+    },
+    [navigateRoute]
   );
 
   return (
     <View style={styles.container}>
+      {isStandalone && (
+        <>
+          <CleanAppHeader
+            user={trainer}
+            activeRoute={currentRoute}
+            activePageTitle={TRAINER_CONCISE_TITLES[currentRoute]}
+            showQrButton={false}
+            onOpenDrawer={() => setFallbackDrawerOpen(true)}
+          />
+          <SlideOverDrawer
+            visible={fallbackDrawerOpen}
+            user={trainer}
+            activeTrainerRoute={currentRoute}
+            menuItems={TRAINER_DRAWER_MENU}
+            onSelectTrainerRoute={navigateRoute}
+            onClose={() => setFallbackDrawerOpen(false)}
+          />
+        </>
+      )}
+
       {banner && (
         <View
           style={[
@@ -116,17 +214,51 @@ export function TrainerRootView({ trainer }: Props) {
             banner.type === 'success' ? styles.bannerSuccess : styles.bannerError,
           ]}
         >
-          <Text style={styles.bannerText}>{banner.text}</Text>
+          <Text
+            style={[
+              styles.bannerText,
+              {
+                color:
+                  banner.type === 'success' ? COLORS.primary : COLORS.dangerText,
+              },
+            ]}
+          >
+            {banner.text}
+          </Text>
         </View>
       )}
 
       <View style={styles.body}>
-        {activeTab === 'instagram' ? (
-          <InstagramDmSimulatorTab onBookingMutated={() => fetchSchedule(true)} />
+        {currentRoute === 'crm' ? (
+          <TrainerStudentsCrmTab
+            onShowBanner={showBanner}
+            onScheduleSyncNeeded={() => fetchSchedule(true)}
+          />
+        ) : currentRoute === 'create_session' ? (
+          <TrainerCreateSessionTab
+            trainer={trainer}
+            existingSessions={schedule?.sessions ?? []}
+            onSessionCreated={handleSessionCreated}
+            onViewInSchedule={handleJumpToScheduleDate}
+            onShowBanner={showBanner}
+          />
+        ) : currentRoute === 'instagram_ai' ? (
+          <InstagramDmSimulatorTab
+            onBookingMutated={() => fetchSchedule(true)}
+            onNavigateRoute={navigateRoute}
+          />
+        ) : currentRoute === 'announcements_profile' ? (
+          <TrainerAnnouncementsProfileTab
+            trainer={trainer}
+            schedule={schedule}
+            onGoToCreateSession={() => navigateRoute('create_session')}
+            onViewDateInSchedule={handleJumpToScheduleDate}
+            onShowBanner={showBanner}
+          />
         ) : loading || !schedule ? (
           <View style={styles.centerLoader}>
-            <ActivityIndicator size="large" color={COLORS.trainerAccent} />
-            <Text style={styles.loaderText}>Eğitmen kontrol paneli yükleniyor...</Text>
+            <ActivityIndicator size="large" color={COLORS.secondary} />
+            <Text style={styles.loaderText}>Eğitmen stüdyo paneli hazırlanıyor...</Text>
           </View>
         ) : (
           <TrainerScheduleTab
@@ -135,67 +267,13 @@ export function TrainerRootView({ trainer }: Props) {
             onRefresh={handleRefresh}
             onMarkAttendance={handleMarkAttendance}
             onSaveMemberNote={handleSaveMemberNote}
+            onGoToCreateSession={() => navigateRoute('create_session')}
             busyBookingId={busyBookingId}
             savingNote={savingNote}
+            focusDate={focusDate}
+            onFocusDateConsumed={() => setFocusDate(null)}
           />
         )}
-      </View>
-
-      {/* Athletic Dark Mode Eğitmen Alt Sekme Barı */}
-      <View style={styles.tabBar}>
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('schedule')}
-          activeOpacity={0.82}
-        >
-          <View
-            style={[
-              styles.tabIconPill,
-              activeTab === 'schedule' && styles.tabIconPillScheduleActive,
-            ]}
-          >
-            <ClipboardCheck
-              size={19}
-              color={
-                activeTab === 'schedule' ? COLORS.trainerAccent : COLORS.textMuted
-              }
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'schedule' && styles.tabLabelScheduleActive,
-            ]}
-          >
-            Takvim & Hızlı Yoklama
-          </Text>
-        </TouchableOpacity>
-
-        <TouchableOpacity
-          style={styles.tabItem}
-          onPress={() => setActiveTab('instagram')}
-          activeOpacity={0.82}
-        >
-          <View
-            style={[
-              styles.tabIconPill,
-              activeTab === 'instagram' && styles.tabIconPillIgActive,
-            ]}
-          >
-            <MessageSquareText
-              size={19}
-              color={activeTab === 'instagram' ? COLORS.accentVolt : COLORS.textMuted}
-            />
-          </View>
-          <Text
-            style={[
-              styles.tabLabel,
-              activeTab === 'instagram' && styles.tabLabelIgActive,
-            ]}
-          >
-            Instagram DM Bot Simülatörü
-          </Text>
-        </TouchableOpacity>
       </View>
     </View>
   );
@@ -211,6 +289,7 @@ const styles = StyleSheet.create({
   },
   centerLoader: {
     flex: 1,
+    backgroundColor: COLORS.background,
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
@@ -221,64 +300,25 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
   bannerBox: {
-    marginHorizontal: 16,
+    marginHorizontal: 18,
     marginTop: 10,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 16,
     borderWidth: 1,
+    ...CARD_SHADOW,
   },
   bannerSuccess: {
-    backgroundColor: 'rgba(99, 102, 241, 0.16)',
-    borderColor: COLORS.trainerAccent,
+    backgroundColor: COLORS.primaryLight,
+    borderColor: '#E5CB90',
   },
   bannerError: {
-    backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    borderColor: COLORS.danger,
+    backgroundColor: COLORS.dangerBg,
+    borderColor: '#F0BFC3',
   },
   bannerText: {
-    color: COLORS.textPrimary,
-    fontSize: 12.5,
+    fontSize: 13,
     fontWeight: '800',
     textAlign: 'center',
-  },
-  tabBar: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.surface,
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
-    paddingTop: 8,
-    paddingBottom: 11,
-    paddingHorizontal: 12,
-  },
-  tabItem: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 3,
-  },
-  tabIconPill: {
-    paddingHorizontal: 14,
-    paddingVertical: 4,
-    borderRadius: 12,
-  },
-  tabIconPillScheduleActive: {
-    backgroundColor: 'rgba(99, 102, 241, 0.16)',
-  },
-  tabIconPillIgActive: {
-    backgroundColor: 'rgba(163, 230, 53, 0.14)',
-  },
-  tabLabel: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  tabLabelScheduleActive: {
-    color: '#A5B4FC',
-    fontWeight: '800',
-  },
-  tabLabelIgActive: {
-    color: COLORS.accentVolt,
-    fontWeight: '800',
   },
 });

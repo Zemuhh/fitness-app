@@ -1,22 +1,467 @@
+import base64
+import hashlib
+import hmac
+import html
+import json
+import os
 import re
+import secrets
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Literal, Optional
+from urllib.parse import parse_qs, urlencode
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+import httpx
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, joinedload
 
-from auth_admin_models import AdminAccount, DataIntakeLog, UserAccessCredential
-from database import Base, engine, get_db
+from auth_admin_models import (
+    AdminAccount,
+    AuthSession,
+    DataIntakeLog,
+    GoogleOAuthState,
+    PanelSetting,
+    UserAccessCredential,
+    UserAuthAccount,
+    run_sqlite_schema_migrations,
+)
+from database import engine, get_db
 from instagram_service import fallback_turkish_nlp_parse, match_session, normalize_handle
-from models import Booking, ClassSession, MemberPackage, User
+from models import Announcement, Booking, ClassSession, MemberPackage, User
+import payment_models
+from payment_models import PackageCatalogPlan, PaymentTransaction
+from schemas import AnnouncementOut, UserOut
 
-router = APIRouter(prefix="/portal", tags=["Portal Auth, Admin & Data Intake"])
+portal_router = APIRouter(prefix="/portal", tags=["Portal Legacy & Data Intake"])
+auth_router = APIRouter(prefix="/auth", tags=["Authentication & Google OAuth"])
+admin_router = APIRouter(prefix="/admin", tags=["Zero-Profile System Administration"])
+
+# Backward-compatible export alias
+router = portal_router
 
 
 # ============================================================================
-# PYDANTIC ŞEMALARI (Mevcut schemas.py dosyasına dokunmadan izole tanımlandı)
+# ŞİFRE HASHLEME & GÜVENLİK YARDIMCILARI (PBKDF2-HMAC-SHA256)
 # ============================================================================
+
+PBKDF2_ITERATIONS = 120_000
+
+
+def _now_str() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _hash_password(raw_password: str) -> str:
+    salt = secrets.token_hex(16)
+    dk = hashlib.pbkdf2_hmac(
+        "sha256",
+        raw_password.encode("utf-8"),
+        salt.encode("utf-8"),
+        PBKDF2_ITERATIONS,
+    )
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${dk.hex()}"
+
+
+def _verify_password(raw_password: str, stored_hash: Optional[str]) -> bool:
+    if not raw_password or not stored_hash:
+        return False
+    if not stored_hash.startswith("pbkdf2_sha256$"):
+        return hmac.compare_digest(raw_password, stored_hash)
+    try:
+        _, iter_str, salt, expected_hex = stored_hash.split("$", 3)
+        dk = hashlib.pbkdf2_hmac(
+            "sha256",
+            raw_password.encode("utf-8"),
+            salt.encode("utf-8"),
+            int(iter_str),
+        )
+        return hmac.compare_digest(dk.hex(), expected_hex)
+    except Exception:
+        return False
+
+
+def _slugify_tr(text_val: str) -> str:
+    tr_map = str.maketrans("çğıöşüÇĞİÖŞÜ", "cgiosuCGIOSU")
+    lowered = (text_val or "").translate(tr_map).lower()
+    cleaned = re.sub(r"[^a-z0-9]+", "", lowered)
+    return cleaned or "uye"
+
+
+def _derive_base_url(request: Request) -> str:
+    proto = (
+        request.headers.get("x-forwarded-proto")
+        or request.url.scheme
+        or "http"
+    ).split(",")[0].strip()
+    host = (
+        request.headers.get("x-forwarded-host")
+        or request.headers.get("host")
+        or request.url.netloc
+        or "localhost:8000"
+    ).split(",")[0].strip()
+    return f"{proto}://{host}"
+
+
+# ============================================================================
+# PYDANTIC ŞEMALARI: AUTH, GOOGLE OAUTH & ZERO-PROFILE ADMIN
+# ============================================================================
+
+
+class AuthLoginRequest(BaseModel):
+    identifier: Optional[str] = Field(
+        default=None,
+        description="E-posta, kullanıcı adı, telefon numarası, @handle veya FIT-XXXX kodu",
+    )
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: str
+
+
+class AuthRegisterRequest(BaseModel):
+    full_name: str
+    email: str
+    password: str
+    phone: Optional[str] = "0500 000 00 00"
+    instagram_handle: Optional[str] = None
+
+
+class GoogleAuthRequest(BaseModel):
+    id_token: Optional[str] = None
+    access_token: Optional[str] = None
+    code: Optional[str] = None
+    email: Optional[str] = None
+    full_name: Optional[str] = None
+    google_sub: Optional[str] = None
+    avatar_url: Optional[str] = None
+
+
+class GoogleAuthUrlOut(BaseModel):
+    auth_url: str
+    state: str
+    provider: str = "google"
+    client_id_configured: bool = False
+
+
+class AuthLogoutRequest(BaseModel):
+    token: Optional[str] = None
+
+
+class AuthLogoutOut(BaseModel):
+    logged_out: bool
+    message: str
+
+
+class AuthSessionOut(BaseModel):
+    authenticated: bool = True
+    token: str
+    token_type: str = "Bearer"
+    expires_at: str
+    auth_provider: str = "password"
+    account_type: Literal["admin", "user"]
+    id: Optional[int] = None
+    user_id: Optional[int] = None
+    admin_id: Optional[int] = None
+    role: Literal["admin", "trainer", "member"]
+    username: str
+    email: str
+    full_name: str
+    phone: str = ""
+    instagram_handle: Optional[str] = None
+    avatar_url: Optional[str] = None
+    access_code: Optional[str] = None
+    has_personal_profile: bool
+    is_admin: bool
+    available_panels: List[str]
+    default_panel: Literal["admin", "trainer", "member"]
+    specialty: Optional[str] = None
+    notes: Optional[str] = None
+    package_name: Optional[str] = None
+    remaining_credits: Optional[int] = None
+    total_credits: Optional[int] = None
+    message: str = "Giriş başarılı."
+
+
+class PanelConfigOut(BaseModel):
+    admin_panel_enabled: bool = True
+    trainer_panel_enabled: bool = True
+    member_panel_enabled: bool = True
+    default_landing_panel: Literal["admin", "trainer", "member"] = "admin"
+    allow_google_login: bool = True
+    allow_member_booking: bool = True
+    allow_package_purchase: bool = True
+    studio_banner_enabled: bool = True
+    studio_banner_title: str
+    studio_banner_message: str
+    updated_at: str
+
+
+class PanelConfigUpdateRequest(BaseModel):
+    admin_panel_enabled: Optional[bool] = None
+    trainer_panel_enabled: Optional[bool] = None
+    member_panel_enabled: Optional[bool] = None
+    default_landing_panel: Optional[Literal["admin", "trainer", "member"]] = None
+    allow_google_login: Optional[bool] = None
+    allow_member_booking: Optional[bool] = None
+    allow_package_purchase: Optional[bool] = None
+    studio_banner_enabled: Optional[bool] = None
+    studio_banner_title: Optional[str] = None
+    studio_banner_message: Optional[str] = None
+
+
+class AdminPanelTargetsOut(BaseModel):
+    trainers: List[UserOut]
+    members: List[UserOut]
+    default_trainer_id: Optional[int] = None
+    default_member_id: Optional[int] = None
+
+
+class AdminAnnouncementCreateRequest(BaseModel):
+    title: str
+    content: str
+    tag: Optional[str] = "Kulüp Haberleri"
+    date: Optional[str] = None
+    is_pinned: Optional[bool] = False
+
+
+class AdminAnnouncementUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    tag: Optional[str] = None
+    date: Optional[str] = None
+    is_pinned: Optional[bool] = None
+
+
+class AdminTrainerOut(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    username: str
+    phone: str
+    instagram_handle: Optional[str] = None
+    specialty: str
+    bio: str
+    notes: str
+    avatar_url: Optional[str] = None
+    rating: float = 4.9
+    experience_years: int = 5
+    access_code: str
+    active_sessions_count: int = 0
+
+
+class AdminTrainerCreateRequest(BaseModel):
+    full_name: str
+    specialty: Optional[str] = "Reformer & Klinik Pilates"
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: str = "Erya2026!"
+    phone: Optional[str] = "0551 497 90 09"
+    instagram_handle: Optional[str] = None
+    bio: Optional[str] = None
+    notes: Optional[str] = ""
+    avatar_url: Optional[str] = None
+    experience_years: Optional[int] = 5
+    rating: Optional[float] = 5.0
+
+
+class AdminTrainerUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    specialty: Optional[str] = None
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    phone: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    bio: Optional[str] = None
+    notes: Optional[str] = None
+    avatar_url: Optional[str] = None
+    experience_years: Optional[int] = None
+    rating: Optional[float] = None
+
+
+class AdminMemberOut(BaseModel):
+    id: int
+    full_name: str
+    email: str
+    username: str
+    phone: str
+    instagram_handle: Optional[str] = None
+    avatar_url: Optional[str] = None
+    notes: str
+    access_code: str
+    package_id: Optional[int] = None
+    package_name: Optional[str] = None
+    remaining_credits: int = 0
+    total_credits: int = 0
+    expiry_date: Optional[str] = None
+    low_credit_warning: bool = False
+    upcoming_bookings_count: int = 0
+    attended_count: int = 0
+    streak_days: int = 0
+
+
+class AdminMemberCreateRequest(BaseModel):
+    full_name: str
+    phone: Optional[str] = "0530 000 00 00"
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = "Erya2026!"
+    instagram_handle: Optional[str] = None
+    notes: Optional[str] = ""
+    avatar_url: Optional[str] = None
+    package_name: Optional[str] = "8 Seans Grup Reformer Paketi"
+    credits: Optional[int] = 8
+    duration_days: Optional[int] = 40
+
+
+class AdminMemberUpdateRequest(BaseModel):
+    full_name: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    instagram_handle: Optional[str] = None
+    notes: Optional[str] = None
+    package_name: Optional[str] = None
+    remaining_credits: Optional[int] = None
+    total_credits: Optional[int] = None
+    expiry_date: Optional[str] = None
+
+
+class AdminMemberCreditAdjustRequest(BaseModel):
+    package_name: Optional[str] = None
+    credits_delta: Optional[int] = None
+    set_remaining_credits: Optional[int] = None
+    total_credits: Optional[int] = None
+    duration_days: Optional[int] = 45
+
+
+class AdminSessionItemOut(BaseModel):
+    id: int
+    trainer_id: int
+    trainer_name: str
+    title: str
+    category: str
+    room: str
+    date: str
+    day_label: str
+    start_time: str
+    end_time: str
+    capacity: int
+    current_enrolled: int
+    remaining_spots: int
+    is_full: bool
+
+
+class AdminSessionCreateRequest(BaseModel):
+    trainer_id: int
+    title: str
+    category: Optional[str] = "Grup Reformer"
+    room: Optional[str] = None
+    date: str
+    start_time: str
+    end_time: Optional[str] = None
+    capacity: int = Field(default=6, ge=1, le=20)
+
+
+class AdminSessionUpdateRequest(BaseModel):
+    trainer_id: Optional[int] = None
+    title: Optional[str] = None
+    category: Optional[str] = None
+    room: Optional[str] = None
+    date: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    capacity: Optional[int] = Field(default=None, ge=1, le=20)
+
+
+class AdminSessionDeleteOut(BaseModel):
+    deleted: bool
+    id: int
+    refunded_bookings: int
+    message: str
+
+
+class AdminPackagePlanOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    subtitle: str
+    credits: int
+    duration_days: int
+    price_try: float
+    popular_badge: Optional[str] = None
+    features: List[str]
+    is_active: bool
+
+
+class AdminPackagePlanCreateRequest(BaseModel):
+    code: Optional[str] = None
+    name: str
+    subtitle: Optional[str] = ""
+    credits: int = Field(..., gt=0)
+    duration_days: int = Field(default=40, gt=0)
+    price_try: float = Field(..., ge=0)
+    popular_badge: Optional[str] = None
+    features: List[str] = Field(default_factory=list)
+    is_active: bool = True
+
+
+class AdminPackagePlanUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    subtitle: Optional[str] = None
+    credits: Optional[int] = None
+    duration_days: Optional[int] = None
+    price_try: Optional[float] = None
+    popular_badge: Optional[str] = None
+    features: Optional[List[str]] = None
+    is_active: Optional[bool] = None
+
+
+class AdminPaymentItemOut(BaseModel):
+    id: int
+    transaction_code: str
+    member_id: int
+    member_name: str
+    plan_id: int
+    plan_name: str
+    package_name: str
+    amount_try: float
+    amount: float
+    currency: str = "TRY"
+    payment_method: str
+    installment_count: int
+    status: str
+    created_at: str
+
+
+class AdminSystemOverviewOut(BaseModel):
+    total_members: int
+    total_trainers: int
+    total_sessions: int
+    upcoming_sessions_count: int
+    active_bookings_count: int
+    active_packages_count: int
+    total_remaining_credits: int
+    low_credit_members_count: int
+    total_announcements: int
+    total_revenue_try: float
+    total_payments_count: int
+    panel_config: PanelConfigOut
+    recent_announcements: List[AnnouncementOut]
+    recent_payments: List[AdminPaymentItemOut]
+
+
+class AdminDeleteOut(BaseModel):
+    deleted: bool
+    id: int
+    message: str
+
+
+# ============================================================================
+# PORTAL LEGACY PYDANTIC ŞEMALARI (/portal/* uyumluluğu)
+# ============================================================================
+
 
 class PortalUserSummaryOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
@@ -278,9 +723,24 @@ INJURY_HEALTH_KEYWORDS = [
     "skolyoz",
 ]
 
-
-def _now_str() -> str:
-    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+SEEDED_USER_IDENTITIES = {
+    "Seher Hoca": ("seher", "seher@eryapilates.com"),
+    "Selin Hoca": ("selin", "selin@eryapilates.com"),
+    "İpek Hoca": ("ipek", "ipek@eryapilates.com"),
+    "Zeynep Kaya": ("zeynep", "zeynep@eryapilates.com"),
+    "Elif Şahin": ("elif", "elif@eryapilates.com"),
+    "Defne Yıldız": ("defne", "defne@eryapilates.com"),
+    "Merve Arslan": ("merve", "merve@eryapilates.com"),
+    "İrem Korkmaz": ("irem", "irem@eryapilates.com"),
+    "Ayşe Demir": ("aysedemir", "ayse.demir@gmail.com"),
+    "Burcu Yılmaz": ("burcuyilmaz", "burcu.yilmaz@gmail.com"),
+    "Ceren Öztürk": ("cerenozturk", "ceren.ozturk@gmail.com"),
+    "Pelin Karaca": ("pelinkaraca", "pelin.karaca@gmail.com"),
+    "Aslı Aydıner": ("asliaydiner", "asli.aydiner@gmail.com"),
+    "Gizem Aksoy": ("gizemaksoy", "gizem.aksoy@gmail.com"),
+    "Ece Kılıç": ("ecekilic", "ece.kilic@gmail.com"),
+    "Melis Erdoğan": ("meliserdogan", "melis.erdogan@gmail.com"),
+}
 
 
 def _normalize_phone_digits(phone: str) -> str:
@@ -360,20 +820,148 @@ def _ensure_user_credential(db: Session, user: User, pin_code: str = "1234") -> 
     return cred
 
 
+def _unique_username(db: Session, base_username: str, exclude_user_id: Optional[int] = None) -> str:
+    clean_base = _slugify_tr(base_username)[:40] or "uye"
+    candidate = clean_base
+    suffix = 1
+    while True:
+        q = db.query(UserAuthAccount).filter(UserAuthAccount.username == candidate)
+        if exclude_user_id is not None:
+            q = q.filter(UserAuthAccount.user_id != exclude_user_id)
+        if candidate == "admin" or q.first() is not None:
+            suffix += 1
+            candidate = f"{clean_base}{suffix}"
+        else:
+            return candidate
+
+
+def _unique_email(db: Session, desired_email: str, exclude_user_id: Optional[int] = None) -> str:
+    clean_email = (desired_email or "").strip().lower()
+    if not clean_email or "@" not in clean_email:
+        clean_email = f"{_slugify_tr(desired_email)}@eryapilates.com"
+    candidate = clean_email
+    local_part, domain_part = candidate.split("@", 1)
+    suffix = 1
+    while True:
+        q = db.query(UserAuthAccount).filter(UserAuthAccount.email == candidate)
+        if exclude_user_id is not None:
+            q = q.filter(UserAuthAccount.user_id != exclude_user_id)
+        if candidate == "admin@eryapilates.com" or q.first() is not None:
+            suffix += 1
+            candidate = f"{local_part}{suffix}@{domain_part}"
+        else:
+            return candidate
+
+
+def _ensure_user_auth_account(
+    db: Session,
+    user: User,
+    desired_username: Optional[str] = None,
+    desired_email: Optional[str] = None,
+    raw_password: str = "Erya2026!",
+    auth_provider: str = "password",
+    google_sub: Optional[str] = None,
+) -> UserAuthAccount:
+    acc = db.query(UserAuthAccount).filter(UserAuthAccount.user_id == user.id).first()
+    if acc:
+        if not user.email:
+            user.email = acc.email
+        return acc
+
+    preset = SEEDED_USER_IDENTITIES.get(user.full_name)
+    base_uname = (
+        desired_username
+        or (preset[0] if preset else None)
+        or (user.email.split("@")[0] if user.email and "@" in user.email else None)
+        or _slugify_tr(user.full_name)
+    )
+    base_email = (
+        desired_email
+        or user.email
+        or (preset[1] if preset else None)
+        or f"{_slugify_tr(user.full_name)}@eryapilates.com"
+    )
+
+    final_uname = _unique_username(db, base_uname, exclude_user_id=user.id)
+    final_email = _unique_email(db, base_email, exclude_user_id=user.id)
+
+    user.email = final_email
+    acc = UserAuthAccount(
+        user_id=user.id,
+        username=final_uname,
+        email=final_email,
+        password_hash=_hash_password(raw_password or "Erya2026!"),
+        google_sub=google_sub,
+        auth_provider=auth_provider,
+        created_at=_now_str(),
+        updated_at=_now_str(),
+    )
+    db.add(acc)
+    db.flush()
+    return acc
+
+
+def _get_or_create_panel_settings(db: Session) -> PanelSetting:
+    ps = db.query(PanelSetting).order_by(PanelSetting.id.asc()).first()
+    if not ps:
+        ps = PanelSetting(
+            admin_panel_enabled=True,
+            trainer_panel_enabled=True,
+            member_panel_enabled=True,
+            default_landing_panel="admin",
+            allow_google_login=True,
+            allow_member_booking=True,
+            allow_package_purchase=True,
+            studio_banner_enabled=True,
+            studio_banner_title="ERYA Pilates & Reformer — Yeni Dönem Kayıtları Aktif",
+            studio_banner_message="Kadınlara özel butik Reformer & Cadillac seanslarımız için güncel ders programı yayındadır.",
+            updated_at=_now_str(),
+        )
+        db.add(ps)
+        db.flush()
+    return ps
+
+
+def _to_panel_config_out(ps: PanelSetting) -> PanelConfigOut:
+    landing = ps.default_landing_panel if ps.default_landing_panel in ("admin", "trainer", "member") else "admin"
+    return PanelConfigOut(
+        admin_panel_enabled=bool(ps.admin_panel_enabled),
+        trainer_panel_enabled=bool(ps.trainer_panel_enabled),
+        member_panel_enabled=bool(ps.member_panel_enabled),
+        default_landing_panel=landing,  # type: ignore[arg-type]
+        allow_google_login=bool(ps.allow_google_login),
+        allow_member_booking=bool(ps.allow_member_booking),
+        allow_package_purchase=bool(ps.allow_package_purchase),
+        studio_banner_enabled=bool(ps.studio_banner_enabled),
+        studio_banner_title=ps.studio_banner_title or "",
+        studio_banner_message=ps.studio_banner_message or "",
+        updated_at=ps.updated_at or _now_str(),
+    )
+
+
 def ensure_portal_initialized(db: Session) -> None:
     """
-    Tabloları oluşturur, mevcut tüm User kayıtlarına otomatik FIT-XXXX kodu atar,
-    varsayılan admin ('admin' / 'admin123') ve örnek çok kanallı veri kayıtlarını hazırlar.
+    SQLite şema migrasyonlarını çalıştırır, tüm üye/eğitmen kimliklerini (FIT-XXXX + e-posta/şifre)
+    hazırlar ve KİŞİSEL VERİ TAŞIMAYAN Tam Yetkili Admin ('admin' / 'admin@eryapilates.com' / 'EryaAdmin2026!')
+    hesabını idempotent olarak oluşturur/günceller.
     """
-    Base.metadata.create_all(bind=engine)
+    run_sqlite_schema_migrations(engine)
     dirty = False
 
-    # 1. Mevcut tüm kullanıcılara benzersiz FIT-{1000 + user.id} erişim kodu ata
+    # 0. Admin rolüyle yanlışlıkla oluşturulmuş kişisel User kaydı varsa temizle (zero-profile garantisi)
+    stray_admin_users = db.query(User).filter(User.role == "admin").all()
+    for su in stray_admin_users:
+        db.query(UserAccessCredential).filter(UserAccessCredential.user_id == su.id).delete()
+        db.query(UserAuthAccount).filter(UserAuthAccount.user_id == su.id).delete()
+        db.delete(su)
+        dirty = True
+
+    # 1. Mevcut tüm kullanıcılara benzersiz FIT-XXXX kodu ve UserAuthAccount ata
     all_users = db.query(User).order_by(User.id.asc()).all()
-    existing_creds = {
-        c.user_id: c for c in db.query(UserAccessCredential).all()
-    }
+    existing_creds = {c.user_id: c for c in db.query(UserAccessCredential).all()}
     used_codes = {c.access_code for c in existing_creds.values()}
+    existing_auth = {a.user_id: a for a in db.query(UserAuthAccount).all()}
+    default_pw_hash = _hash_password("Erya2026!")
 
     for u in all_users:
         if u.id not in existing_creds:
@@ -393,28 +981,71 @@ def ensure_portal_initialized(db: Session) -> None:
             used_codes.add(candidate)
             dirty = True
 
-    # 2. Varsayılan Admin hesabı ('admin' / 'admin123')
+        if u.id not in existing_auth:
+            preset = SEEDED_USER_IDENTITIES.get(u.full_name)
+            uname = _unique_username(db, preset[0] if preset else _slugify_tr(u.full_name), exclude_user_id=u.id)
+            uemail = _unique_email(
+                db,
+                u.email or (preset[1] if preset else f"{_slugify_tr(u.full_name)}@eryapilates.com"),
+                exclude_user_id=u.id,
+            )
+            u.email = uemail
+            auth_acc = UserAuthAccount(
+                user_id=u.id,
+                username=uname,
+                email=uemail,
+                password_hash=default_pw_hash,
+                auth_provider="password",
+                created_at=_now_str(),
+                updated_at=_now_str(),
+            )
+            db.add(auth_acc)
+            db.flush()
+            existing_auth[u.id] = auth_acc
+            dirty = True
+        elif not u.email:
+            u.email = existing_auth[u.id].email
+            dirty = True
+
+    # 2. Kişisel bilgi taşımayan Tam Yetkili Admin hesabı ('admin' / 'admin@eryapilates.com' / 'EryaAdmin2026!')
     admin_acc = db.query(AdminAccount).filter(AdminAccount.username == "admin").first()
     if not admin_acc:
-        db.add(
-            AdminAccount(
-                username="admin",
-                password="admin123",
-                full_name="Stüdyo Baş Yöneticisi",
-            )
+        admin_acc = AdminAccount(
+            username="admin",
+            email="admin@eryapilates.com",
+            password="",
+            password_hash=_hash_password("EryaAdmin2026!"),
+            full_name="Sistem Yöneticisi",
         )
+        db.add(admin_acc)
+        dirty = True
+    else:
+        if admin_acc.email != "admin@eryapilates.com":
+            admin_acc.email = "admin@eryapilates.com"
+            dirty = True
+        if admin_acc.full_name != "Sistem Yöneticisi":
+            admin_acc.full_name = "Sistem Yöneticisi"
+            dirty = True
+        if not admin_acc.password_hash or not _verify_password("EryaAdmin2026!", admin_acc.password_hash):
+            admin_acc.password_hash = _hash_password("EryaAdmin2026!")
+            admin_acc.password = ""
+            dirty = True
+
+    # 3. Panel yapılandırması singleton kaydı
+    if db.query(PanelSetting).count() == 0:
+        _get_or_create_panel_settings(db)
         dirty = True
 
-    # 3. Örnek Instagram / WhatsApp / Manuel Veri Çekme Kayıtları
+    # 4. Örnek Instagram / WhatsApp / Manuel Veri Çekme Kayıtları
     if db.query(DataIntakeLog).count() == 0:
         user_by_name = {u.full_name: u for u in all_users}
-        ahmet = user_by_name.get("Ahmet Yılmaz")
         zeynep = user_by_name.get("Zeynep Kaya")
-        mert = user_by_name.get("Mert Demir")
+        elif_u = user_by_name.get("Elif Şahin")
+        defne = user_by_name.get("Defne Yıldız")
 
-        ahmet_code = existing_creds[ahmet.id].access_code if ahmet and ahmet.id in existing_creds else "FIT-1003"
         zeynep_code = existing_creds[zeynep.id].access_code if zeynep and zeynep.id in existing_creds else "FIT-1004"
-        mert_code = existing_creds[mert.id].access_code if mert and mert.id in existing_creds else "FIT-1005"
+        elif_code = existing_creds[elif_u.id].access_code if elif_u and elif_u.id in existing_creds else "FIT-1005"
+        defne_code = existing_creds[defne.id].access_code if defne and defne.id in existing_creds else "FIT-1006"
 
         now_dt = datetime.now()
         t1 = (now_dt - timedelta(minutes=42)).strftime("%Y-%m-%d %H:%M:%S")
@@ -424,35 +1055,35 @@ def ensure_portal_initialized(db: Session) -> None:
         seed_logs = [
             DataIntakeLog(
                 source="instagram",
-                sender_name=ahmet.full_name if ahmet else "Ahmet Yılmaz",
-                sender_contact=ahmet.instagram_handle if ahmet and ahmet.instagram_handle else "@ahmetyilmaz",
-                message_or_payload="Hocam yarın 19:00 fonksiyonel grup dersine yer var mı? Sol diz menisküs hassasiyetim devam ediyor.",
+                sender_name=zeynep.full_name if zeynep else "Zeynep Kaya",
+                sender_contact=zeynep.instagram_handle if zeynep and zeynep.instagram_handle else "@zeynepkaya",
+                message_or_payload="Seher Hocam yarın 19:00 Grup Reformer seansına yer var mı? Bel hassasiyetim için hafif yay çalışalım.",
                 target_department="booking",
-                routed_user_id=ahmet.id if ahmet else None,
-                assigned_access_code=ahmet_code,
-                action_summary=f"Instagram DM çekildi -> {ahmet_code} üye eşleşti, ders talebi ve sakatlık uyarısı işlendi.",
+                routed_user_id=zeynep.id if zeynep else None,
+                assigned_access_code=zeynep_code,
+                action_summary=f"@eryapilatesreformer DM çekildi -> {zeynep_code} üye eşleşti, seans talebi ve bel hassasiyeti işlendi.",
                 created_at=t1,
             ),
             DataIntakeLog(
                 source="whatsapp",
-                sender_name=zeynep.full_name if zeynep else "Zeynep Kaya",
-                sender_contact=zeynep.phone if zeynep else "0535 442 18 22",
-                message_or_payload="Merhaba, bel fıtığı (L4-L5) kontrolüm yapıldı. Selin Hoca'nın yoklama ekranına dikkat notu düşebilir misiniz?",
+                sender_name=elif_u.full_name if elif_u else "Elif Şahin",
+                sender_contact=elif_u.phone if elif_u else "0505 731 92 44",
+                message_or_payload="Merhaba, masa başı boyun gerginliğim arttı. Selin Hoca'nın Cadillac seansı ekranına not düşebilir misiniz?",
                 target_department="trainer_note",
-                routed_user_id=zeynep.id if zeynep else None,
-                assigned_access_code=zeynep_code,
-                action_summary=f"WhatsApp Business -> {zeynep_code} üyesinin sağlık notu Eğitmen Yoklama ekranına yönlendirildi.",
+                routed_user_id=elif_u.id if elif_u else None,
+                assigned_access_code=elif_code,
+                action_summary=f"WhatsApp (0551 497 90 09) -> {elif_code} üyesinin postür notu Eğitmen Yoklama ekranına iletildi.",
                 created_at=t2,
             ),
             DataIntakeLog(
                 source="manual",
-                sender_name=mert.full_name if mert else "Mert Demir",
-                sender_contact=mert.phone if mert else "0542 819 60 33",
-                message_or_payload="Resepsiyon manuel veri girişi: 8'li Fonksiyonel Grup Paketi ve sağ omuz impingement notu doğrulandı.",
+                sender_name=defne.full_name if defne else "Defne Yıldız",
+                sender_contact=defne.phone if defne else "0533 210 34 11",
+                message_or_payload="Eryaman Port AVM resepsiyon kaydı: 8 Seans Düet Reformer Paketi ve sağ omuz mobilite notu tanımlandı.",
                 target_department="member_registry",
-                routed_user_id=mert.id if mert else None,
-                assigned_access_code=mert_code,
-                action_summary=f"Manuel Kayıt -> Üye sicili ve {mert_code} özel erişim kimliği aktif edildi.",
+                routed_user_id=defne.id if defne else None,
+                assigned_access_code=defne_code,
+                action_summary=f"Stüdyo Kayıt -> Üye sicili ve {defne_code} dijital giriş kimliği aktif edildi.",
                 created_at=t3,
             ),
         ]
@@ -463,6 +1094,171 @@ def ensure_portal_initialized(db: Session) -> None:
         db.commit()
 
 
+# ============================================================================
+# OTURUM (BEARER TOKEN) YÖNETİMİ & YETKİLENDİRME
+# ============================================================================
+
+
+def _issue_session(
+    db: Session,
+    account_type: Literal["admin", "user"],
+    role: Literal["admin", "trainer", "member"],
+    auth_provider: str = "password",
+    admin_id: Optional[int] = None,
+    user_id: Optional[int] = None,
+    ttl_days: int = 30,
+) -> AuthSession:
+    token = f"erya_sess_{secrets.token_urlsafe(32)}"
+    now = datetime.now()
+    expires = (now + timedelta(days=ttl_days)).strftime("%Y-%m-%d %H:%M:%S")
+    sess = AuthSession(
+        token=token,
+        account_type=account_type,
+        admin_id=admin_id,
+        user_id=user_id,
+        role=role,
+        auth_provider=auth_provider,
+        created_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        expires_at=expires,
+        is_revoked=False,
+    )
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+    return sess
+
+
+def _build_admin_session_out(admin_acc: AdminAccount, sess: AuthSession, message: str = "Giriş başarılı.") -> AuthSessionOut:
+    """
+    Zero-Profile Admin yanıtı: hiçbir kişisel üye paketi, kredi, sakatlık notu,
+    telefon veya eğitmen biyografisi taşımaz; tüm panellere erişim yetkisi taşır.
+    """
+    return AuthSessionOut(
+        authenticated=True,
+        token=sess.token,
+        token_type="Bearer",
+        expires_at=sess.expires_at,
+        auth_provider=sess.auth_provider,
+        account_type="admin",
+        id=None,
+        user_id=None,
+        admin_id=admin_acc.id,
+        role="admin",
+        username=admin_acc.username,
+        email=admin_acc.email or "admin@eryapilates.com",
+        full_name=admin_acc.full_name or "Sistem Yöneticisi",
+        phone="",
+        instagram_handle=None,
+        avatar_url=None,
+        access_code=None,
+        has_personal_profile=False,
+        is_admin=True,
+        available_panels=["admin", "trainer", "member"],
+        default_panel="admin",
+        specialty=None,
+        notes=None,
+        package_name=None,
+        remaining_credits=None,
+        total_credits=None,
+        message=message,
+    )
+
+
+def _build_user_session_out(db: Session, user: User, sess: AuthSession, message: str = "Giriş başarılı.") -> AuthSessionOut:
+    cred = _ensure_user_credential(db, user)
+    auth_acc = _ensure_user_auth_account(db, user)
+    pkg = _get_active_package(db, user.id) if user.role == "member" else None
+    role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+
+    return AuthSessionOut(
+        authenticated=True,
+        token=sess.token,
+        token_type="Bearer",
+        expires_at=sess.expires_at,
+        auth_provider=sess.auth_provider,
+        account_type="user",
+        id=user.id,
+        user_id=user.id,
+        admin_id=None,
+        role=role_lit,
+        username=auth_acc.username,
+        email=auth_acc.email,
+        full_name=user.full_name,
+        phone=user.phone or "",
+        instagram_handle=user.instagram_handle,
+        avatar_url=user.avatar_url,
+        access_code=cred.access_code,
+        has_personal_profile=True,
+        is_admin=False,
+        available_panels=[role_lit],
+        default_panel=role_lit,
+        specialty=user.specialty if user.role == "trainer" else None,
+        notes=user.notes or "",
+        package_name=pkg.package_name if pkg else None,
+        remaining_credits=pkg.remaining_credits if pkg else (0 if user.role == "member" else None),
+        total_credits=pkg.total_credits if pkg else (0 if user.role == "member" else None),
+        message=message,
+    )
+
+
+def _extract_bearer_token(
+    authorization: Optional[str] = None,
+    x_admin_token: Optional[str] = None,
+    query_token: Optional[str] = None,
+) -> Optional[str]:
+    if authorization:
+        raw = authorization.strip()
+        if raw.lower().startswith("bearer "):
+            return raw[7:].strip()
+        if raw:
+            return raw
+    if x_admin_token and x_admin_token.strip():
+        return x_admin_token.strip()
+    if query_token and query_token.strip():
+        return query_token.strip()
+    return None
+
+
+def get_current_auth_session(
+    authorization: Optional[str] = Header(default=None),
+    x_admin_token: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+) -> AuthSession:
+    ensure_portal_initialized(db)
+    raw_token = _extract_bearer_token(authorization, x_admin_token, token)
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Oturum anahtarı (Bearer token) bulunamadı. Lütfen giriş yapın.")
+
+    sess = db.query(AuthSession).filter(AuthSession.token == raw_token).first()
+    if not sess or sess.is_revoked:
+        raise HTTPException(status_code=401, detail="Oturum geçersiz veya sonlandırılmış. Lütfen tekrar giriş yapın.")
+
+    if sess.expires_at < _now_str():
+        sess.is_revoked = True
+        db.commit()
+        raise HTTPException(status_code=401, detail="Oturum süresi dolmuş. Lütfen tekrar giriş yapın.")
+
+    return sess
+
+
+def require_admin(
+    sess: AuthSession = Depends(get_current_auth_session),
+    db: Session = Depends(get_db),
+) -> AdminAccount:
+    if sess.role != "admin" or sess.account_type != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Bu işlem yalnızca Sistem Yöneticisi (Admin) yetkisiyle gerçekleştirilebilir.",
+        )
+    admin_acc = db.query(AdminAccount).filter(AdminAccount.id == sess.admin_id).first()
+    if not admin_acc:
+        admin_acc = db.query(AdminAccount).filter(AdminAccount.username == "admin").first()
+    if not admin_acc:
+        raise HTTPException(status_code=401, detail="Yönetici hesabı doğrulanamadı.")
+    return admin_acc
+
+
 def _resolve_user_by_code_or_identifier(
     db: Session, raw_input: str, allow_phone_and_handle: bool = False
 ) -> Optional[User]:
@@ -470,9 +1266,25 @@ def _resolve_user_by_code_or_identifier(
     if not cleaned:
         return None
 
+    lower = cleaned.lower()
     upper = cleaned.upper()
 
-    # 1. Doğrudan FIT-XXXX eşleşmesi (örn: FIT-1003 veya FIT1003)
+    # 0. E-posta veya kullanıcı adı eşleşmesi
+    if allow_phone_and_handle:
+        auth_acc = (
+            db.query(UserAuthAccount)
+            .filter((UserAuthAccount.email == lower) | (UserAuthAccount.username == lower))
+            .first()
+        )
+        if auth_acc:
+            u = db.query(User).filter(User.id == auth_acc.user_id).first()
+            if u:
+                return u
+        u_by_email = db.query(User).filter(User.email == lower).first()
+        if u_by_email:
+            return u_by_email
+
+    # 1. Doğrudan FIT-XXXX eşleşmesi
     normalized_fit = upper
     fit_no_dash = re.match(r"^FIT(\d+)$", upper)
     if fit_no_dash:
@@ -486,8 +1298,8 @@ def _resolve_user_by_code_or_identifier(
     if cred:
         return db.query(User).filter(User.id == cred.user_id).first()
 
-    # 2. Sadece sayısal giriş: '1003' -> FIT-1003 veya user_id=3; '3' -> user_id=3 veya FIT-1003
-    if cleaned.isdigit():
+    # 2. Sayısal giriş
+    if cleaned.isdigit() and len(cleaned) <= 6:
         num = int(cleaned)
         if num >= 1000:
             cred_by_num = (
@@ -505,13 +1317,6 @@ def _resolve_user_by_code_or_identifier(
             user_obj = db.query(User).filter(User.id == num).first()
             if user_obj:
                 return user_obj
-            cred_by_small = (
-                db.query(UserAccessCredential)
-                .filter(UserAccessCredential.access_code == f"FIT-{1000 + num}")
-                .first()
-            )
-            if cred_by_small:
-                return db.query(User).filter(User.id == cred_by_small.user_id).first()
 
     if not allow_phone_and_handle:
         return None
@@ -535,6 +1340,1721 @@ def _resolve_user_by_code_or_identifier(
     return None
 
 
+# ============================================================================
+# /auth/* ENDPOINT'LERİ (LOGIN, REGISTER, ME, LOGOUT, GOOGLE OAUTH)
+# ============================================================================
+
+
+@auth_router.post("/login", response_model=AuthSessionOut)
+def auth_login(payload: AuthLoginRequest, db: Session = Depends(get_db)):
+    ensure_portal_initialized(db)
+
+    raw_ident = (payload.identifier or payload.email or payload.username or "").strip()
+    raw_pw = (payload.password or "").strip()
+
+    if not raw_ident or not raw_pw:
+        raise HTTPException(status_code=400, detail="E-posta/kullanıcı adı ve şifre alanları zorunludur.")
+
+    ident_lower = raw_ident.lower()
+
+    # 1. Zero-Profile Sistem Yöneticisi (Admin) kontrolü
+    admin_acc = (
+        db.query(AdminAccount)
+        .filter(
+            (AdminAccount.username == ident_lower)
+            | (AdminAccount.email == ident_lower)
+        )
+        .first()
+    )
+    if admin_acc:
+        valid_admin_pw = _verify_password(raw_pw, admin_acc.password_hash) or (
+            bool(admin_acc.password) and hmac.compare_digest(raw_pw, admin_acc.password)
+        )
+        if not valid_admin_pw:
+            raise HTTPException(status_code=401, detail="Yönetici kullanıcı adı veya şifre hatalı.")
+
+        sess = _issue_session(
+            db,
+            account_type="admin",
+            role="admin",
+            auth_provider="password",
+            admin_id=admin_acc.id,
+        )
+        return _build_admin_session_out(admin_acc, sess, message="Sistem Yönetim Merkezine hoş geldiniz.")
+
+    # 2. Eğitmen / Müşteri kontrolü
+    user = _resolve_user_by_code_or_identifier(db, raw_ident, allow_phone_and_handle=True)
+    if not user:
+        raise HTTPException(status_code=401, detail="Girdiğiniz bilgilere ait bir hesap bulunamadı.")
+
+    auth_acc = _ensure_user_auth_account(db, user)
+    cred = _ensure_user_credential(db, user)
+
+    pw_ok = _verify_password(raw_pw, auth_acc.password_hash) or hmac.compare_digest(raw_pw, cred.pin_code)
+    if not pw_ok:
+        raise HTTPException(status_code=401, detail="E-posta/kullanıcı adı veya şifre hatalı.")
+
+    role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    sess = _issue_session(
+        db,
+        account_type="user",
+        role=role_lit,
+        auth_provider="password",
+        user_id=user.id,
+    )
+    return _build_user_session_out(db, user, sess, message=f"Hoş geldiniz, {user.full_name}!")
+
+
+@auth_router.post("/register", response_model=AuthSessionOut)
+def auth_register(payload: AuthRegisterRequest, db: Session = Depends(get_db)):
+    ensure_portal_initialized(db)
+
+    full_name = (payload.full_name or "").strip()
+    email = (payload.email or "").strip().lower()
+    password = (payload.password or "").strip()
+    phone = (payload.phone or "").strip() or "0500 000 00 00"
+
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Ad Soyad zorunludur.")
+    if not email or "@" not in email:
+        raise HTTPException(status_code=400, detail="Geçerli bir e-posta adresi girin.")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="Şifre en az 4 karakter olmalıdır.")
+    if email == "admin@eryapilates.com" or db.query(UserAuthAccount).filter(UserAuthAccount.email == email).first():
+        raise HTTPException(status_code=400, detail="Bu e-posta adresi zaten kayıtlıdır.")
+
+    ig = normalize_handle(payload.instagram_handle) if payload.instagram_handle else None
+    new_user = User(
+        full_name=full_name,
+        email=email,
+        phone=phone,
+        role="member",
+        instagram_handle=ig,
+        notes="",
+        streak_days=0,
+    )
+    db.add(new_user)
+    db.flush()
+
+    _ensure_user_credential(db, new_user)
+    _ensure_user_auth_account(
+        db,
+        new_user,
+        desired_username=email.split("@")[0],
+        desired_email=email,
+        raw_password=password,
+        auth_provider="password",
+    )
+    db.commit()
+    db.refresh(new_user)
+
+    sess = _issue_session(db, account_type="user", role="member", auth_provider="password", user_id=new_user.id)
+    return _build_user_session_out(db, new_user, sess, message=f"Hesabınız oluşturuldu, hoş geldiniz {new_user.full_name}!")
+
+
+@auth_router.get("/me", response_model=AuthSessionOut)
+def auth_me(
+    sess: AuthSession = Depends(get_current_auth_session),
+    db: Session = Depends(get_db),
+):
+    if sess.account_type == "admin" or sess.role == "admin":
+        admin_acc = db.query(AdminAccount).filter(AdminAccount.id == sess.admin_id).first()
+        if not admin_acc:
+            admin_acc = db.query(AdminAccount).filter(AdminAccount.username == "admin").first()
+        if not admin_acc:
+            raise HTTPException(status_code=401, detail="Yönetici oturumu bulunamadı.")
+        return _build_admin_session_out(admin_acc, sess, message="Yönetici oturumu aktif.")
+
+    user = db.query(User).filter(User.id == sess.user_id).first()
+    if not user:
+        sess.is_revoked = True
+        db.commit()
+        raise HTTPException(status_code=401, detail="Kullanıcı kaydı bulunamadı.")
+
+    return _build_user_session_out(db, user, sess, message="Oturum aktif.")
+
+
+@auth_router.post("/logout", response_model=AuthLogoutOut)
+def auth_logout(
+    payload: Optional[AuthLogoutRequest] = None,
+    authorization: Optional[str] = Header(default=None),
+    x_admin_token: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    body_tok = payload.token if payload else None
+    raw_token = _extract_bearer_token(authorization, x_admin_token, body_tok)
+    if raw_token:
+        sess = db.query(AuthSession).filter(AuthSession.token == raw_token).first()
+        if sess and not sess.is_revoked:
+            sess.is_revoked = True
+            db.commit()
+    return AuthLogoutOut(logged_out=True, message="Oturum güvenli şekilde kapatıldı.")
+
+
+@auth_router.get("/panel-config", response_model=PanelConfigOut)
+def get_public_panel_config(db: Session = Depends(get_db)):
+    ensure_portal_initialized(db)
+    ps = _get_or_create_panel_settings(db)
+    db.commit()
+    return _to_panel_config_out(ps)
+
+
+def _find_or_create_google_user(
+    db: Session,
+    email: str,
+    full_name: Optional[str],
+    google_sub: Optional[str],
+    avatar_url: Optional[str],
+    verified_google_token: bool = False,
+) -> User:
+    clean_email = email.strip().lower()
+    if clean_email == "admin@eryapilates.com":
+        raise HTTPException(
+            status_code=403,
+            detail="Sistem Yöneticisi hesabı yalnızca güvenli yönetici kimlik bilgileriyle açılabilir.",
+        )
+
+    auth_acc = None
+    if google_sub:
+        auth_acc = db.query(UserAuthAccount).filter(UserAuthAccount.google_sub == google_sub).first()
+    if not auth_acc:
+        auth_acc = db.query(UserAuthAccount).filter(UserAuthAccount.email == clean_email).first()
+
+    if auth_acc:
+        user = db.query(User).filter(User.id == auth_acc.user_id).first()
+        if user:
+            if google_sub and not auth_acc.google_sub:
+                auth_acc.google_sub = google_sub
+            if avatar_url and not user.avatar_url:
+                user.avatar_url = avatar_url
+            auth_acc.updated_at = _now_str()
+            db.commit()
+            db.refresh(user)
+            return user
+
+    user_by_email = db.query(User).filter(User.email == clean_email).first()
+    if user_by_email:
+        acc = _ensure_user_auth_account(
+            db,
+            user_by_email,
+            desired_email=clean_email,
+            auth_provider="google",
+            google_sub=google_sub,
+        )
+        if google_sub:
+            acc.google_sub = google_sub
+        if avatar_url and not user_by_email.avatar_url:
+            user_by_email.avatar_url = avatar_url
+        db.commit()
+        db.refresh(user_by_email)
+        return user_by_email
+
+    derived_name = (full_name or "").strip()
+    if not derived_name:
+        local = clean_email.split("@")[0].replace(".", " ").replace("_", " ").strip()
+        derived_name = local.title() or "Google Üyesi"
+
+    new_user = User(
+        full_name=derived_name,
+        email=clean_email,
+        phone="0500 000 00 00",
+        role="member",
+        avatar_url=avatar_url,
+        notes="Google hesabı ile hızlı giriş yapıldı.",
+        streak_days=1,
+    )
+    db.add(new_user)
+    db.flush()
+
+    _ensure_user_credential(db, new_user)
+    _ensure_user_auth_account(
+        db,
+        new_user,
+        desired_username=clean_email.split("@")[0],
+        desired_email=clean_email,
+        raw_password=secrets.token_urlsafe(16),
+        auth_provider="google",
+        google_sub=google_sub,
+    )
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+def _decode_jwt_payload_unverified(jwt_token: str) -> Optional[dict]:
+    parts = jwt_token.split(".")
+    if len(parts) != 3:
+        return None
+    try:
+        payload_b64 = parts[1]
+        pad = "=" * (-len(payload_b64) % 4)
+        decoded = base64.urlsafe_b64decode(payload_b64 + pad).decode("utf-8")
+        data = json.loads(decoded)
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+@auth_router.get("/google/url", response_model=GoogleAuthUrlOut)
+def get_google_oauth_url(
+    request: Request,
+    redirect_uri: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    ps = _get_or_create_panel_settings(db)
+    if not ps.allow_google_login:
+        raise HTTPException(status_code=403, detail="Google ile giriş yönetici tarafından geçici olarak kapatılmıştır.")
+
+    state = f"erya_gstate_{secrets.token_urlsafe(20)}"
+    now = datetime.now()
+    oauth_state = GoogleOAuthState(
+        state=state,
+        redirect_uri=redirect_uri,
+        is_used=False,
+        created_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+        expires_at=(now + timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S"),
+    )
+    db.add(oauth_state)
+    db.commit()
+
+    base_url = _derive_base_url(request)
+    google_client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+    google_client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+
+    if google_client_id and google_client_secret:
+        callback_uri = f"{base_url}/auth/google/callback"
+        params = urlencode(
+            {
+                "client_id": google_client_id,
+                "redirect_uri": callback_uri,
+                "response_type": "code",
+                "scope": "openid email profile",
+                "state": state,
+                "prompt": "select_account",
+            }
+        )
+        return GoogleAuthUrlOut(
+            auth_url=f"https://accounts.google.com/o/oauth2/v2/auth?{params}",
+            state=state,
+            provider="google",
+            client_id_configured=True,
+        )
+
+    params_dict = {"state": state}
+    if redirect_uri:
+        params_dict["redirect_uri"] = redirect_uri
+    hosted_url = f"{base_url}/auth/google/authorize?{urlencode(params_dict)}"
+    return GoogleAuthUrlOut(
+        auth_url=hosted_url,
+        state=state,
+        provider="google",
+        client_id_configured=False,
+    )
+
+
+@auth_router.get("/google/authorize", response_class=HTMLResponse)
+def google_hosted_authorize_page(
+    request: Request,
+    state: Optional[str] = Query(default=None),
+    redirect_uri: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    if not state:
+        state = f"erya_gstate_{secrets.token_urlsafe(20)}"
+        now = datetime.now()
+        db.add(
+            GoogleOAuthState(
+                state=state,
+                redirect_uri=redirect_uri,
+                is_used=False,
+                created_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+                expires_at=(now + timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S"),
+            )
+        )
+        db.commit()
+
+    quick_members = (
+        db.query(User)
+        .filter(User.role == "member", User.email.isnot(None))
+        .order_by(User.id.desc())
+        .limit(5)
+        .all()
+    )
+
+    account_buttons_html = ""
+    for m in quick_members:
+        m_email = html.escape(m.email or "")
+        m_name = html.escape(m.full_name)
+        initial = html.escape((m.full_name or "U")[0].upper())
+        account_buttons_html += f"""
+        <button type="button" class="acc-row" onclick="pickAccount('{m_email}', '{m_name}')">
+          <div class="avatar">{initial}</div>
+          <div class="acc-meta">
+            <div class="acc-name">{m_name}</div>
+            <div class="acc-email">{m_email}</div>
+          </div>
+        </button>
+        """
+
+    safe_state = html.escape(state)
+    safe_redirect = html.escape(redirect_uri or "")
+
+    html_doc = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Google ile Oturum Açın — ERYA Pilates</title>
+  <style>
+    * {{ box-sizing: border-box; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }}
+    body {{ margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0f172a; color: #0f172a; padding: 16px; }}
+    .card {{ width: 100%; max-width: 420px; background: #ffffff; border-radius: 20px; padding: 32px 28px; box-shadow: 0 24px 60px rgba(0,0,0,0.45); }}
+    .g-badge {{ display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: 14px; color: #3c4043; margin-bottom: 12px; }}
+    .g-dot {{ width: 10px; height: 10px; border-radius: 50%; background: #4285F4; box-shadow: 14px 0 0 #EA4335, 28px 0 0 #FBBC05, 42px 0 0 #34A853; margin-right: 44px; }}
+    h1 {{ font-size: 22px; margin: 6px 0 6px; color: #202124; font-weight: 600; }}
+    p.sub {{ margin: 0 0 20px; font-size: 14px; color: #5f6368; }}
+    .acc-list {{ display: flex; flex-direction: column; gap: 8px; margin-bottom: 18px; }}
+    .acc-row {{ display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border: 1px solid #dadce0; border-radius: 12px; background: #fff; cursor: pointer; text-align: left; transition: background 0.15s, border-color 0.15s; }}
+    .acc-row:hover {{ background: #f8f9fa; border-color: #1a73e8; }}
+    .avatar {{ width: 36px; height: 36px; border-radius: 50%; background: #1a73e8; color: #fff; display: flex; align-items: center; justify-content: center; font-weight: 600; font-size: 15px; flex-shrink: 0; }}
+    .acc-name {{ font-size: 14px; font-weight: 600; color: #202124; }}
+    .acc-email {{ font-size: 12px; color: #5f6368; }}
+    .divider {{ display: flex; align-items: center; gap: 10px; color: #5f6368; font-size: 12px; margin: 16px 0; }}
+    .divider::before, .divider::after {{ content: ''; flex: 1; height: 1px; background: #e0e0e0; }}
+    label {{ display: block; font-size: 12px; font-weight: 600; color: #3c4043; margin-bottom: 6px; }}
+    input {{ width: 100%; padding: 11px 12px; border: 1px solid #dadce0; border-radius: 10px; font-size: 14px; margin-bottom: 12px; outline: none; }}
+    input:focus {{ border-color: #1a73e8; box-shadow: 0 0 0 2px rgba(26,115,232,0.18); }}
+    .submit-btn {{ width: 100%; padding: 12px 16px; border: none; border-radius: 10px; background: #1a73e8; color: #fff; font-size: 14px; font-weight: 600; cursor: pointer; }}
+    .submit-btn:hover {{ background: #1557b0; }}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="g-badge"><span class="g-dot"></span>Google ile Oturum Açın</div>
+    <h1>Bir hesap seçin</h1>
+    <p class="sub"><strong>ERYA Pilates &amp; Reformer</strong> uygulamasına devam etmek için Google hesabınızı seçin</p>
+
+    <div class="acc-list">
+      {account_buttons_html}
+    </div>
+
+    <div class="divider">veya başka bir Google hesabı kullanın</div>
+
+    <form id="gForm" method="POST" action="/auth/google/authorize/complete">
+      <input type="hidden" name="state" value="{safe_state}" />
+      <input type="hidden" name="redirect_uri" value="{safe_redirect}" />
+      <label for="emailInput">Gmail / Google E-posta Adresi</label>
+      <input id="emailInput" name="email" type="email" placeholder="ornek@gmail.com" required />
+      <label for="nameInput">Ad Soyad (Yeni hesaplar için)</label>
+      <input id="nameInput" name="full_name" type="text" placeholder="Adınız Soyadınız" />
+      <button type="submit" class="submit-btn">Google ile Devam Et</button>
+    </form>
+  </div>
+  <script>
+    function pickAccount(email, name) {{
+      document.getElementById('emailInput').value = email;
+      document.getElementById('nameInput').value = name;
+      document.getElementById('gForm').submit();
+    }}
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html_doc)
+
+
+def _complete_google_authorize_html(
+    db: Session,
+    state: str,
+    email: str,
+    full_name: Optional[str] = None,
+    redirect_uri: Optional[str] = None,
+) -> HTMLResponse:
+    ensure_portal_initialized(db)
+    clean_email = (email or "").strip().lower()
+    if not clean_email or "@" not in clean_email:
+        raise HTTPException(status_code=400, detail="Geçerli bir Google e-posta adresi girin.")
+
+    user = _find_or_create_google_user(
+        db,
+        email=clean_email,
+        full_name=full_name,
+        google_sub=f"google_{hashlib.sha256(clean_email.encode()).hexdigest()[:20]}",
+        avatar_url=None,
+    )
+    role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    sess = _issue_session(
+        db,
+        account_type="user",
+        role=role_lit,
+        auth_provider="google",
+        user_id=user.id,
+    )
+
+    code = f"erya_gcode_{secrets.token_urlsafe(24)}"
+    oauth_row = db.query(GoogleOAuthState).filter(GoogleOAuthState.state == state).first()
+    final_redirect = (redirect_uri or (oauth_row.redirect_uri if oauth_row else "") or "").strip()
+
+    if oauth_row:
+        oauth_row.code = code
+        oauth_row.session_token = sess.token
+        oauth_row.email = clean_email
+        oauth_row.full_name = user.full_name
+        if final_redirect:
+            oauth_row.redirect_uri = final_redirect
+    else:
+        now = datetime.now()
+        oauth_row = GoogleOAuthState(
+            state=state,
+            code=code,
+            session_token=sess.token,
+            redirect_uri=final_redirect or None,
+            email=clean_email,
+            full_name=user.full_name,
+            is_used=False,
+            created_at=now.strftime("%Y-%m-%d %H:%M:%S"),
+            expires_at=(now + timedelta(minutes=20)).strftime("%Y-%m-%d %H:%M:%S"),
+        )
+        db.add(oauth_row)
+    db.commit()
+
+    session_out = _build_user_session_out(db, user, sess, message=f"Google ile giriş başarılı: {user.full_name}")
+    payload_json = json.dumps(
+        {
+            "type": "ERYA_GOOGLE_AUTH",
+            "provider": "google",
+            "token": sess.token,
+            "code": code,
+            "state": state,
+            "session": session_out.model_dump(),
+        },
+        ensure_ascii=False,
+    )
+
+    target_url_js = "null"
+    if final_redirect:
+        sep = "&" if "?" in final_redirect else "?"
+        redir_with_params = f"{final_redirect}{sep}{urlencode({'token': sess.token, 'code': code, 'state': state, 'auth_provider': 'google'})}"
+        target_url_js = json.dumps(redir_with_params)
+
+    bridge_html = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Google Girişi Tamamlandı</title>
+  <style>
+    body {{ margin: 0; min-height: 100vh; display: flex; align-items: center; justify-content: center; background: #0f172a; color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, sans-serif; padding: 20px; text-align: center; }}
+    .box {{ max-width: 400px; background: #1e293b; border: 1px solid #334155; border-radius: 18px; padding: 28px 24px; }}
+    h2 {{ margin: 0 0 8px; font-size: 20px; color: #34d399; }}
+    p {{ margin: 0 0 18px; font-size: 14px; color: #cbd5e1; }}
+    a.btn {{ display: inline-block; padding: 11px 20px; border-radius: 10px; background: #10b981; color: #06281e; font-weight: 700; text-decoration: none; font-size: 14px; }}
+  </style>
+</head>
+<body>
+  <div class="box">
+    <h2>Google ile Giriş Onaylandı</h2>
+    <p>Hoş geldiniz, <strong>{html.escape(user.full_name)}</strong>. Uygulamaya yönlendiriliyorsunuz...</p>
+    <div id="fallbackLink"></div>
+  </div>
+  <script>
+    (function() {{
+      var msg = {payload_json};
+      var targetUrl = {target_url_js};
+      try {{
+        if (window.opener && !window.opener.closed) {{
+          window.opener.postMessage(msg, "*");
+          setTimeout(function() {{ window.close(); }}, 350);
+          return;
+        }}
+      }} catch (e) {{}}
+      if (targetUrl) {{
+        var el = document.getElementById("fallbackLink");
+        if (el) {{
+          el.innerHTML = '<a class="btn" href="' + targetUrl + '">Uygulamaya Dön</a>';
+        }}
+        window.location.replace(targetUrl);
+      }}
+    }})();
+  </script>
+</body>
+</html>"""
+    return HTMLResponse(content=bridge_html)
+
+
+@auth_router.post("/google/authorize/complete", response_class=HTMLResponse)
+async def google_hosted_authorize_complete(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    raw_bytes = await request.body()
+    raw_text = raw_bytes.decode("utf-8", errors="replace").strip()
+    content_type = (request.headers.get("content-type") or "").lower()
+
+    data: dict = {}
+    if "application/json" in content_type or raw_text.startswith("{"):
+        try:
+            data = json.loads(raw_text)
+        except Exception:
+            data = {}
+    else:
+        parsed = parse_qs(raw_text, keep_blank_values=True)
+        data = {k: (v[0] if v else "") for k, v in parsed.items()}
+
+    state = str(data.get("state") or f"erya_gstate_{secrets.token_urlsafe(12)}")
+    email = str(data.get("email") or "")
+    full_name = data.get("full_name")
+    redirect_uri = data.get("redirect_uri")
+    return _complete_google_authorize_html(
+        db=db,
+        state=state,
+        email=email,
+        full_name=str(full_name) if full_name else None,
+        redirect_uri=str(redirect_uri) if redirect_uri else None,
+    )
+
+
+@auth_router.get("/google/callback", response_class=HTMLResponse)
+def google_real_oauth_callback(
+    request: Request,
+    code: str = Query(...),
+    state: Optional[str] = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    google_client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+    google_client_secret = (os.getenv("GOOGLE_CLIENT_SECRET") or "").strip()
+    if not google_client_id or not google_client_secret:
+        raise HTTPException(status_code=400, detail="Google OAuth istemci yapılandırması eksik.")
+
+    base_url = _derive_base_url(request)
+    callback_uri = f"{base_url}/auth/google/callback"
+
+    try:
+        token_resp = httpx.post(
+            "https://oauth2.googleapis.com/token",
+            data={
+                "code": code,
+                "client_id": google_client_id,
+                "client_secret": google_client_secret,
+                "redirect_uri": callback_uri,
+                "grant_type": "authorization_code",
+            },
+            timeout=8.0,
+        )
+        token_resp.raise_for_status()
+        tok_data = token_resp.json()
+        access_tok = tok_data.get("access_token")
+        uinfo_resp = httpx.get(
+            "https://www.googleapis.com/oauth2/v3/userinfo",
+            headers={"Authorization": f"Bearer {access_tok}"},
+            timeout=6.0,
+        )
+        uinfo_resp.raise_for_status()
+        uinfo = uinfo_resp.json()
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Google OAuth doğrulaması başarısız: {exc}")
+
+    email = (uinfo.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(status_code=401, detail="Google hesabından e-posta bilgisi alınamadı.")
+
+    user = _find_or_create_google_user(
+        db,
+        email=email,
+        full_name=uinfo.get("name"),
+        google_sub=uinfo.get("sub"),
+        avatar_url=uinfo.get("picture"),
+        verified_google_token=True,
+    )
+    role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    sess = _issue_session(db, account_type="user", role=role_lit, auth_provider="google", user_id=user.id)
+
+    exchange_code = f"erya_gcode_{secrets.token_urlsafe(24)}"
+    oauth_row = db.query(GoogleOAuthState).filter(GoogleOAuthState.state == state).first() if state else None
+    redir = oauth_row.redirect_uri if oauth_row and oauth_row.redirect_uri else ""
+    if oauth_row:
+        oauth_row.code = exchange_code
+        oauth_row.session_token = sess.token
+        db.commit()
+
+    return _complete_google_authorize_html(
+        db=db,
+        state=state or f"erya_gstate_{secrets.token_urlsafe(12)}",
+        email=email,
+        full_name=user.full_name,
+        redirect_uri=redir,
+    )
+
+
+@auth_router.post("/google", response_model=AuthSessionOut)
+def auth_google_exchange(payload: GoogleAuthRequest, db: Session = Depends(get_db)):
+    ensure_portal_initialized(db)
+    ps = _get_or_create_panel_settings(db)
+    if not ps.allow_google_login:
+        raise HTTPException(status_code=403, detail="Google ile giriş şu anda devre dışıdır.")
+
+    # 1. Hosted veya OAuth redirect akışından dönen tek kullanımlık `code`
+    if payload.code and payload.code.strip():
+        raw_code = payload.code.strip()
+        state_row = (
+            db.query(GoogleOAuthState)
+            .filter(GoogleOAuthState.code == raw_code, GoogleOAuthState.is_used == False)
+            .first()
+        )
+        if state_row and state_row.session_token:
+            state_row.is_used = True
+            db.commit()
+            sess = db.query(AuthSession).filter(AuthSession.token == state_row.session_token).first()
+            if sess and sess.user_id:
+                user = db.query(User).filter(User.id == sess.user_id).first()
+                if user:
+                    return _build_user_session_out(
+                        db, user, sess, message=f"Google ile giriş başarılı, hoş geldiniz {user.full_name}!"
+                    )
+
+    verified_email: Optional[str] = None
+    verified_name: Optional[str] = payload.full_name
+    verified_sub: Optional[str] = payload.google_sub
+    verified_pic: Optional[str] = payload.avatar_url
+    google_client_id = (os.getenv("GOOGLE_CLIENT_ID") or "").strip()
+
+    # 2. Google ID Token doğrulaması
+    if payload.id_token and payload.id_token.strip():
+        id_tok = payload.id_token.strip()
+        try:
+            resp = httpx.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": id_tok},
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                info = resp.json()
+                if google_client_id and info.get("aud") != google_client_id:
+                    raise HTTPException(status_code=401, detail="Google ID token istemci kimliği (aud) eşleşmedi.")
+                verified_email = (info.get("email") or "").strip().lower()
+                verified_name = info.get("name") or verified_name
+                verified_sub = info.get("sub") or verified_sub
+                verified_pic = info.get("picture") or verified_pic
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+
+        if not verified_email and not google_client_id:
+            claims = _decode_jwt_payload_unverified(id_tok)
+            if claims and claims.get("email"):
+                verified_email = str(claims["email"]).strip().lower()
+                verified_name = claims.get("name") or verified_name
+                verified_sub = claims.get("sub") or verified_sub
+                verified_pic = claims.get("picture") or verified_pic
+
+    # 3. Google OAuth Access Token doğrulaması
+    if not verified_email and payload.access_token and payload.access_token.strip():
+        acc_tok = payload.access_token.strip()
+        try:
+            resp = httpx.get(
+                "https://www.googleapis.com/oauth2/v3/userinfo",
+                headers={"Authorization": f"Bearer {acc_tok}"},
+                timeout=5.0,
+            )
+            if resp.status_code == 200:
+                info = resp.json()
+                verified_email = (info.get("email") or "").strip().lower()
+                verified_name = info.get("name") or verified_name
+                verified_sub = info.get("sub") or verified_sub
+                verified_pic = info.get("picture") or verified_pic
+        except Exception:
+            pass
+
+    # 4. Doğrudan Google kimlik e-postası (GSI / Web / Mobil OAuth istemci akışı)
+    if not verified_email and payload.email and payload.email.strip():
+        if google_client_id and (payload.id_token or payload.access_token):
+            raise HTTPException(status_code=401, detail="Google token doğrulanamadı.")
+        verified_email = payload.email.strip().lower()
+
+    if not verified_email or "@" not in verified_email:
+        raise HTTPException(status_code=400, detail="Google oturumu için geçerli bir Google token veya e-posta gereklidir.")
+
+    user = _find_or_create_google_user(
+        db,
+        email=verified_email,
+        full_name=verified_name,
+        google_sub=verified_sub or f"google_{hashlib.sha256(verified_email.encode()).hexdigest()[:20]}",
+        avatar_url=verified_pic,
+    )
+    role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    sess = _issue_session(
+        db,
+        account_type="user",
+        role=role_lit,
+        auth_provider="google",
+        user_id=user.id,
+    )
+    return _build_user_session_out(
+        db, user, sess, message=f"Google ile giriş başarılı, hoş geldiniz {user.full_name}!"
+    )
+
+
+# ============================================================================
+# /admin/* ENDPOINT'LERİ (ZERO-PROFILE TAM YETKİLİ YÖNETİM MERKEZİ)
+# ============================================================================
+
+
+def _build_admin_trainer_out(db: Session, t: User) -> AdminTrainerOut:
+    cred = _ensure_user_credential(db, t)
+    auth_acc = _ensure_user_auth_account(db, t)
+    today_iso = date.today().strftime("%Y-%m-%d")
+    active_cnt = (
+        db.query(ClassSession)
+        .filter(ClassSession.trainer_id == t.id, ClassSession.date >= today_iso)
+        .count()
+    )
+    return AdminTrainerOut(
+        id=t.id,
+        full_name=t.full_name,
+        email=auth_acc.email,
+        username=auth_acc.username,
+        phone=t.phone or "",
+        instagram_handle=t.instagram_handle,
+        specialty=t.specialty or "Reformer & Klinik Pilates",
+        bio=t.bio or "",
+        notes=t.notes or "",
+        avatar_url=t.avatar_url,
+        rating=round(t.rating if t.rating is not None else 4.9, 1),
+        experience_years=t.experience_years if t.experience_years is not None else 5,
+        access_code=cred.access_code,
+        active_sessions_count=active_cnt,
+    )
+
+
+def _build_admin_member_out(db: Session, m: User) -> AdminMemberOut:
+    cred = _ensure_user_credential(db, m)
+    auth_acc = _ensure_user_auth_account(db, m)
+    pkg = _get_active_package(db, m.id)
+    today_iso = date.today().strftime("%Y-%m-%d")
+
+    bookings = (
+        db.query(Booking)
+        .options(joinedload(Booking.session))
+        .filter(Booking.member_id == m.id, Booking.status != "cancelled")
+        .all()
+    )
+    upcoming_cnt = sum(
+        1 for b in bookings if b.status == "booked" and b.session and b.session.date >= today_iso
+    )
+    attended_cnt = sum(1 for b in bookings if b.status == "attended")
+    rem = pkg.remaining_credits if pkg else 0
+    tot = pkg.total_credits if pkg else 0
+
+    return AdminMemberOut(
+        id=m.id,
+        full_name=m.full_name,
+        email=auth_acc.email,
+        username=auth_acc.username,
+        phone=m.phone or "",
+        instagram_handle=m.instagram_handle,
+        avatar_url=m.avatar_url,
+        notes=m.notes or "",
+        access_code=cred.access_code,
+        package_id=pkg.id if pkg else None,
+        package_name=pkg.package_name if pkg else None,
+        remaining_credits=rem,
+        total_credits=tot,
+        expiry_date=pkg.expiry_date if pkg else None,
+        low_credit_warning=(rem <= 2),
+        upcoming_bookings_count=upcoming_cnt,
+        attended_count=attended_cnt,
+        streak_days=m.streak_days or 0,
+    )
+
+
+def _build_admin_session_item_out(s: ClassSession) -> AdminSessionItemOut:
+    rem_spots = max(0, s.capacity - s.current_enrolled)
+    return AdminSessionItemOut(
+        id=s.id,
+        trainer_id=s.trainer_id,
+        trainer_name=s.trainer.full_name if s.trainer else "Eğitmen",
+        title=s.title,
+        category=s.category or "Grup Reformer",
+        room=s.room or "Kemerli Ayna Reformer Salonu",
+        date=s.date,
+        day_label=_format_day_label_tr(s.date),
+        start_time=s.start_time,
+        end_time=s.end_time,
+        capacity=s.capacity,
+        current_enrolled=s.current_enrolled,
+        remaining_spots=rem_spots,
+        is_full=(rem_spots == 0),
+    )
+
+
+def _build_admin_package_plan_out(plan: PackageCatalogPlan) -> AdminPackagePlanOut:
+    features: List[str] = []
+    if plan.features_json:
+        try:
+            parsed = json.loads(plan.features_json)
+            if isinstance(parsed, list):
+                features = [str(item) for item in parsed]
+        except Exception:
+            features = []
+    return AdminPackagePlanOut(
+        id=plan.id,
+        code=plan.code,
+        name=plan.name,
+        subtitle=plan.subtitle or "",
+        credits=plan.credits,
+        duration_days=plan.duration_days,
+        price_try=plan.price_try,
+        popular_badge=plan.popular_badge,
+        features=features,
+        is_active=bool(plan.is_active),
+    )
+
+
+def _build_admin_payment_out(tx: PaymentTransaction) -> AdminPaymentItemOut:
+    p_name = tx.plan.name if tx.plan else f"Paket #{tx.plan_id}"
+    return AdminPaymentItemOut(
+        id=tx.id,
+        transaction_code=tx.transaction_code,
+        member_id=tx.member_id,
+        member_name=tx.member.full_name if tx.member else f"Üye #{tx.member_id}",
+        plan_id=tx.plan_id,
+        plan_name=p_name,
+        package_name=p_name,
+        amount_try=tx.amount_try,
+        amount=tx.amount_try,
+        currency="TRY",
+        payment_method=tx.payment_method,
+        installment_count=tx.installment_count,
+        status=tx.status,
+        created_at=tx.created_at,
+    )
+
+
+# --- a) PANEL YÖNETİMİ & GEÇİŞ HEDEFLERİ ---
+
+
+@admin_router.get("/panels", response_model=PanelConfigOut)
+def admin_get_panels(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ps = _get_or_create_panel_settings(db)
+    db.commit()
+    return _to_panel_config_out(ps)
+
+
+@admin_router.put("/panels", response_model=PanelConfigOut)
+def admin_update_panels(
+    payload: PanelConfigUpdateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ps = _get_or_create_panel_settings(db)
+    if payload.admin_panel_enabled is not None:
+        ps.admin_panel_enabled = payload.admin_panel_enabled
+    if payload.trainer_panel_enabled is not None:
+        ps.trainer_panel_enabled = payload.trainer_panel_enabled
+    if payload.member_panel_enabled is not None:
+        ps.member_panel_enabled = payload.member_panel_enabled
+    if payload.default_landing_panel is not None:
+        ps.default_landing_panel = payload.default_landing_panel
+    if payload.allow_google_login is not None:
+        ps.allow_google_login = payload.allow_google_login
+    if payload.allow_member_booking is not None:
+        ps.allow_member_booking = payload.allow_member_booking
+    if payload.allow_package_purchase is not None:
+        ps.allow_package_purchase = payload.allow_package_purchase
+    if payload.studio_banner_enabled is not None:
+        ps.studio_banner_enabled = payload.studio_banner_enabled
+    if payload.studio_banner_title is not None:
+        ps.studio_banner_title = payload.studio_banner_title.strip()
+    if payload.studio_banner_message is not None:
+        ps.studio_banner_message = payload.studio_banner_message.strip()
+    ps.updated_at = _now_str()
+    db.commit()
+    db.refresh(ps)
+    return _to_panel_config_out(ps)
+
+
+@admin_router.get("/panel-targets", response_model=AdminPanelTargetsOut)
+def admin_get_panel_targets(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    trainers = db.query(User).filter(User.role == "trainer").order_by(User.id.asc()).all()
+    members = db.query(User).filter(User.role == "member").order_by(User.id.asc()).all()
+    return AdminPanelTargetsOut(
+        trainers=[UserOut.model_validate(t) for t in trainers],
+        members=[UserOut.model_validate(m) for m in members],
+        default_trainer_id=trainers[0].id if trainers else None,
+        default_member_id=members[0].id if members else None,
+    )
+
+
+# --- b) YENİ HABER / DUYURU YAYINLAMA ---
+
+
+@admin_router.get("/announcements", response_model=List[AnnouncementOut])
+def admin_list_announcements(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    rows = (
+        db.query(Announcement)
+        .order_by(Announcement.is_pinned.desc(), Announcement.date.desc(), Announcement.id.desc())
+        .all()
+    )
+    return [AnnouncementOut.model_validate(a) for a in rows]
+
+
+@admin_router.post("/announcements", response_model=AnnouncementOut)
+def admin_create_announcement(
+    payload: AdminAnnouncementCreateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    title = (payload.title or "").strip()
+    content = (payload.content or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Haber/duyuru başlığı zorunludur.")
+    if not content:
+        raise HTTPException(status_code=400, detail="Haber/duyuru içeriği zorunludur.")
+
+    tag = (payload.tag or "").strip() or "Kulüp Haberleri"
+    pub_date = (payload.date or "").strip() or date.today().strftime("%Y-%m-%d")
+
+    ann = Announcement(
+        title=title,
+        content=content,
+        tag=tag,
+        date=pub_date,
+        is_pinned=bool(payload.is_pinned),
+    )
+    db.add(ann)
+    db.commit()
+    db.refresh(ann)
+    return AnnouncementOut.model_validate(ann)
+
+
+@admin_router.put("/announcements/{announcement_id}", response_model=AnnouncementOut)
+def admin_update_announcement(
+    announcement_id: int,
+    payload: AdminAnnouncementUpdateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ann = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+    if not ann:
+        raise HTTPException(status_code=404, detail="Duyuru bulunamadı.")
+
+    if payload.title is not None:
+        cleaned = payload.title.strip()
+        if not cleaned:
+            raise HTTPException(status_code=400, detail="Başlık boş bırakılamaz.")
+        ann.title = cleaned
+    if payload.content is not None:
+        cleaned_c = payload.content.strip()
+        if not cleaned_c:
+            raise HTTPException(status_code=400, detail="İçerik boş bırakılamaz.")
+        ann.content = cleaned_c
+    if payload.tag is not None and payload.tag.strip():
+        ann.tag = payload.tag.strip()
+    if payload.date is not None and payload.date.strip():
+        ann.date = payload.date.strip()
+    if payload.is_pinned is not None:
+        ann.is_pinned = payload.is_pinned
+
+    db.commit()
+    db.refresh(ann)
+    return AnnouncementOut.model_validate(ann)
+
+
+@admin_router.delete("/announcements/{announcement_id}", response_model=AdminDeleteOut)
+def admin_delete_announcement(
+    announcement_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ann = db.query(Announcement).filter(Announcement.id == announcement_id).first()
+    if not ann:
+        raise HTTPException(status_code=404, detail="Duyuru bulunamadı.")
+    db.delete(ann)
+    db.commit()
+    return AdminDeleteOut(deleted=True, id=announcement_id, message="Haber/duyuru yayından kaldırıldı.")
+
+
+# --- c) YENİ ÖĞRETMEN / EĞİTMEN SİSTEME GİRME ---
+
+
+@admin_router.get("/trainers", response_model=List[AdminTrainerOut])
+def admin_list_trainers(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    trainers = db.query(User).filter(User.role == "trainer").order_by(User.id.asc()).all()
+    out = [_build_admin_trainer_out(db, t) for t in trainers]
+    db.commit()
+    return out
+
+
+@admin_router.post("/trainers", response_model=AdminTrainerOut)
+def admin_create_trainer(
+    payload: AdminTrainerCreateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    full_name = (payload.full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Eğitmen Ad Soyad alanı zorunludur.")
+
+    raw_pw = (payload.password or "").strip() or "Erya2026!"
+    specialty = (payload.specialty or "").strip() or "Reformer & Klinik Pilates"
+    phone = (payload.phone or "").strip() or "0551 497 90 09"
+    ig = normalize_handle(payload.instagram_handle) if payload.instagram_handle else None
+    notes = (payload.notes or "").strip() or f"{specialty} Eğitmeni"
+    bio = (payload.bio or "").strip() or (
+        f"{full_name}, ERYA Pilates & Reformer bünyesinde {specialty} alanında bireysel ve butik grup dersleri yönetmektedir.\n"
+        f"Sertifikalar: {specialty} Uzmanlık Sertifikası | Modern Reformer & Cadillac Eğitmenliği"
+    )
+
+    desired_uname = (payload.username or "").strip().lower()
+    desired_email = (payload.email or "").strip().lower()
+    if desired_email and "@" not in desired_email and not desired_uname:
+        desired_uname = desired_email
+        desired_email = f"{_slugify_tr(desired_uname)}@eryapilates.com"
+
+    if desired_email and (
+        desired_email == "admin@eryapilates.com"
+        or db.query(UserAuthAccount).filter(UserAuthAccount.email == desired_email).first()
+    ):
+        raise HTTPException(status_code=400, detail="Bu e-posta adresi başka bir hesapta kullanılıyor.")
+    if desired_uname and (
+        desired_uname == "admin"
+        or db.query(UserAuthAccount).filter(UserAuthAccount.username == desired_uname).first()
+    ):
+        raise HTTPException(status_code=400, detail="Bu kullanıcı adı başka bir hesapta kullanılıyor.")
+
+    trainer = User(
+        full_name=full_name,
+        phone=phone,
+        role="trainer",
+        instagram_handle=ig,
+        specialty=specialty,
+        bio=bio,
+        notes=notes,
+        avatar_url=payload.avatar_url,
+        rating=payload.rating if payload.rating is not None else 5.0,
+        experience_years=payload.experience_years if payload.experience_years is not None else 5,
+        streak_days=0,
+    )
+    db.add(trainer)
+    db.flush()
+
+    _ensure_user_credential(db, trainer)
+    _ensure_user_auth_account(
+        db,
+        trainer,
+        desired_username=desired_uname or None,
+        desired_email=desired_email or None,
+        raw_password=raw_pw,
+        auth_provider="password",
+    )
+    db.commit()
+    db.refresh(trainer)
+    return _build_admin_trainer_out(db, trainer)
+
+
+@admin_router.put("/trainers/{trainer_id}", response_model=AdminTrainerOut)
+def admin_update_trainer(
+    trainer_id: int,
+    payload: AdminTrainerUpdateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    trainer = db.query(User).filter(User.id == trainer_id, User.role == "trainer").first()
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Eğitmen bulunamadı.")
+
+    auth_acc = _ensure_user_auth_account(db, trainer)
+
+    if payload.full_name is not None and payload.full_name.strip():
+        trainer.full_name = payload.full_name.strip()
+    if payload.specialty is not None and payload.specialty.strip():
+        trainer.specialty = payload.specialty.strip()
+    if payload.phone is not None and payload.phone.strip():
+        trainer.phone = payload.phone.strip()
+    if payload.instagram_handle is not None:
+        trainer.instagram_handle = normalize_handle(payload.instagram_handle) if payload.instagram_handle.strip() else None
+    if payload.bio is not None:
+        trainer.bio = payload.bio.strip()
+    if payload.notes is not None:
+        trainer.notes = payload.notes.strip()
+    if payload.avatar_url is not None:
+        trainer.avatar_url = payload.avatar_url.strip() or None
+    if payload.experience_years is not None:
+        trainer.experience_years = payload.experience_years
+    if payload.rating is not None:
+        trainer.rating = payload.rating
+
+    if payload.email is not None and payload.email.strip():
+        new_email = _unique_email(db, payload.email.strip(), exclude_user_id=trainer.id)
+        auth_acc.email = new_email
+        trainer.email = new_email
+    if payload.username is not None and payload.username.strip():
+        auth_acc.username = _unique_username(db, payload.username.strip(), exclude_user_id=trainer.id)
+    if payload.password is not None and payload.password.strip():
+        auth_acc.password_hash = _hash_password(payload.password.strip())
+    auth_acc.updated_at = _now_str()
+
+    db.commit()
+    db.refresh(trainer)
+    return _build_admin_trainer_out(db, trainer)
+
+
+@admin_router.delete("/trainers/{trainer_id}", response_model=AdminDeleteOut)
+def admin_delete_trainer(
+    trainer_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    trainer = db.query(User).filter(User.id == trainer_id, User.role == "trainer").first()
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Eğitmen bulunamadı.")
+
+    db.query(AuthSession).filter(AuthSession.user_id == trainer.id).delete()
+    db.query(UserAuthAccount).filter(UserAuthAccount.user_id == trainer.id).delete()
+    db.query(UserAccessCredential).filter(UserAccessCredential.user_id == trainer.id).delete()
+    db.delete(trainer)
+    db.commit()
+    return AdminDeleteOut(deleted=True, id=trainer_id, message="Eğitmen sistemden silindi.")
+
+
+# --- d) BÜTÜN SİSTEMLERİ YÖNETME (OVERVIEW, MEMBERS, CREDITS, SESSIONS, PACKAGES, PAYMENTS) ---
+
+
+@admin_router.get("/overview", response_model=AdminSystemOverviewOut)
+def admin_system_overview(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    today_iso = date.today().strftime("%Y-%m-%d")
+    members = db.query(User).filter(User.role == "member").all()
+    trainers_cnt = db.query(User).filter(User.role == "trainer").count()
+    all_sessions = db.query(ClassSession).all()
+    upcoming_sessions_cnt = sum(1 for s in all_sessions if s.date >= today_iso)
+    active_bookings_cnt = db.query(Booking).filter(Booking.status == "booked").count()
+
+    active_pkgs = db.query(MemberPackage).filter(MemberPackage.is_active == True).all()
+    pkg_by_member: Dict[int, MemberPackage] = {}
+    for p in active_pkgs:
+        if p.member_id not in pkg_by_member or p.id > pkg_by_member[p.member_id].id:
+            pkg_by_member[p.member_id] = p
+
+    total_rem_credits = sum(max(0, p.remaining_credits) for p in pkg_by_member.values())
+    low_credit_cnt = sum(
+        1 for m in members if (m.id not in pkg_by_member) or (pkg_by_member[m.id].remaining_credits <= 2)
+    )
+
+    anns = (
+        db.query(Announcement)
+        .order_by(Announcement.is_pinned.desc(), Announcement.date.desc(), Announcement.id.desc())
+        .all()
+    )
+    payments = (
+        db.query(PaymentTransaction)
+        .options(joinedload(PaymentTransaction.member), joinedload(PaymentTransaction.plan))
+        .order_by(PaymentTransaction.id.desc())
+        .all()
+    )
+    completed_payments = [tx for tx in payments if tx.status in ("completed", "succeeded")]
+    total_revenue = round(sum(tx.amount_try for tx in completed_payments), 2)
+
+    ps = _get_or_create_panel_settings(db)
+    db.commit()
+
+    return AdminSystemOverviewOut(
+        total_members=len(members),
+        total_trainers=trainers_cnt,
+        total_sessions=len(all_sessions),
+        upcoming_sessions_count=upcoming_sessions_cnt,
+        active_bookings_count=active_bookings_cnt,
+        active_packages_count=len(pkg_by_member),
+        total_remaining_credits=total_rem_credits,
+        low_credit_members_count=low_credit_cnt,
+        total_announcements=len(anns),
+        total_revenue_try=total_revenue,
+        total_payments_count=len(completed_payments),
+        panel_config=_to_panel_config_out(ps),
+        recent_announcements=[AnnouncementOut.model_validate(a) for a in anns[:6]],
+        recent_payments=[_build_admin_payment_out(tx) for tx in payments[:10]],
+    )
+
+
+@admin_router.get("/members", response_model=List[AdminMemberOut])
+def admin_list_members(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    members = db.query(User).filter(User.role == "member").order_by(User.id.desc()).all()
+    out = [_build_admin_member_out(db, m) for m in members]
+    db.commit()
+    return out
+
+
+@admin_router.post("/members", response_model=AdminMemberOut)
+def admin_create_member(
+    payload: AdminMemberCreateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    full_name = (payload.full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Müşteri Ad Soyad zorunludur.")
+
+    phone = (payload.phone or "").strip() or "0530 000 00 00"
+    ig = normalize_handle(payload.instagram_handle) if payload.instagram_handle else None
+    raw_pw = (payload.password or "").strip() or "Erya2026!"
+
+    member = User(
+        full_name=full_name,
+        phone=phone,
+        role="member",
+        instagram_handle=ig,
+        notes=(payload.notes or "").strip(),
+        avatar_url=payload.avatar_url,
+        streak_days=0,
+    )
+    db.add(member)
+    db.flush()
+
+    _ensure_user_credential(db, member)
+    _ensure_user_auth_account(
+        db,
+        member,
+        desired_username=(payload.username or "").strip() or None,
+        desired_email=(payload.email or "").strip() or None,
+        raw_password=raw_pw,
+        auth_provider="password",
+    )
+
+    if payload.credits is not None and payload.credits >= 0:
+        pkg_title = (payload.package_name or "").strip() or "8 Seans Grup Reformer Paketi"
+        dur = max(1, payload.duration_days or 40)
+        total_c = max(payload.credits, 1)
+        db.add(
+            MemberPackage(
+                member_id=member.id,
+                package_name=pkg_title,
+                total_credits=total_c,
+                remaining_credits=payload.credits,
+                expiry_date=(date.today() + timedelta(days=dur)).strftime("%Y-%m-%d"),
+                is_active=True,
+            )
+        )
+
+    db.commit()
+    db.refresh(member)
+    return _build_admin_member_out(db, member)
+
+
+@admin_router.put("/members/{member_id}", response_model=AdminMemberOut)
+def admin_update_member(
+    member_id: int,
+    payload: AdminMemberUpdateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    member = db.query(User).filter(User.id == member_id, User.role == "member").first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı.")
+
+    auth_acc = _ensure_user_auth_account(db, member)
+
+    if payload.full_name is not None and payload.full_name.strip():
+        member.full_name = payload.full_name.strip()
+    if payload.phone is not None and payload.phone.strip():
+        member.phone = payload.phone.strip()
+    if payload.instagram_handle is not None:
+        member.instagram_handle = normalize_handle(payload.instagram_handle) if payload.instagram_handle.strip() else None
+    if payload.notes is not None:
+        member.notes = payload.notes.strip()
+
+    if payload.email is not None and payload.email.strip():
+        new_email = _unique_email(db, payload.email.strip(), exclude_user_id=member.id)
+        auth_acc.email = new_email
+        member.email = new_email
+    if payload.username is not None and payload.username.strip():
+        auth_acc.username = _unique_username(db, payload.username.strip(), exclude_user_id=member.id)
+    if payload.password is not None and payload.password.strip():
+        auth_acc.password_hash = _hash_password(payload.password.strip())
+    auth_acc.updated_at = _now_str()
+
+    if any(
+        v is not None
+        for v in (payload.package_name, payload.remaining_credits, payload.total_credits, payload.expiry_date)
+    ):
+        pkg = _get_active_package(db, member.id)
+        if not pkg:
+            rem = max(0, payload.remaining_credits if payload.remaining_credits is not None else 8)
+            tot = max(rem, payload.total_credits if payload.total_credits is not None else max(8, rem))
+            pkg = MemberPackage(
+                member_id=member.id,
+                package_name=(payload.package_name or "").strip() or "8 Seans Grup Reformer Paketi",
+                total_credits=tot,
+                remaining_credits=rem,
+                expiry_date=payload.expiry_date or (date.today() + timedelta(days=40)).strftime("%Y-%m-%d"),
+                is_active=True,
+            )
+            db.add(pkg)
+        else:
+            if payload.package_name is not None and payload.package_name.strip():
+                pkg.package_name = payload.package_name.strip()
+            if payload.remaining_credits is not None:
+                pkg.remaining_credits = max(0, payload.remaining_credits)
+                if pkg.total_credits < pkg.remaining_credits:
+                    pkg.total_credits = pkg.remaining_credits
+            if payload.total_credits is not None:
+                pkg.total_credits = max(pkg.remaining_credits, payload.total_credits)
+            if payload.expiry_date is not None and payload.expiry_date.strip():
+                pkg.expiry_date = payload.expiry_date.strip()
+
+    db.commit()
+    db.refresh(member)
+    return _build_admin_member_out(db, member)
+
+
+@admin_router.post("/members/{member_id}/credits", response_model=AdminMemberOut)
+def admin_adjust_member_credits(
+    member_id: int,
+    payload: AdminMemberCreditAdjustRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    member = db.query(User).filter(User.id == member_id, User.role == "member").first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı.")
+
+    pkg = _get_active_package(db, member.id)
+    dur = max(1, payload.duration_days or 45)
+    exp_str = (date.today() + timedelta(days=dur)).strftime("%Y-%m-%d")
+
+    if not pkg:
+        initial_rem = (
+            payload.set_remaining_credits
+            if payload.set_remaining_credits is not None
+            else max(0, payload.credits_delta or 8)
+        )
+        initial_tot = max(initial_rem, payload.total_credits or max(8, initial_rem))
+        pkg = MemberPackage(
+            member_id=member.id,
+            package_name=(payload.package_name or "").strip() or "8 Seans Grup Reformer Paketi",
+            total_credits=initial_tot,
+            remaining_credits=initial_rem,
+            expiry_date=exp_str,
+            is_active=True,
+        )
+        db.add(pkg)
+    else:
+        if payload.package_name is not None and payload.package_name.strip():
+            pkg.package_name = payload.package_name.strip()
+        if payload.set_remaining_credits is not None:
+            pkg.remaining_credits = max(0, payload.set_remaining_credits)
+        elif payload.credits_delta is not None:
+            pkg.remaining_credits = max(0, pkg.remaining_credits + payload.credits_delta)
+            if payload.credits_delta > 0:
+                pkg.total_credits = max(pkg.total_credits + payload.credits_delta, pkg.remaining_credits)
+        if payload.total_credits is not None:
+            pkg.total_credits = max(pkg.remaining_credits, payload.total_credits)
+        elif pkg.total_credits < pkg.remaining_credits:
+            pkg.total_credits = pkg.remaining_credits
+        if payload.duration_days is not None:
+            pkg.expiry_date = exp_str
+
+    db.commit()
+    db.refresh(member)
+    return _build_admin_member_out(db, member)
+
+
+@admin_router.delete("/members/{member_id}", response_model=AdminDeleteOut)
+def admin_delete_member(
+    member_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    member = db.query(User).filter(User.id == member_id, User.role == "member").first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı.")
+
+    # Aktif randevuları varsa seans kontenjanını düşür
+    active_bookings = db.query(Booking).filter(Booking.member_id == member.id, Booking.status != "cancelled").all()
+    for b in active_bookings:
+        sess = db.query(ClassSession).filter(ClassSession.id == b.session_id).first()
+        if sess:
+            sess.current_enrolled = max(0, sess.current_enrolled - 1)
+
+    checkout_cls = getattr(payment_models, "PaymentCheckoutSession", None)
+    if checkout_cls is not None:
+        db.query(checkout_cls).filter(checkout_cls.member_id == member.id).delete()
+    db.query(PaymentTransaction).filter(PaymentTransaction.member_id == member.id).delete()
+    db.query(AuthSession).filter(AuthSession.user_id == member.id).delete()
+    db.query(UserAuthAccount).filter(UserAuthAccount.user_id == member.id).delete()
+    db.query(UserAccessCredential).filter(UserAccessCredential.user_id == member.id).delete()
+    db.delete(member)
+    db.commit()
+    return AdminDeleteOut(deleted=True, id=member_id, message="Müşteri kaydı silindi.")
+
+
+@admin_router.get("/sessions", response_model=List[AdminSessionItemOut])
+def admin_list_sessions(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    sessions = (
+        db.query(ClassSession)
+        .options(joinedload(ClassSession.trainer))
+        .order_by(ClassSession.date.asc(), ClassSession.start_time.asc())
+        .all()
+    )
+    return [_build_admin_session_item_out(s) for s in sessions]
+
+
+@admin_router.post("/sessions", response_model=AdminSessionItemOut)
+def admin_create_session(
+    payload: AdminSessionCreateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    trainer = db.query(User).filter(User.id == payload.trainer_id, User.role == "trainer").first()
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Seçilen eğitmen bulunamadı.")
+
+    title = (payload.title or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="Ders başlığı zorunludur.")
+
+    start_raw = (payload.start_time or "").strip().replace(".", ":")
+    m = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", start_raw)
+    if not m:
+        raise HTTPException(status_code=400, detail="Başlangıç saati HH:MM formatında olmalıdır.")
+    start_hhmm = f"{int(m.group(1)):02d}:{int(m.group(2)):02d}"
+
+    if payload.end_time and payload.end_time.strip():
+        end_raw = payload.end_time.strip().replace(".", ":")
+        m2 = re.match(r"^([01]?\d|2[0-3]):([0-5]\d)$", end_raw)
+        if not m2:
+            raise HTTPException(status_code=400, detail="Bitiş saati HH:MM formatında olmalıdır.")
+        end_hhmm = f"{int(m2.group(1)):02d}:{int(m2.group(2)):02d}"
+    else:
+        end_hhmm = (datetime.strptime(start_hhmm, "%H:%M") + timedelta(minutes=60)).strftime("%H:%M")
+
+    category = (payload.category or "").strip() or "Grup Reformer"
+    room = (payload.room or "").strip() or "Kemerli Ayna Reformer Salonu"
+
+    sess = ClassSession(
+        trainer_id=trainer.id,
+        title=title,
+        category=category,
+        room=room,
+        date=payload.date.strip(),
+        start_time=start_hhmm,
+        end_time=end_hhmm,
+        capacity=payload.capacity,
+        current_enrolled=0,
+    )
+    db.add(sess)
+    db.commit()
+    db.refresh(sess)
+    return _build_admin_session_item_out(sess)
+
+
+@admin_router.put("/sessions/{session_id}", response_model=AdminSessionItemOut)
+def admin_update_session(
+    session_id: int,
+    payload: AdminSessionUpdateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    sess = (
+        db.query(ClassSession)
+        .options(joinedload(ClassSession.trainer))
+        .filter(ClassSession.id == session_id)
+        .first()
+    )
+    if not sess:
+        raise HTTPException(status_code=404, detail="Ders seansı bulunamadı.")
+
+    if payload.trainer_id is not None:
+        tr = db.query(User).filter(User.id == payload.trainer_id, User.role == "trainer").first()
+        if not tr:
+            raise HTTPException(status_code=404, detail="Eğitmen bulunamadı.")
+        sess.trainer_id = tr.id
+    if payload.title is not None and payload.title.strip():
+        sess.title = payload.title.strip()
+    if payload.category is not None and payload.category.strip():
+        sess.category = payload.category.strip()
+    if payload.room is not None and payload.room.strip():
+        sess.room = payload.room.strip()
+    if payload.date is not None and payload.date.strip():
+        sess.date = payload.date.strip()
+    if payload.start_time is not None and payload.start_time.strip():
+        sess.start_time = payload.start_time.strip()
+    if payload.end_time is not None and payload.end_time.strip():
+        sess.end_time = payload.end_time.strip()
+    if payload.capacity is not None:
+        sess.capacity = max(sess.current_enrolled, payload.capacity)
+
+    db.commit()
+    db.refresh(sess)
+    return _build_admin_session_item_out(sess)
+
+
+@admin_router.delete("/sessions/{session_id}", response_model=AdminSessionDeleteOut)
+def admin_delete_session(
+    session_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    sess = db.query(ClassSession).filter(ClassSession.id == session_id).first()
+    if not sess:
+        raise HTTPException(status_code=404, detail="Ders seansı bulunamadı.")
+
+    booked_rows = db.query(Booking).filter(Booking.session_id == session_id, Booking.status == "booked").all()
+    refunded = 0
+    for b in booked_rows:
+        pkg = db.query(MemberPackage).filter(MemberPackage.id == b.package_id).first() or _get_active_package(
+            db, b.member_id
+        )
+        if pkg:
+            pkg.remaining_credits += 1
+            refunded += 1
+
+    db.delete(sess)
+    db.commit()
+    return AdminSessionDeleteOut(
+        deleted=True,
+        id=session_id,
+        refunded_bookings=refunded,
+        message=f"Ders seansı iptal edildi ve silindi ({refunded} üyeye +1 kredi iade edildi).",
+    )
+
+
+@admin_router.get("/packages", response_model=List[AdminPackagePlanOut])
+def admin_list_package_plans(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    plans = db.query(PackageCatalogPlan).order_by(PackageCatalogPlan.price_try.asc()).all()
+    return [_build_admin_package_plan_out(p) for p in plans]
+
+
+@admin_router.post("/packages", response_model=AdminPackagePlanOut)
+def admin_create_package_plan(
+    payload: AdminPackagePlanCreateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    name = (payload.name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Paket adı zorunludur.")
+
+    code = (payload.code or "").strip().upper() or f"ERYA-{_slugify_tr(name).upper()[:12]}-{payload.credits}"
+    while db.query(PackageCatalogPlan).filter(PackageCatalogPlan.code == code).first():
+        code = f"{code}-{secrets.randbelow(90) + 10}"
+
+    plan = PackageCatalogPlan(
+        code=code,
+        name=name,
+        subtitle=(payload.subtitle or "").strip(),
+        credits=payload.credits,
+        duration_days=payload.duration_days,
+        price_try=payload.price_try,
+        popular_badge=(payload.popular_badge or "").strip() or None,
+        features_json=json.dumps(payload.features or [], ensure_ascii=False),
+        is_active=payload.is_active,
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+    return _build_admin_package_plan_out(plan)
+
+
+@admin_router.put("/packages/{plan_id}", response_model=AdminPackagePlanOut)
+def admin_update_package_plan(
+    plan_id: int,
+    payload: AdminPackagePlanUpdateRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    plan = db.query(PackageCatalogPlan).filter(PackageCatalogPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Paket planı bulunamadı.")
+
+    if payload.name is not None and payload.name.strip():
+        plan.name = payload.name.strip()
+    if payload.subtitle is not None:
+        plan.subtitle = payload.subtitle.strip()
+    if payload.credits is not None and payload.credits > 0:
+        plan.credits = payload.credits
+    if payload.duration_days is not None and payload.duration_days > 0:
+        plan.duration_days = payload.duration_days
+    if payload.price_try is not None and payload.price_try >= 0:
+        plan.price_try = payload.price_try
+    if payload.popular_badge is not None:
+        plan.popular_badge = payload.popular_badge.strip() or None
+    if payload.features is not None:
+        plan.features_json = json.dumps(payload.features, ensure_ascii=False)
+    if payload.is_active is not None:
+        plan.is_active = payload.is_active
+
+    db.commit()
+    db.refresh(plan)
+    return _build_admin_package_plan_out(plan)
+
+
+@admin_router.delete("/packages/{plan_id}", response_model=AdminDeleteOut)
+def admin_delete_package_plan(
+    plan_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    plan = db.query(PackageCatalogPlan).filter(PackageCatalogPlan.id == plan_id).first()
+    if not plan:
+        raise HTTPException(status_code=404, detail="Paket planı bulunamadı.")
+
+    has_tx = db.query(PaymentTransaction).filter(PaymentTransaction.plan_id == plan.id).first()
+    if has_tx:
+        plan.is_active = False
+        db.commit()
+        return AdminDeleteOut(deleted=True, id=plan_id, message="Geçmiş ödemesi bulunan paket pasife alındı.")
+
+    db.delete(plan)
+    db.commit()
+    return AdminDeleteOut(deleted=True, id=plan_id, message="Paket katalogdan silindi.")
+
+
+@admin_router.get("/payments", response_model=List[AdminPaymentItemOut])
+def admin_list_payments(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    txs = (
+        db.query(PaymentTransaction)
+        .options(joinedload(PaymentTransaction.member), joinedload(PaymentTransaction.plan))
+        .order_by(PaymentTransaction.id.desc())
+        .all()
+    )
+    return [_build_admin_payment_out(tx) for tx in txs]
+
+
+# ============================================================================
+# MEVCUT /portal/* ENDPOINT'LERİ (GERİYE DÖNÜK %100 UYUMLULUK)
+# ============================================================================
+
+
 def _detect_injury_or_special_note(content: str, explicit_notes: Optional[str]) -> Optional[str]:
     parts: List[str] = []
     if explicit_notes and explicit_notes.strip():
@@ -547,7 +3067,6 @@ def _detect_injury_or_special_note(content: str, explicit_notes: Optional[str]) 
         .lower()
     )
     if any(kw in lower_content for kw in INJURY_HEALTH_KEYWORDS):
-        # Mesajın içinden ilgili sağlık cümlesini veya mesaj özetini çıkar
         sentences = [s.strip() for s in re.split(r"[.!?\n]+", content or "") if s.strip()]
         matched_sentences = [
             s
@@ -566,13 +3085,8 @@ def _detect_injury_or_special_note(content: str, explicit_notes: Optional[str]) 
     return " | ".join(parts)
 
 
-# ============================================================================
-# ENDPOINT'LER
-# ============================================================================
-
-@router.get("/public-chips", response_model=List[PortalQuickChipOut])
+@portal_router.get("/public-chips", response_model=List[PortalQuickChipOut])
 def get_public_demo_chips(db: Session = Depends(get_db)):
-    """Şifresiz ID sorgulama ekranındaki hızlı test çipleri için aktif FIT-XXXX kodlarını döner."""
     ensure_portal_initialized(db)
     users = db.query(User).order_by(User.role.asc(), User.id.asc()).all()
     creds_map = {c.user_id: c.access_code for c in db.query(UserAccessCredential).all()}
@@ -596,20 +3110,15 @@ def get_public_demo_chips(db: Session = Depends(get_db)):
     return chips
 
 
-@router.get("/lookup/{access_code}", response_model=PortalLookupResponse)
+@portal_router.get("/lookup/{access_code}", response_model=PortalLookupResponse)
 def lookup_by_access_code(access_code: str, db: Session = Depends(get_db)):
-    """
-    GİRİŞ YAPMADAN ÖZEL ID İLE HIZLI SORGULAMA!
-    Kullanıcı FIT-1003, 1003 veya 3 girdiğinde; adını, paketini, kalan ders kredisini,
-    yaklaşan ve geçmiş derslerini hoca ve saat detaylarıyla döndürür.
-    """
     ensure_portal_initialized(db)
 
     user = _resolve_user_by_code_or_identifier(db, access_code, allow_phone_and_handle=False)
     if not user:
         raise HTTPException(
             status_code=404,
-            detail=f"'{access_code}' koduna ait bir üye kaydı bulunamadı. Lütfen FIT-1003 gibi geçerli bir ID girin.",
+            detail=f"'{access_code}' koduna ait bir üye kaydı bulunamadı. Lütfen FIT-1004 gibi geçerli bir ID girin.",
         )
 
     cred = _ensure_user_credential(db, user)
@@ -629,7 +3138,7 @@ def lookup_by_access_code(access_code: str, db: Session = Depends(get_db)):
             .all()
         )
         bookings_sorted = sorted(
-            bookings_q,
+            [b for b in bookings_q if b.session is not None],
             key=lambda b: (b.session.date, b.session.start_time),
         )
 
@@ -688,7 +3197,6 @@ def lookup_by_access_code(access_code: str, db: Session = Depends(get_db)):
             summary_message=summary_msg,
         )
 
-    # Eğitmen ID'si (örn. FIT-1001) sorgulanırsa eğitmenin ders programını da zarifçe döndür
     trainer_sessions = (
         db.query(ClassSession)
         .filter(ClassSession.trainer_id == user.id)
@@ -742,9 +3250,8 @@ def lookup_by_access_code(access_code: str, db: Session = Depends(get_db)):
     )
 
 
-@router.post("/auth/login", response_model=PortalUserLoginResponse)
+@portal_router.post("/auth/login", response_model=PortalUserLoginResponse)
 def portal_user_login(payload: PortalUserLoginRequest, db: Session = Depends(get_db)):
-    """Telefon numarası, FIT-XXXX kodu veya @handle (+ opsiyonel PIN) ile üye/eğitmen girişi."""
     ensure_portal_initialized(db)
 
     user = _resolve_user_by_code_or_identifier(db, payload.identifier, allow_phone_and_handle=True)
@@ -756,8 +3263,10 @@ def portal_user_login(payload: PortalUserLoginRequest, db: Session = Depends(get
 
     cred = _ensure_user_credential(db, user)
     if payload.pin_code is not None and payload.pin_code.strip() != "":
-        if payload.pin_code.strip() != cred.pin_code:
-            raise HTTPException(status_code=401, detail="PIN kodu hatalı. (Demo varsayılan PIN: 1234)")
+        auth_acc = _ensure_user_auth_account(db, user)
+        raw_pin = payload.pin_code.strip()
+        if raw_pin != cred.pin_code and not _verify_password(raw_pin, auth_acc.password_hash):
+            raise HTTPException(status_code=401, detail="Şifre veya PIN kodu hatalı.")
 
     pkg = _get_active_package(db, user.id) if user.role == "member" else None
     db.commit()
@@ -780,33 +3289,40 @@ def portal_user_login(payload: PortalUserLoginRequest, db: Session = Depends(get
     )
 
 
-@router.post("/admin/login", response_model=PortalAdminLoginResponse)
+@portal_router.post("/admin/login", response_model=PortalAdminLoginResponse)
 def portal_admin_login(payload: PortalAdminLoginRequest, db: Session = Depends(get_db)):
-    """Admin kullanıcı adı ve şifre doğrulaması (admin / admin123)."""
     ensure_portal_initialized(db)
 
-    username = (payload.username or "").strip()
+    ident = (payload.username or "").strip().lower()
     password = (payload.password or "").strip()
 
-    admin_acc = db.query(AdminAccount).filter(AdminAccount.username == username).first()
-    if not admin_acc or admin_acc.password != password:
+    admin_acc = (
+        db.query(AdminAccount)
+        .filter((AdminAccount.username == ident) | (AdminAccount.email == ident))
+        .first()
+    )
+    if not admin_acc or not _verify_password(password, admin_acc.password_hash):
         raise HTTPException(status_code=401, detail="Yönetici kullanıcı adı veya şifre hatalı.")
+
+    sess = _issue_session(
+        db,
+        account_type="admin",
+        role="admin",
+        auth_provider="password",
+        admin_id=admin_acc.id,
+    )
 
     return PortalAdminLoginResponse(
         authenticated=True,
         username=admin_acc.username,
         full_name=admin_acc.full_name,
-        token=f"fit-admin-{admin_acc.id}",
+        token=sess.token,
         message=f"Yönetim paneline hoş geldiniz, {admin_acc.full_name}.",
     )
 
 
-@router.get("/admin/overview", response_model=AdminOverviewResponse)
+@portal_router.get("/admin/overview", response_model=AdminOverviewResponse)
 def get_admin_overview(db: Session = Depends(get_db)):
-    """
-    Admin paneli özet istatistikleri, tüm kullanıcılar + FIT-XXXX ID rehberi + kalan krediler,
-    ders seansları ve kanal/birim bazlı veri çekme sayıları.
-    """
     ensure_portal_initialized(db)
 
     all_users = db.query(User).order_by(User.role.asc(), User.id.asc()).all()
@@ -933,12 +3449,8 @@ def get_admin_overview(db: Session = Depends(get_db)):
     )
 
 
-@router.post("/admin/users", response_model=AdminCreateUserResponse)
+@portal_router.post("/admin/users", response_model=AdminCreateUserResponse)
 def admin_create_user(payload: AdminCreateUserRequest, db: Session = Depends(get_db)):
-    """
-    Admin tarafından manuel yeni üye veya eğitmen oluşturma;
-    otomatik FIT-XXXX ID atama, başlangıç paketi tanımlama ve sakatlık/özel not girme.
-    """
     ensure_portal_initialized(db)
 
     full_name = (payload.full_name or "").strip()
@@ -962,6 +3474,7 @@ def admin_create_user(payload: AdminCreateUserRequest, db: Session = Depends(get
     db.flush()
 
     cred = _ensure_user_credential(db, new_user, pin_code=payload.pin_code or "1234")
+    _ensure_user_auth_account(db, new_user, raw_password="Erya2026!")
 
     created_pkg: Optional[MemberPackage] = None
     if payload.role == "member" and payload.package_credits and payload.package_credits > 0:
@@ -984,11 +3497,7 @@ def admin_create_user(payload: AdminCreateUserRequest, db: Session = Depends(get
         db.flush()
 
     role_tr = "Eğitmen" if payload.role == "trainer" else "Üye"
-    pkg_desc = (
-        f", {created_pkg.total_credits} ders kredi tanımlandı"
-        if created_pkg
-        else ""
-    )
+    pkg_desc = f", {created_pkg.total_credits} ders kredi tanımlandı" if created_pkg else ""
     note_desc = " ve özel/sakatlık notu işlendi" if clean_notes else ""
     summary = f"Admin Kaydı -> {full_name} ({role_tr}) oluşturuldu, {cred.access_code} atandı{pkg_desc}{note_desc}."
 
@@ -1026,15 +3535,10 @@ def admin_create_user(payload: AdminCreateUserRequest, db: Session = Depends(get
     )
 
 
-@router.post("/intake/collect", response_model=DataIntakeCollectResponse)
+@portal_router.post("/intake/collect", response_model=DataIntakeCollectResponse)
 def collect_and_route_intake_data(
     payload: DataIntakeCollectRequest, db: Session = Depends(get_db)
 ):
-    """
-    Instagram, WhatsApp veya Manuel veri çekme/girme ve ilgili birimlere
-    (Üye Sicili & FIT-XXXX ID, Eğitmen Yoklama Sakatlık Notu, Ders Randevusu, Aday Havuzu)
-    otomatik yönlendirme motoru.
-    """
     ensure_portal_initialized(db)
 
     sender_name = (payload.sender_name or "").strip()
@@ -1058,7 +3562,6 @@ def collect_and_route_intake_data(
     routed_departments: List[str] = []
     summary_parts: List[str] = []
 
-    # a) Kullanıcı eşleştirme veya otomatik yeni üye + FIT-XXXX oluşturma
     matched_user: Optional[User] = None
     if sender_contact:
         matched_user = _resolve_user_by_code_or_identifier(
@@ -1092,17 +3595,15 @@ def collect_and_route_intake_data(
         db.add(matched_user)
         db.flush()
         cred = _ensure_user_credential(db, matched_user)
+        _ensure_user_auth_account(db, matched_user)
         routed_departments.append("member_registry")
         summary_parts.append(f"Yeni üye oluşturuldu ({cred.access_code})")
     else:
         cred = _ensure_user_credential(db, matched_user)
-        if (
-            not matched_user.instagram_handle
-            and sender_contact.startswith("@")
-        ):
+        _ensure_user_auth_account(db, matched_user)
+        if not matched_user.instagram_handle and sender_contact.startswith("@"):
             matched_user.instagram_handle = normalize_handle(sender_contact)
 
-    # Opsiyonel paket kredisi tanımlama / ekleme
     package_updated = False
     active_pkg = _get_active_package(db, matched_user.id) if matched_user.role == "member" else None
     if matched_user.role == "member" and payload.package_credits and payload.package_credits > 0:
@@ -1131,7 +3632,6 @@ def collect_and_route_intake_data(
             f"{payload.package_credits} ders paketi tanımlandı (Toplam Kredi: {active_pkg.remaining_credits})"
         )
 
-    # b) Sakatlık / sağlık / özel not tespiti -> Eğitmen Yoklama Ekranına (User.notes) işle
     notes_updated = False
     detected_note = _detect_injury_or_special_note(content, payload.notes)
     if detected_note:
@@ -1150,7 +3650,6 @@ def collect_and_route_intake_data(
             routed_departments.append("trainer_note")
         summary_parts.append("Eğitmen Yoklama ekranına sakatlık/özel not iletildi")
 
-    # c) Ders randevu talebi (session_id veya doğal dil mesaj analizi) -> Booking
     booking_result: Optional[IntakeBookingResultOut] = None
     target_session: Optional[ClassSession] = None
 
@@ -1288,7 +3787,6 @@ def collect_and_route_intake_data(
                 f"{target_session.date} {target_session.start_time} {target_session.title} randevusu oluşturuldu (Kalan: {active_pkg.remaining_credits})"
             )
 
-    # d) Hedef departman belirleme & DataIntakeLog kaydı
     if not routed_departments:
         routed_departments.append("lead_queue")
         summary_parts.append("Talep müşteri iletişim / aday havuzuna yönlendirildi")
@@ -1350,13 +3848,12 @@ def collect_and_route_intake_data(
     )
 
 
-@router.get("/intake/logs", response_model=List[DataIntakeLogOut])
+@portal_router.get("/intake/logs", response_model=List[DataIntakeLogOut])
 def list_intake_logs(
     source: Optional[str] = Query(default=None, description="instagram | whatsapp | manual"),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db),
 ):
-    """Çekilen/girilen tüm Instagram, WhatsApp ve Manuel verilerin geçmişini döndürür."""
     ensure_portal_initialized(db)
 
     query = db.query(DataIntakeLog)

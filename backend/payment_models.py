@@ -38,3 +38,61 @@ class PaymentTransaction(Base):
     member = relationship("User")
     plan = relationship("PackageCatalogPlan")
     member_package = relationship("MemberPackage")
+
+
+class PaymentCheckoutSession(Base):
+    """
+    Gerçek Satın Alma Yönlendirmesi & Ödeme Geçidi Oturumu
+    Desteklenen Sağlayıcılar:
+    - 'stripe' (STRIPE_SECRET_KEY tanımlıysa gerçek Stripe Checkout Session)
+    - 'iyzico' (IYZICO_API_KEY + IYZICO_SECRET_KEY tanımlıysa Iyzico Checkout Form)
+    - 'erya_3ds_gateway' (Yerleşik 256-Bit SSL + BKM 3D Secure Banka SMS Doğrulama Geçidi)
+    """
+
+    __tablename__ = "payment_checkout_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(String(80), unique=True, nullable=False, index=True)
+    member_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    plan_id = Column(Integer, ForeignKey("package_catalog_plans.id"), nullable=False, index=True)
+
+    provider = Column(String(40), nullable=False, default="erya_3ds_gateway")
+    provider_reference = Column(String(160), nullable=True, index=True)
+    external_checkout_url = Column(String(700), nullable=True)
+
+    # 'pending' | 'requires_3ds' | 'succeeded' | 'failed' | 'cancelled'
+    status = Column(String(30), nullable=False, default="pending", index=True)
+
+    amount_try = Column(Float, nullable=False)
+    currency = Column(String(10), nullable=False, default="TRY")
+    installment_count = Column(Integer, nullable=False, default=1)
+    payment_method = Column(String(30), nullable=False, default="credit_card")
+
+    card_holder_name = Column(String(120), nullable=True)
+    card_last4 = Column(String(10), nullable=True)
+    card_brand = Column(String(30), nullable=True)
+    bank_name = Column(String(80), nullable=True)
+
+    sms_otp_code = Column(String(12), nullable=True)
+    otp_attempts = Column(Integer, nullable=False, default=0)
+    failure_reason = Column(String(300), nullable=True)
+
+    return_url = Column(String(700), nullable=True)
+    cancel_url = Column(String(700), nullable=True)
+
+    transaction_id = Column(Integer, ForeignKey("payment_transactions.id"), nullable=True)
+    credited_package_id = Column(Integer, ForeignKey("member_packages.id"), nullable=True)
+    purchased_credits = Column(Integer, nullable=False, default=0)
+    carried_credits = Column(Integer, nullable=False, default=0)
+    booked_hold_count = Column(Integer, nullable=False, default=0)
+    new_remaining_credits = Column(Integer, nullable=True)
+    new_total_credits = Column(Integer, nullable=True)
+
+    created_at = Column(String(40), nullable=False)
+    expires_at = Column(String(40), nullable=False)
+    completed_at = Column(String(40), nullable=True)
+
+    member = relationship("User")
+    plan = relationship("PackageCatalogPlan")
+    transaction = relationship("PaymentTransaction")
+    credited_package = relationship("MemberPackage")

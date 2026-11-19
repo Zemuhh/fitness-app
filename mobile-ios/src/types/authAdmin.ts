@@ -1,5 +1,9 @@
 import { AppUser, UserRole } from '@/types/fitness';
 
+export type AuthAccountRole = 'member' | 'trainer' | 'admin';
+
+export type ActivePanelMode = 'admin' | 'trainer' | 'member';
+
 export type IntakeSource = 'instagram' | 'whatsapp' | 'manual';
 
 export type TargetDepartment =
@@ -7,6 +11,277 @@ export type TargetDepartment =
   | 'trainer_note'
   | 'member_registry'
   | 'lead_queue';
+
+export interface AuthSessionOut {
+  authenticated: boolean;
+  token: string;
+  token_type: string;
+  expires_at?: string;
+  auth_provider?: string;
+  id: number | null;
+  user_id: number | null;
+  admin_id?: number | null;
+  role: AuthAccountRole;
+  username: string | null;
+  email: string | null;
+  full_name: string;
+  phone: string;
+  instagram_handle: string | null;
+  avatar_url: string | null;
+  access_code: string | null;
+  has_personal_profile: boolean;
+  is_admin: boolean;
+  available_panels: ActivePanelMode[];
+  default_panel: ActivePanelMode;
+  specialty: string | null;
+  notes: string | null;
+  package_name: string | null;
+  remaining_credits: number | null;
+  total_credits: number | null;
+  message: string;
+}
+
+export interface AuthSessionUser {
+  id: number | null;
+  user_id?: number | null;
+  admin_id?: number | null;
+  full_name: string;
+  role: AuthAccountRole;
+  email?: string | null;
+  username?: string | null;
+  phone?: string | null;
+  access_code?: string | null;
+  avatar_url?: string | null;
+  specialty?: string | null;
+  notes?: string | null;
+  instagram_handle?: string | null;
+  has_personal_profile: boolean;
+  is_admin: boolean;
+  available_panels: ActivePanelMode[];
+  default_panel: ActivePanelMode;
+}
+
+export interface AuthLoginPayload {
+  identifier?: string;
+  username?: string;
+  email?: string;
+  password: string;
+}
+
+export interface GoogleAuthUrlResponse {
+  auth_url: string;
+  state: string;
+  provider: string;
+  client_id_configured: boolean;
+}
+
+export interface GoogleAuthExchangePayload {
+  id_token?: string;
+  access_token?: string;
+  code?: string;
+  email?: string;
+  full_name?: string;
+  google_sub?: string;
+  avatar_url?: string;
+}
+
+export interface AdminPanelConfig {
+  admin_panel_enabled: boolean;
+  trainer_panel_enabled: boolean;
+  member_panel_enabled: boolean;
+  default_landing_panel: ActivePanelMode;
+  allow_google_login: boolean;
+  allow_member_booking: boolean;
+  allow_package_purchase: boolean;
+  studio_banner_enabled: boolean;
+  studio_banner_title: string;
+  studio_banner_message: string;
+  updated_at?: string | null;
+}
+
+export interface AdminPanelTargetsResponse {
+  trainers: AppUser[];
+  members: AppUser[];
+  default_trainer_id: number | null;
+  default_member_id: number | null;
+}
+
+export interface AdminAnnouncementItem {
+  id: number;
+  title: string;
+  content: string;
+  tag: string;
+  date: string;
+  is_pinned?: boolean;
+}
+
+export interface AdminAnnouncementPayload {
+  title: string;
+  content: string;
+  tag?: string;
+  date?: string;
+  is_pinned?: boolean;
+}
+
+export interface AdminTrainerItem {
+  id: number;
+  full_name: string;
+  email?: string | null;
+  username?: string | null;
+  phone: string;
+  instagram_handle?: string | null;
+  specialty?: string | null;
+  bio?: string | null;
+  notes?: string | null;
+  avatar_url?: string | null;
+  rating?: number | null;
+  experience_years?: number | null;
+  access_code?: string | null;
+  active_sessions_count?: number;
+}
+
+export interface AdminTrainerPayload {
+  full_name: string;
+  specialty?: string;
+  email?: string;
+  username?: string;
+  password?: string;
+  phone?: string;
+  instagram_handle?: string;
+  bio?: string;
+  notes?: string;
+  experience_years?: number;
+}
+
+export interface AdminMemberItem {
+  id: number;
+  full_name: string;
+  email?: string | null;
+  username?: string | null;
+  phone: string;
+  instagram_handle?: string | null;
+  notes?: string | null;
+  access_code?: string | null;
+  package_id?: number | null;
+  package_name?: string | null;
+  remaining_credits: number;
+  total_credits: number;
+  expiry_date?: string | null;
+  low_credit_warning: boolean;
+  upcoming_bookings_count: number;
+  attended_count?: number;
+  streak_days?: number;
+}
+
+export interface AdminMemberCreatePayload {
+  full_name: string;
+  phone?: string;
+  email?: string;
+  username?: string;
+  password?: string;
+  instagram_handle?: string;
+  notes?: string;
+  package_name?: string;
+  credits?: number;
+  duration_days?: number;
+}
+
+export interface AdminMemberUpdatePayload {
+  full_name?: string;
+  phone?: string;
+  email?: string;
+  username?: string;
+  password?: string;
+  instagram_handle?: string;
+  notes?: string;
+}
+
+export interface AdminMemberCreditsPayload {
+  package_name?: string;
+  credits_delta?: number;
+  set_remaining_credits?: number;
+  total_credits?: number;
+  duration_days?: number;
+}
+
+export interface AdminClassSessionItem {
+  id: number;
+  title: string;
+  category?: string;
+  room?: string | null;
+  date: string;
+  day_label?: string;
+  start_time: string;
+  end_time: string;
+  trainer_id: number;
+  trainer_name: string;
+  capacity: number;
+  current_enrolled: number;
+  remaining_spots?: number;
+  is_full?: boolean;
+}
+
+export interface AdminClassSessionPayload {
+  trainer_id: number;
+  title: string;
+  category?: string;
+  room?: string;
+  date: string;
+  start_time: string;
+  end_time?: string;
+  capacity: number;
+}
+
+export interface AdminPackagePlanItem {
+  id: number;
+  code: string;
+  name: string;
+  subtitle?: string;
+  credits: number;
+  duration_days: number;
+  price_try: number;
+  popular_badge?: string | null;
+  is_active: boolean;
+}
+
+export interface AdminPaymentItem {
+  id: number;
+  transaction_code?: string;
+  session_id?: string;
+  member_id: number;
+  member_name?: string;
+  package_name?: string;
+  plan_name?: string;
+  amount_try?: number;
+  amount?: number;
+  currency?: string;
+  payment_method?: string;
+  provider?: string;
+  installment_count?: number;
+  status: string;
+  created_at: string;
+}
+
+export interface AdminSystemOverview {
+  total_members: number;
+  total_trainers: number;
+  total_sessions: number;
+  upcoming_sessions_count?: number;
+  active_bookings_count: number;
+  active_packages_count: number;
+  total_remaining_credits: number;
+  low_credit_members_count: number;
+  total_announcements?: number;
+  total_revenue_try?: number;
+  total_payments_count?: number;
+  panel_config?: AdminPanelConfig;
+  recent_announcements?: AdminAnnouncementItem[];
+  recent_payments?: AdminPaymentItem[];
+}
+
+// ============================================================================
+// LEGACY PORTAL GATEWAY UYUMLULUK TİPLERİ
+// ============================================================================
 
 export interface PortalUserSummary extends AppUser {
   access_code: string;

@@ -1,8 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
   LayoutAnimation,
   Modal,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -14,29 +16,50 @@ import {
 import {
   AlertTriangle,
   Calendar,
-  CheckCircle2,
+  CalendarPlus,
   ChevronDown,
   ChevronUp,
   Clock,
   Dumbbell,
   Edit3,
   Flame,
+  Hourglass,
+  Layers,
+  MapPin,
+  Percent,
+  Phone,
   Users,
   X,
 } from 'lucide-react-native';
-import { COLORS } from '@/theme/colors';
-import { TrainerAttendee, TrainerScheduleData, TrainerSession } from '@/types/fitness';
-import { formatTurkishDateLabel, getTodayIso, getTomorrowIso } from '@/utils/dateHelpers';
+import { CARD_SHADOW, COLORS } from '@/theme/colors';
+import {
+  AttendanceStatus,
+  TrainerAttendee,
+  TrainerScheduleData,
+  TrainerSession,
+  WaitlistEntry,
+} from '@/types/fitness';
+import { MemberAvatar, getCategoryVisuals } from '@/screens/member/MemberAvatar';
+import {
+  formatTurkishDateLabel,
+  getTodayIso,
+  getTomorrowIso,
+} from '@/utils/dateHelpers';
 
 interface Props {
   data: TrainerScheduleData;
   refreshing: boolean;
   onRefresh: () => void;
-  onMarkAttendance: (bookingId: number, status: 'attended' | 'no_show') => Promise<void>;
+  onMarkAttendance: (bookingId: number, status: AttendanceStatus) => Promise<void>;
   onSaveMemberNote: (memberId: number, notes: string) => Promise<void>;
+  onGoToCreateSession: () => void;
   busyBookingId: number | null;
   savingNote: boolean;
+  focusDate?: string | null;
+  onFocusDateConsumed?: () => void;
 }
+
+const ALL_DATES_KEY = 'ALL';
 
 export function TrainerScheduleTab({
   data,
@@ -44,8 +67,11 @@ export function TrainerScheduleTab({
   onRefresh,
   onMarkAttendance,
   onSaveMemberNote,
+  onGoToCreateSession,
   busyBookingId,
   savingNote,
+  focusDate,
+  onFocusDateConsumed,
 }: Props) {
   const todayIso = getTodayIso();
   const tomorrowIso = getTomorrowIso();
@@ -55,42 +81,59 @@ export function TrainerScheduleTab({
     return Array.from(set).sort();
   }, [data.available_dates, todayIso, tomorrowIso]);
 
-  const [selectedDate, setSelectedDate] = useState<string>(todayIso);
+  const [selectedDate, setSelectedDate] = useState<string>(() => {
+    const hasToday = data.sessions.some((s) => s.date === todayIso);
+    if (hasToday) return todayIso;
+    const upcoming = data.available_dates.find((d) => d >= todayIso);
+    return upcoming || todayIso;
+  });
+
   const [expandedSessionIds, setExpandedSessionIds] = useState<Record<number, boolean>>({});
   const [editingMember, setEditingMember] = useState<TrainerAttendee | null>(null);
   const [noteDraft, setNoteDraft] = useState<string>('');
 
-  const daySessions = useMemo(
-    () => data.sessions.filter((s) => s.date === selectedDate),
-    [data.sessions, selectedDate]
-  );
-
-  // İlk ders kartını varsayılan olarak açık getir
   useEffect(() => {
-    if (daySessions.length > 0) {
+    if (focusDate) {
+      setSelectedDate(focusDate);
+      onFocusDateConsumed?.();
+    }
+  }, [focusDate, onFocusDateConsumed]);
+
+  const visibleSessions = useMemo(() => {
+    if (selectedDate === ALL_DATES_KEY) {
+      return data.sessions;
+    }
+    return data.sessions.filter((s) => s.date === selectedDate);
+  }, [data.sessions, selectedDate]);
+
+  useEffect(() => {
+    if (visibleSessions.length > 0) {
       setExpandedSessionIds((prev) => {
-        const hasAnyForDay = daySessions.some((s) => prev[s.id] !== undefined);
-        if (hasAnyForDay) return prev;
-        return { ...prev, [daySessions[0].id]: true };
+        const hasAnyVisible = visibleSessions.some((s) => prev[s.id] !== undefined);
+        if (hasAnyVisible) return prev;
+        return { ...prev, [visibleSessions[0].id]: true };
       });
     }
-  }, [daySessions]);
+  }, [visibleSessions]);
 
-  const totalClassesToday = daySessions.length;
-  const totalMembersToday = useMemo(
-    () => daySessions.reduce((acc, s) => acc + s.attendees.length, 0),
-    [daySessions]
-  );
-  const completedCount = useMemo(
-    () =>
-      daySessions.reduce(
-        (acc, s) =>
-          acc +
-          s.attendees.filter((a) => a.status === 'attended' || a.status === 'no_show').length,
-        0
-      ),
-    [daySessions]
-  );
+  const summaryStats = useMemo(() => {
+    const totalClasses = visibleSessions.length;
+    const totalEnrolled = visibleSessions.reduce((acc, s) => acc + s.current_enrolled, 0);
+    const totalCapacity = visibleSessions.reduce((acc, s) => acc + s.capacity, 0);
+    const fillRatePct =
+      totalCapacity > 0 ? Math.round((totalEnrolled / totalCapacity) * 100) : 0;
+    const totalWaitlist = visibleSessions.reduce(
+      (acc, s) => acc + (s.waitlist?.length ?? 0),
+      0
+    );
+    return {
+      totalClasses,
+      totalEnrolled,
+      totalCapacity,
+      fillRatePct,
+      totalWaitlist,
+    };
+  }, [visibleSessions]);
 
   const toggleExpand = (sessionId: number) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
@@ -106,11 +149,13 @@ export function TrainerScheduleTab({
   };
 
   const handleAttendancePress = async (
-    bookingId: number,
-    status: 'attended' | 'no_show'
+    attendee: TrainerAttendee,
+    targetStatus: 'attended' | 'no_show'
   ) => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
-    await onMarkAttendance(bookingId, status);
+    const nextStatus: AttendanceStatus =
+      attendee.status === targetStatus ? 'booked' : targetStatus;
+    await onMarkAttendance(attendee.booking_id, nextStatus);
   };
 
   const openEditModal = (attendee: TrainerAttendee) => {
@@ -134,51 +179,48 @@ export function TrainerScheduleTab({
           <RefreshControl
             refreshing={refreshing}
             onRefresh={onRefresh}
-            tintColor={COLORS.trainerAccent}
+            tintColor={COLORS.secondary}
           />
         }
       >
-        {/* En Üstte Yan Yana 3 Mini Bento İstatistik Kutusu */}
-        <View style={styles.bentoStatsRow}>
-          <View style={styles.miniBentoBox}>
-            <View style={[styles.bentoIconWrap, { backgroundColor: COLORS.indigoSoft }]}>
-              <Dumbbell size={15} color={COLORS.trainerAccent} />
-            </View>
-            <Text style={styles.bentoStatNumber}>{totalClassesToday}</Text>
-            <Text style={styles.bentoStatLabel} numberOfLines={1}>
-              Bugünkü Ders
-            </Text>
-          </View>
-
-          <View style={styles.miniBentoBox}>
-            <View style={[styles.bentoIconWrap, { backgroundColor: COLORS.emeraldSoft }]}>
-              <Users size={15} color={COLORS.primary} />
-            </View>
-            <Text style={styles.bentoStatNumber}>{totalMembersToday}</Text>
-            <Text style={styles.bentoStatLabel} numberOfLines={1}>
-              Toplam Katılımcı
-            </Text>
-          </View>
-
-          <View style={styles.miniBentoBox}>
-            <View style={[styles.bentoIconWrap, { backgroundColor: 'rgba(163, 230, 53, 0.14)' }]}>
-              <CheckCircle2 size={15} color={COLORS.accentVolt} />
-            </View>
-            <Text style={[styles.bentoStatNumber, { color: COLORS.accentVolt }]}>
-              {completedCount}/{totalMembersToday}
-            </Text>
-            <Text style={styles.bentoStatLabel} numberOfLines={1}>
-              Tamamlanan
-            </Text>
-          </View>
-        </View>
-
-        {/* Yatay Gün Seçici Strip */}
+        {/* Yatay Tarih Seçici */}
         <ScrollView
           horizontal
           showsHorizontalScrollIndicator={false}
           contentContainerStyle={styles.dateBar}
         >
+          <TouchableOpacity
+            style={[
+              styles.datePill,
+              selectedDate === ALL_DATES_KEY && styles.datePillActive,
+            ]}
+            onPress={() => handleSelectDate(ALL_DATES_KEY)}
+            activeOpacity={0.85}
+          >
+            <Layers
+              size={15}
+              color={selectedDate === ALL_DATES_KEY ? COLORS.white : COLORS.secondary}
+            />
+            <View>
+              <Text
+                style={[
+                  styles.datePillTitle,
+                  selectedDate === ALL_DATES_KEY && styles.datePillTitleActive,
+                ]}
+              >
+                Tümü
+              </Text>
+              <Text
+                style={[
+                  styles.datePillSub,
+                  selectedDate === ALL_DATES_KEY && styles.datePillSubActive,
+                ]}
+              >
+                {data.sessions.length} Ders
+              </Text>
+            </View>
+          </TouchableOpacity>
+
           {dateOptions.map((dt) => {
             const active = selectedDate === dt;
             const fmt = formatTurkishDateLabel(dt);
@@ -190,279 +232,567 @@ export function TrainerScheduleTab({
                 onPress={() => handleSelectDate(dt)}
                 activeOpacity={0.85}
               >
-                <Text style={[styles.datePillTitle, active && styles.datePillTitleActive]}>
-                  {fmt.primary}
-                </Text>
-                <Text style={[styles.datePillSub, active && styles.datePillSubActive]}>
-                  {fmt.secondary} • {countOnDate}
-                </Text>
+                <View>
+                  <Text
+                    style={[styles.datePillTitle, active && styles.datePillTitleActive]}
+                  >
+                    {fmt.primary}
+                  </Text>
+                  <Text style={[styles.datePillSub, active && styles.datePillSubActive]}>
+                    {fmt.secondary} • {countOnDate} Ders
+                  </Text>
+                </View>
               </TouchableOpacity>
             );
           })}
         </ScrollView>
 
-        {/* Bölüm Başlığı */}
-        <View style={styles.sectionHeaderRow}>
-          <Clock size={15} color={COLORS.trainerAccent} />
-          <Text style={styles.sectionHeading}>
-            Saatlik Zaman Çizelgesi • {formatTurkishDateLabel(selectedDate).full}
-          </Text>
+        {/* Günlük Özet Kartı */}
+        <View style={styles.summaryCard}>
+          <View style={styles.summaryCardHeader}>
+            <View style={styles.sectionHeaderLeft}>
+              <View style={styles.headerIconDot}>
+                <Clock size={15} color={COLORS.secondary} />
+              </View>
+              <View>
+                <Text style={styles.sectionHeading}>
+                  {selectedDate === ALL_DATES_KEY
+                    ? `Tüm Ders Akışım (${visibleSessions.length})`
+                    : formatTurkishDateLabel(selectedDate).full}
+                </Text>
+                <Text style={styles.sectionSubText}>
+                  Canlı kontenjan, katılımcı notları ve yoklama özeti
+                </Text>
+              </View>
+            </View>
+
+            {summaryStats.totalWaitlist > 0 && (
+              <View style={styles.summaryWaitlistChip}>
+                <Hourglass size={11} color={COLORS.warningText} />
+                <Text style={styles.summaryWaitlistText}>
+                  {summaryStats.totalWaitlist} Yedek
+                </Text>
+              </View>
+            )}
+          </View>
+
+          <View style={styles.bentoStatsRow}>
+            <View style={styles.miniBentoBox}>
+              <View style={[styles.bentoIconWrap, { backgroundColor: COLORS.secondaryLight }]}>
+                <Dumbbell size={15} color={COLORS.secondary} />
+              </View>
+              <Text style={styles.bentoStatNumber}>{summaryStats.totalClasses}</Text>
+              <Text style={styles.bentoStatLabel} numberOfLines={1}>
+                Toplam Ders
+              </Text>
+            </View>
+
+            <View style={styles.miniBentoBox}>
+              <View style={[styles.bentoIconWrap, { backgroundColor: COLORS.primaryLight }]}>
+                <Users size={15} color={COLORS.primary} />
+              </View>
+              <Text style={styles.bentoStatNumber}>
+                {summaryStats.totalEnrolled}
+                <Text style={styles.bentoStatSubCap}>/{summaryStats.totalCapacity}</Text>
+              </Text>
+              <Text style={styles.bentoStatLabel} numberOfLines={1}>
+                Kayıtlı Üye
+              </Text>
+            </View>
+
+            <View style={styles.miniBentoBox}>
+              <View
+                style={[
+                  styles.bentoIconWrap,
+                  {
+                    backgroundColor:
+                      summaryStats.fillRatePct >= 80
+                        ? COLORS.warningBg
+                        : COLORS.primaryLight,
+                  },
+                ]}
+              >
+                <Percent
+                  size={15}
+                  color={
+                    summaryStats.fillRatePct >= 80
+                      ? COLORS.warningText
+                      : COLORS.primary
+                  }
+                />
+              </View>
+              <Text
+                style={[
+                  styles.bentoStatNumber,
+                  {
+                    color:
+                      summaryStats.fillRatePct >= 80
+                        ? COLORS.warningText
+                        : COLORS.primary,
+                  },
+                ]}
+              >
+                %{summaryStats.fillRatePct}
+              </Text>
+              <Text style={styles.bentoStatLabel} numberOfLines={1}>
+                Doluluk Oranı
+              </Text>
+            </View>
+          </View>
         </View>
 
-        {/* Saatlik Zaman Çizelgesi (Timeline) */}
-        {daySessions.length === 0 ? (
+        {/* Saatlik Ders Kartları & Yoklama Akışı */}
+        {visibleSessions.length === 0 ? (
           <View style={styles.emptyCard}>
-            <Calendar size={30} color={COLORS.textMuted} />
-            <Text style={styles.emptyTitle}>Seçili tarihte dersiniz bulunmuyor</Text>
+            <View style={styles.emptyIconWrap}>
+              <Calendar size={26} color={COLORS.secondary} />
+            </View>
+            <Text style={styles.emptyTitle}>Seçili tarihte açık dersiniz bulunmuyor</Text>
             <Text style={styles.emptySub}>
-              Üstteki takvim şeridinden diğer günleri seçerek programınızı görüntüleyebilirsiniz.
+              Üstten farklı bir gün seçebilir veya takviminize hemen yeni bir grup ya da
+              birebir PT seansı ekleyebilirsiniz.
             </Text>
+            <TouchableOpacity
+              style={styles.emptyCreateBtn}
+              onPress={onGoToCreateSession}
+              activeOpacity={0.85}
+            >
+              <CalendarPlus size={16} color={COLORS.white} />
+              <Text style={styles.emptyCreateBtnText}>Bu Güne Yeni Ders Aç</Text>
+            </TouchableOpacity>
           </View>
         ) : (
-          daySessions.map((session: TrainerSession, idx: number) => {
+          visibleSessions.map((session: TrainerSession) => {
             const expanded = Boolean(expandedSessionIds[session.id]);
             const isFull = session.current_enrolled >= session.capacity;
             const spotsLeft = Math.max(0, session.capacity - session.current_enrolled);
             const isLastSpot = !isFull && spotsLeft === 1;
-            const isLast = idx === daySessions.length - 1;
+            const fillRatio =
+              session.capacity > 0
+                ? Math.min(1, session.current_enrolled / session.capacity)
+                : 0;
+            const waitlistCount = session.waitlist?.length ?? 0;
+            const catVisual = getCategoryVisuals(session.category);
 
             return (
-              <View key={session.id} style={styles.timelineRow}>
-                {/* Sol Timeline Rayı */}
-                <View style={styles.timelineRail}>
-                  <View
-                    style={[
-                      styles.timelineDot,
-                      expanded && styles.timelineDotExpanded,
-                    ]}
-                  />
-                  {!isLast && <View style={styles.timelineLine} />}
-                </View>
-
-                {/* Ana Ders Bento Kartı */}
-                <View style={styles.sessionBentoCard}>
-                  <TouchableOpacity
-                    style={styles.sessionHeaderTouch}
-                    onPress={() => toggleExpand(session.id)}
-                    activeOpacity={0.85}
-                  >
-                    {/* Sol Üstte Dev Puntolu Saat + Sağ Üstte Doluluk Rozeti */}
-                    <View style={styles.sessionTopRow}>
-                      <View style={styles.bigTimeCluster}>
+              <View
+                key={session.id}
+                style={[
+                  styles.sessionBentoCard,
+                  expanded && styles.sessionBentoCardExpanded,
+                ]}
+              >
+                <TouchableOpacity
+                  style={styles.sessionHeaderTouch}
+                  onPress={() => toggleExpand(session.id)}
+                  activeOpacity={0.85}
+                >
+                  {/* Saat + Doluluk & Yedek Rozetleri */}
+                  <View style={styles.sessionTopRow}>
+                    <View style={styles.timeAndDateCol}>
+                      <View style={styles.timePillBox}>
+                        <Clock size={13} color={COLORS.secondary} />
                         <Text style={styles.bigStartTime}>{session.start_time}</Text>
                         <Text style={styles.endTimeSub}>- {session.end_time}</Text>
                       </View>
+                      {selectedDate === ALL_DATES_KEY && (
+                        <Text style={styles.allModeDateTag}>
+                          {formatTurkishDateLabel(session.date).full}
+                        </Text>
+                      )}
+                    </View>
 
-                      <View style={styles.topRightGroup}>
-                        <View
-                          style={[
-                            styles.occupancyBadge,
-                            isFull
-                              ? styles.occupancyFull
-                              : isLastSpot
-                              ? styles.occupancyWarn
-                              : styles.occupancyOpen,
-                          ]}
-                        >
-                          <Text
-                            style={[
-                              styles.occupancyBadgeText,
-                              {
-                                color: isFull
-                                  ? COLORS.danger
-                                  : isLastSpot
-                                  ? COLORS.warning
-                                  : COLORS.primary,
-                              },
-                            ]}
-                          >
-                            {session.current_enrolled}/{session.capacity}{' '}
-                            {isFull ? 'Dolu' : 'Kayıt'}
+                    <View style={styles.topRightGroup}>
+                      {waitlistCount > 0 && (
+                        <View style={styles.waitlistCountBadge}>
+                          <Text style={styles.waitlistCountBadgeText}>
+                            ⏳ {waitlistCount} Yedek
                           </Text>
                         </View>
+                      )}
 
+                      <View
+                        style={[
+                          styles.occupancyBadge,
+                          isFull
+                            ? styles.occupancyFull
+                            : isLastSpot
+                            ? styles.occupancyWarn
+                            : styles.occupancyOpen,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.occupancyBadgeText,
+                            {
+                              color: isFull
+                                ? COLORS.dangerText
+                                : isLastSpot
+                                ? COLORS.warningText
+                                : COLORS.primary,
+                            },
+                          ]}
+                        >
+                          {session.current_enrolled}/{session.capacity}{' '}
+                          {isFull ? 'Dolu' : 'Kayıt'}
+                        </Text>
+                      </View>
+
+                      <View style={styles.chevronCircle}>
                         {expanded ? (
-                          <ChevronUp size={18} color={COLORS.textSecondary} />
+                          <ChevronUp size={17} color={COLORS.textSecondary} />
                         ) : (
-                          <ChevronDown size={18} color={COLORS.textSecondary} />
+                          <ChevronDown size={17} color={COLORS.textSecondary} />
                         )}
                       </View>
                     </View>
+                  </View>
 
-                    <Text style={styles.sessionTitleText}>{session.title}</Text>
+                  {/* Ders Başlığı */}
+                  <Text style={styles.sessionTitleText}>{session.title}</Text>
 
-                    <Text style={styles.tapHint}>
+                  {/* Kategori Rozeti + Stüdyo Oda Bilgisi */}
+                  <View style={styles.metaChipsRow}>
+                    <View
+                      style={[
+                        styles.categoryBadge,
+                        {
+                          backgroundColor: catVisual.bg,
+                          borderColor: catVisual.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[styles.categoryBadgeText, { color: catVisual.color }]}
+                      >
+                        {catVisual.label}
+                      </Text>
+                    </View>
+
+                    <View style={styles.roomBadge}>
+                      <MapPin size={12} color={COLORS.textSecondary} />
+                      <Text style={styles.roomBadgeText} numberOfLines={1}>
+                        {session.room || 'Ana Stüdyo'}
+                      </Text>
+                    </View>
+                  </View>
+
+                  {/* Doluluk Çubuğu */}
+                  <View style={styles.progressTrackWrap}>
+                    <View style={styles.progressTrack}>
+                      <View
+                        style={[
+                          styles.progressFill,
+                          {
+                            width: `${Math.round(fillRatio * 100)}%`,
+                            backgroundColor: isFull
+                              ? COLORS.danger
+                              : isLastSpot
+                              ? COLORS.warning
+                              : COLORS.primary,
+                          },
+                        ]}
+                      />
+                    </View>
+                    <Text style={styles.progressHintText}>
                       {expanded
                         ? 'Katılımcı listesini daraltmak için dokunun'
-                        : `${session.attendees.length} katılımcı • Yoklama & sakatlık notları için dokunun`}
+                        : `${session.attendees.length} katılımcı${
+                            waitlistCount > 0 ? ` • ${waitlistCount} yedek` : ''
+                          } • Yoklama almak için dokunun`}
                     </Text>
-                  </TouchableOpacity>
+                  </View>
+                </TouchableOpacity>
 
-                  {/* Katılımcı Alt Kartları */}
-                  {expanded && (
-                    <View style={styles.attendeeListWrap}>
-                      {session.attendees.length === 0 ? (
+                {/* Açılır Detay: Katılımcılar & Yedek Liste */}
+                {expanded && (
+                  <View style={styles.expandedContentWrap}>
+                    <View style={styles.subSectionHeader}>
+                      <Users size={14} color={COLORS.primary} />
+                      <Text style={styles.subSectionTitle}>
+                        Katılımcı Listesi ({session.attendees.length}/{session.capacity})
+                      </Text>
+                    </View>
+
+                    {session.attendees.length === 0 ? (
+                      <View style={styles.noAttendeeCard}>
                         <Text style={styles.noAttendeeText}>
                           Bu derse henüz kayıtlı üye bulunmuyor.
                         </Text>
-                      ) : (
-                        session.attendees.map((att) => {
-                          const isBusy = busyBookingId === att.booking_id;
-                          const isLow = att.remaining_credits <= 2;
-                          const hasNote = Boolean(att.notes && att.notes.trim().length > 0);
+                      </View>
+                    ) : (
+                      session.attendees.map((att) => {
+                        const isBusy = busyBookingId === att.booking_id;
+                        const isLow = att.low_credit_warning || att.remaining_credits <= 2;
+                        const hasNote = Boolean(att.notes && att.notes.trim().length > 0);
 
-                          return (
-                            <View key={att.booking_id} style={styles.attendeeCard}>
-                              {/* Üst Satır: İsim + Sağda Kalan Ders Hap Rozeti */}
-                              <View style={styles.attendeeHeaderRow}>
-                                <View style={styles.nameWithEditCol}>
-                                  <Text style={styles.attendeeName} numberOfLines={1}>
-                                    {att.full_name}
+                        return (
+                          <View key={att.booking_id} style={styles.attendeeCard}>
+                            {/* Üst Satır: Avatar + İsim/İletişim + Kalan Kredi */}
+                            <View style={styles.attendeeHeaderRow}>
+                              <MemberAvatar
+                                uri={att.avatar_url}
+                                name={att.full_name}
+                                size={44}
+                                borderRadius={14}
+                                accentColor={isLow ? COLORS.warning : COLORS.primary}
+                              />
+
+                              <View style={styles.attendeeInfoCol}>
+                                <Text style={styles.attendeeName} numberOfLines={1}>
+                                  {att.full_name}
+                                </Text>
+                                <View style={styles.contactInlineRow}>
+                                  <Phone size={11} color={COLORS.textMuted} />
+                                  <Text style={styles.attendeeContactText} numberOfLines={1}>
+                                    {att.phone}
+                                    {att.instagram_handle
+                                      ? ` • ${att.instagram_handle}`
+                                      : ''}
                                   </Text>
-                                  {att.instagram_handle ? (
-                                    <Text style={styles.attendeeHandle}>
-                                      {att.instagram_handle}
-                                    </Text>
-                                  ) : null}
-                                </View>
-
-                                <View style={styles.headerBadgesRight}>
-                                  <View
-                                    style={[
-                                      styles.remainingPill,
-                                      isLow ? styles.remainingPillWarn : styles.remainingPillOk,
-                                    ]}
-                                  >
-                                    {isLow && <Flame size={12} color={COLORS.warning} />}
-                                    <Text
-                                      style={[
-                                        styles.remainingPillText,
-                                        { color: isLow ? COLORS.warning : COLORS.primary },
-                                      ]}
-                                    >
-                                      Kalan: {att.remaining_credits} Ders
-                                    </Text>
-                                  </View>
-
-                                  <TouchableOpacity
-                                    style={styles.quickNoteIconBtn}
-                                    onPress={() => openEditModal(att)}
-                                    activeOpacity={0.78}
-                                  >
-                                    <Edit3 size={14} color={COLORS.textSecondary} />
-                                  </TouchableOpacity>
                                 </View>
                               </View>
 
-                              {/* İsmin Hemen Altında Sakatlık / Özel Uyarı Kutusu */}
-                              {hasNote ? (
-                                <TouchableOpacity
-                                  style={styles.injuryWarningBox}
-                                  onPress={() => openEditModal(att)}
-                                  activeOpacity={0.82}
+                              <View style={styles.headerBadgesRight}>
+                                <View
+                                  style={[
+                                    styles.remainingPill,
+                                    isLow
+                                      ? styles.remainingPillWarn
+                                      : styles.remainingPillOk,
+                                  ]}
                                 >
-                                  <AlertTriangle size={16} color={COLORS.warning} />
-                                  <Text style={styles.injuryWarningText}>
-                                    ⚠️ {att.notes}
+                                  {isLow && <Flame size={11} color={COLORS.warningText} />}
+                                  <Text
+                                    style={[
+                                      styles.remainingPillText,
+                                      {
+                                        color: isLow
+                                          ? COLORS.warningText
+                                          : COLORS.primary,
+                                      },
+                                    ]}
+                                  >
+                                    {att.remaining_credits}/{att.total_credits || '-'} Kredi
                                   </Text>
-                                  <View style={styles.editNoteChip}>
-                                    <Edit3 size={11} color={COLORS.warning} />
-                                    <Text style={styles.editNoteChipText}>Düzenle</Text>
-                                  </View>
-                                </TouchableOpacity>
-                              ) : (
+                                </View>
+
                                 <TouchableOpacity
-                                  style={styles.addNoteSubtleBtn}
+                                  style={styles.quickNoteIconBtn}
                                   onPress={() => openEditModal(att)}
                                   activeOpacity={0.78}
                                 >
-                                  <Edit3 size={12} color={COLORS.textSecondary} />
-                                  <Text style={styles.addNoteSubtleText}>
-                                    Sakatlık / özel antrenman notu ekle
-                                  </Text>
-                                </TouchableOpacity>
-                              )}
-
-                              {/* Altta Başparmak Dostu Geniş Yan Yana Yoklama Butonları */}
-                              <View style={styles.thumbActionsRow}>
-                                <TouchableOpacity
-                                  style={[
-                                    styles.thumbBtn,
-                                    att.status === 'attended' && styles.thumbBtnAttendedActive,
-                                  ]}
-                                  disabled={isBusy}
-                                  onPress={() =>
-                                    handleAttendancePress(att.booking_id, 'attended')
-                                  }
-                                  activeOpacity={0.85}
-                                >
-                                  {isBusy ? (
-                                    <ActivityIndicator size="small" color={COLORS.white} />
-                                  ) : (
-                                    <Text
-                                      style={[
-                                        styles.thumbBtnText,
-                                        att.status === 'attended' &&
-                                          styles.thumbBtnTextAttendedActive,
-                                      ]}
-                                    >
-                                      ✅ Geldi
-                                    </Text>
-                                  )}
-                                </TouchableOpacity>
-
-                                <TouchableOpacity
-                                  style={[
-                                    styles.thumbBtn,
-                                    att.status === 'no_show' && styles.thumbBtnNoShowActive,
-                                  ]}
-                                  disabled={isBusy}
-                                  onPress={() =>
-                                    handleAttendancePress(att.booking_id, 'no_show')
-                                  }
-                                  activeOpacity={0.85}
-                                >
-                                  {isBusy ? (
-                                    <ActivityIndicator size="small" color={COLORS.white} />
-                                  ) : (
-                                    <Text
-                                      style={[
-                                        styles.thumbBtnText,
-                                        att.status === 'no_show' &&
-                                          styles.thumbBtnTextNoShowActive,
-                                      ]}
-                                    >
-                                      ❌ Gelmedi
-                                    </Text>
-                                  )}
+                                  <Edit3 size={14} color={COLORS.textSecondary} />
                                 </TouchableOpacity>
                               </View>
                             </View>
-                          );
-                        })
-                      )}
-                    </View>
-                  )}
-                </View>
+
+                            {/* Düşük Kredi Bilgilendirme Etiketi */}
+                            {isLow && (
+                              <View style={styles.lowCreditBanner}>
+                                <Flame size={12} color={COLORS.warningText} />
+                                <Text style={styles.lowCreditBannerText}>
+                                  Paket yenileme zamanı yaklaştı (Kalan:{' '}
+                                  {att.remaining_credits} ders)
+                                </Text>
+                              </View>
+                            )}
+
+                            {/* Kehribar Sakatlık / Özel Not Kutusu */}
+                            {hasNote ? (
+                              <TouchableOpacity
+                                style={styles.injuryWarningBox}
+                                onPress={() => openEditModal(att)}
+                                activeOpacity={0.82}
+                              >
+                                <AlertTriangle size={15} color={COLORS.warningText} />
+                                <Text style={styles.injuryWarningText}>
+                                  {att.notes}
+                                </Text>
+                                <View style={styles.editNoteChip}>
+                                  <Edit3 size={11} color={COLORS.warningText} />
+                                  <Text style={styles.editNoteChipText}>Düzenle</Text>
+                                </View>
+                              </TouchableOpacity>
+                            ) : (
+                              <TouchableOpacity
+                                style={styles.addNoteSubtleBtn}
+                                onPress={() => openEditModal(att)}
+                                activeOpacity={0.78}
+                              >
+                                <Edit3 size={12} color={COLORS.textSecondary} />
+                                <Text style={styles.addNoteSubtleText}>
+                                  Sakatlık / özel antrenman notu ekle
+                                </Text>
+                              </TouchableOpacity>
+                            )}
+
+                            {/* Yoklama Aksiyon Butonları */}
+                            <View style={styles.thumbActionsRow}>
+                              <TouchableOpacity
+                                style={[
+                                  styles.thumbBtn,
+                                  att.status === 'attended' && styles.thumbBtnAttendedActive,
+                                ]}
+                                disabled={isBusy}
+                                onPress={() => handleAttendancePress(att, 'attended')}
+                                activeOpacity={0.85}
+                              >
+                                {isBusy ? (
+                                  <ActivityIndicator
+                                    size="small"
+                                    color={
+                                      att.status === 'attended'
+                                        ? COLORS.white
+                                        : COLORS.primary
+                                    }
+                                  />
+                                ) : (
+                                  <Text
+                                    style={[
+                                      styles.thumbBtnText,
+                                      att.status === 'attended' &&
+                                        styles.thumbBtnTextAttendedActive,
+                                    ]}
+                                  >
+                                    ✅ Geldi
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+
+                              <TouchableOpacity
+                                style={[
+                                  styles.thumbBtn,
+                                  att.status === 'no_show' && styles.thumbBtnNoShowActive,
+                                ]}
+                                disabled={isBusy}
+                                onPress={() => handleAttendancePress(att, 'no_show')}
+                                activeOpacity={0.85}
+                              >
+                                {isBusy ? (
+                                  <ActivityIndicator
+                                    size="small"
+                                    color={
+                                      att.status === 'no_show'
+                                        ? COLORS.white
+                                        : COLORS.danger
+                                    }
+                                  />
+                                ) : (
+                                  <Text
+                                    style={[
+                                      styles.thumbBtnText,
+                                      att.status === 'no_show' &&
+                                        styles.thumbBtnTextNoShowActive,
+                                    ]}
+                                  >
+                                    ❌ Gelmedi
+                                  </Text>
+                                )}
+                              </TouchableOpacity>
+                            </View>
+                          </View>
+                        );
+                      })
+                    )}
+
+                    {/* Yedek Listede Bekleyenler (Waitlist) */}
+                    {waitlistCount > 0 && (
+                      <View style={styles.waitlistSectionBox}>
+                        <View style={styles.waitlistHeaderRow}>
+                          <View style={styles.waitlistTitleCluster}>
+                            <Hourglass size={14} color={COLORS.warningText} />
+                            <Text style={styles.waitlistTitleText}>
+                              Yedek Listede Bekleyenler ({waitlistCount})
+                            </Text>
+                          </View>
+                          <View style={styles.autoPromoteTag}>
+                            <Text style={styles.autoPromoteTagText}>
+                              Otomatik Terfi Aktif
+                            </Text>
+                          </View>
+                        </View>
+
+                        <Text style={styles.waitlistSubDesc}>
+                          Derste iptal olduğunda sıradaki kredili üye otomatik olarak asil
+                          listeye alınır.
+                        </Text>
+
+                        <View style={styles.waitlistRowsWrap}>
+                          {session.waitlist.map((w: WaitlistEntry) => (
+                            <View key={w.waitlist_id} style={styles.waitlistMemberRow}>
+                              <View style={styles.waitlistPositionBadge}>
+                                <Text style={styles.waitlistPositionText}>
+                                  #{w.position}
+                                </Text>
+                              </View>
+
+                              <MemberAvatar
+                                uri={w.avatar_url}
+                                name={w.full_name}
+                                size={38}
+                                borderRadius={12}
+                                accentColor={COLORS.secondary}
+                              />
+
+                              <View style={styles.waitlistMemberInfo}>
+                                <Text style={styles.waitlistMemberName} numberOfLines={1}>
+                                  {w.full_name}
+                                </Text>
+                                <Text
+                                  style={styles.waitlistMemberContact}
+                                  numberOfLines={1}
+                                >
+                                  {w.phone}
+                                  {w.instagram_handle ? ` • ${w.instagram_handle}` : ''}
+                                </Text>
+                              </View>
+
+                              <View style={styles.waitlistCreditBadge}>
+                                <Text style={styles.waitlistCreditText}>
+                                  {w.remaining_credits}/{w.total_credits || '-'} Kredi
+                                </Text>
+                              </View>
+                            </View>
+                          ))}
+                        </View>
+                      </View>
+                    )}
+                  </View>
+                )}
               </View>
             );
           })
         )}
       </ScrollView>
 
-      {/* Hızlı Sakatlık & Antrenman Notu Düzenleme Modalı */}
+      {/* Hızlı Sakatlık & Özel Antrenman Notu Düzenleme Modalı */}
       <Modal
         visible={Boolean(editingMember)}
         transparent
         animationType="slide"
         onRequestClose={() => setEditingMember(null)}
       >
-        <View style={styles.modalBackdrop}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
           <View style={styles.modalSheet}>
             <View style={styles.modalHeader}>
-              <View>
-                <Text style={styles.modalTitle}>Sakatlık & Antrenman Notu</Text>
-                <Text style={styles.modalSubtitle}>{editingMember?.full_name}</Text>
+              <View style={styles.modalHeaderUserRow}>
+                {editingMember && (
+                  <MemberAvatar
+                    uri={editingMember.avatar_url}
+                    name={editingMember.full_name}
+                    size={44}
+                    borderRadius={14}
+                    accentColor={COLORS.warning}
+                  />
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.modalTitle}>Sakatlık & Özel Antrenman Notu</Text>
+                  <Text style={styles.modalSubtitle}>{editingMember?.full_name}</Text>
+                </View>
               </View>
               <TouchableOpacity
                 style={styles.closeModalBtn}
@@ -476,7 +806,7 @@ export function TrainerScheduleTab({
               style={styles.noteInput}
               value={noteDraft}
               onChangeText={setNoteDraft}
-              placeholder="Örn: Bel fıtığı hassasiyeti var, ağır deadlift yerine core stabilizasyon uygulanmalı..."
+              placeholder="Örn: Sol diz menisküs hassasiyeti var, derin squat ve sıçrama hareketlerinden kaçınılmalı..."
               placeholderTextColor={COLORS.textMuted}
               multiline
               numberOfLines={4}
@@ -505,7 +835,7 @@ export function TrainerScheduleTab({
               </TouchableOpacity>
             </View>
           </View>
-        </View>
+        </KeyboardAvoidingView>
       </Modal>
     </View>
   );
@@ -520,22 +850,118 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    padding: 16,
-    paddingBottom: 36,
+    paddingHorizontal: 18,
+    paddingTop: 14,
+    paddingBottom: 40,
+  },
+  dateBar: {
+    gap: 10,
+    paddingBottom: 16,
+  },
+  datePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 16,
+    paddingVertical: 11,
+    borderRadius: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    ...CARD_SHADOW,
+  },
+  datePillActive: {
+    backgroundColor: COLORS.secondary,
+    borderColor: COLORS.secondary,
+  },
+  datePillTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  datePillTitleActive: {
+    color: COLORS.white,
+  },
+  datePillSub: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  datePillSubActive: {
+    color: COLORS.secondaryLight,
+  },
+  summaryCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 22,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 16,
+    ...CARD_SHADOW,
+  },
+  summaryCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  sectionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  headerIconDot: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.secondaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  sectionHeading: {
+    color: COLORS.textPrimary,
+    fontSize: 15.5,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  sectionSubText: {
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+    marginTop: 1,
+  },
+  summaryWaitlistChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  summaryWaitlistText: {
+    color: COLORS.warningText,
+    fontSize: 11,
+    fontWeight: '800',
   },
   bentoStatsRow: {
     flexDirection: 'row',
     gap: 10,
-    marginBottom: 14,
   },
   miniBentoBox: {
     flex: 1,
-    backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 14,
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 16,
+    padding: 13,
     borderWidth: 1,
     borderColor: COLORS.border,
-    gap: 6,
+    gap: 5,
   },
   bentoIconWrap: {
     width: 30,
@@ -548,233 +974,291 @@ const styles = StyleSheet.create({
     color: COLORS.textPrimary,
     fontSize: 20,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: -0.4,
+  },
+  bentoStatSubCap: {
+    color: COLORS.textMuted,
+    fontSize: 13,
+    fontWeight: '700',
   },
   bentoStatLabel: {
     color: COLORS.textSecondary,
     fontSize: 11,
     fontWeight: '700',
   },
-  dateBar: {
-    gap: 10,
-    paddingVertical: 4,
-    marginBottom: 16,
-  },
-  datePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    backgroundColor: COLORS.surface,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
-    borderRadius: 999,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  datePillActive: {
-    backgroundColor: COLORS.trainerAccent,
-    borderColor: COLORS.trainerAccent,
-    shadowColor: '#6366F1',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
-    elevation: 5,
-  },
-  datePillTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 13,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  datePillTitleActive: {
-    color: COLORS.white,
-  },
-  datePillSub: {
-    color: COLORS.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '700',
-    letterSpacing: -0.3,
-  },
-  datePillSubActive: {
-    color: '#E0E7FF',
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    marginBottom: 14,
-  },
-  sectionHeading: {
-    color: COLORS.textPrimary,
-    fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: -0.2,
-  },
   emptyCard: {
     backgroundColor: COLORS.surface,
-    borderRadius: 20,
-    padding: 18,
-    paddingVertical: 26,
+    borderRadius: 22,
+    padding: 24,
+    marginBottom: 16,
     alignItems: 'center',
     borderWidth: 1,
     borderColor: COLORS.border,
+    ...CARD_SHADOW,
+  },
+  emptyIconWrap: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    backgroundColor: COLORS.secondaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   emptyTitle: {
     color: COLORS.textPrimary,
-    fontSize: 15.5,
+    fontSize: 16,
     fontWeight: '800',
-    marginTop: 10,
+    marginTop: 14,
   },
   emptySub: {
     color: COLORS.textSecondary,
     fontSize: 13,
     textAlign: 'center',
-    marginTop: 5,
+    marginTop: 6,
     lineHeight: 19,
   },
-  timelineRow: {
+  emptyCreateBtn: {
     flexDirection: 'row',
-    gap: 10,
-  },
-  timelineRail: {
-    width: 16,
     alignItems: 'center',
+    gap: 8,
+    marginTop: 18,
+    backgroundColor: COLORS.secondary,
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 14,
   },
-  timelineDot: {
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 2,
-    borderColor: COLORS.trainerAccent,
-    marginTop: 22,
-  },
-  timelineDotExpanded: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.accentVolt,
-  },
-  timelineLine: {
-    flex: 1,
-    width: 2,
-    backgroundColor: COLORS.border,
-    marginVertical: 4,
+  emptyCreateBtnText: {
+    color: COLORS.white,
+    fontSize: 13.5,
+    fontWeight: '800',
   },
   sessionBentoCard: {
-    flex: 1,
     backgroundColor: COLORS.surface,
-    borderRadius: 20,
+    borderRadius: 22,
+    padding: 20,
+    marginBottom: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
-    marginBottom: 14,
-    overflow: 'hidden',
+    ...CARD_SHADOW,
+  },
+  sessionBentoCardExpanded: {
+    borderColor: '#E5C5C9',
   },
   sessionHeaderTouch: {
-    padding: 18,
+    gap: 2,
   },
   sessionTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     justifyContent: 'space-between',
-    marginBottom: 8,
+    gap: 8,
+    marginBottom: 10,
   },
-  bigTimeCluster: {
+  timeAndDateCol: {
+    gap: 4,
+  },
+  timePillBox: {
     flexDirection: 'row',
-    alignItems: 'baseline',
-    gap: 5,
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 6,
+    backgroundColor: COLORS.secondaryLight,
+    borderWidth: 1,
+    borderColor: '#E5C5C9',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 12,
   },
   bigStartTime: {
     color: COLORS.textPrimary,
-    fontSize: 22,
+    fontSize: 17,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
   endTimeSub: {
     color: COLORS.textSecondary,
-    fontSize: 13.5,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  allModeDateTag: {
+    color: COLORS.secondary,
+    fontSize: 11.5,
     fontWeight: '800',
-    letterSpacing: -0.5,
+    marginTop: 2,
   },
   topRightGroup: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    flexWrap: 'wrap',
+    justifyContent: 'flex-end',
+    gap: 6,
+  },
+  waitlistCountBadge: {
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    paddingHorizontal: 9,
+    paddingVertical: 5,
+    borderRadius: 10,
+  },
+  waitlistCountBadgeText: {
+    color: COLORS.warningText,
+    fontSize: 11,
+    fontWeight: '800',
   },
   occupancyBadge: {
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
   },
   occupancyOpen: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderColor: 'rgba(16, 185, 129, 0.35)',
+    backgroundColor: COLORS.primaryLight,
+    borderColor: '#E5CB90',
   },
   occupancyWarn: {
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
-    borderColor: 'rgba(245, 158, 11, 0.40)',
+    backgroundColor: COLORS.warningBg,
+    borderColor: '#EDD092',
   },
   occupancyFull: {
-    backgroundColor: 'rgba(239, 68, 68, 0.14)',
-    borderColor: 'rgba(239, 68, 68, 0.40)',
+    backgroundColor: COLORS.dangerBg,
+    borderColor: '#F0BFC3',
   },
   occupancyBadgeText: {
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '800',
-    letterSpacing: -0.5,
+  },
+  chevronCircle: {
+    width: 30,
+    height: 30,
+    borderRadius: 10,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   sessionTitleText: {
     color: COLORS.textPrimary,
-    fontSize: 16.5,
+    fontSize: 17.5,
     fontWeight: '800',
     letterSpacing: -0.3,
+    marginBottom: 10,
   },
-  tapHint: {
+  metaChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 14,
+  },
+  categoryBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  categoryBadgeText: {
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  roomBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.surfaceElevated,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  roomBadgeText: {
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  progressTrackWrap: {
+    gap: 7,
+  },
+  progressTrack: {
+    height: 7,
+    borderRadius: 999,
+    backgroundColor: COLORS.surfaceElevated,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  progressHintText: {
     color: COLORS.textSecondary,
     fontSize: 12,
     fontWeight: '600',
-    marginTop: 4,
   },
-  attendeeListWrap: {
+  expandedContentWrap: {
+    marginTop: 18,
+    paddingTop: 18,
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
-    backgroundColor: 'rgba(9, 13, 22, 0.55)',
-    padding: 14,
     gap: 12,
+  },
+  subSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  subSectionTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  noAttendeeCard: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   noAttendeeText: {
     color: COLORS.textSecondary,
     fontSize: 13,
     textAlign: 'center',
-    paddingVertical: 10,
+    fontWeight: '600',
   },
   attendeeCard: {
     backgroundColor: COLORS.surfaceElevated,
-    borderRadius: 20,
+    borderRadius: 18,
     padding: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
-    gap: 12,
+    gap: 11,
   },
   attendeeHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
+    gap: 10,
   },
-  nameWithEditCol: {
+  attendeeInfoCol: {
     flex: 1,
+    gap: 3,
   },
   attendeeName: {
     color: COLORS.textPrimary,
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '800',
-    letterSpacing: -0.3,
+    letterSpacing: -0.2,
   },
-  attendeeHandle: {
+  contactInlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  attendeeContactText: {
     color: COLORS.textSecondary,
     fontSize: 11.5,
     fontWeight: '600',
-    marginTop: 1,
+    flexShrink: 1,
   },
   headerBadgesRight: {
     flexDirection: 'row',
@@ -785,27 +1269,26 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    paddingHorizontal: 10,
+    paddingHorizontal: 9,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 10,
     borderWidth: 1,
   },
   remainingPillOk: {
-    backgroundColor: 'rgba(16, 185, 129, 0.14)',
-    borderColor: 'rgba(16, 185, 129, 0.35)',
+    backgroundColor: COLORS.primaryLight,
+    borderColor: '#E5CB90',
   },
   remainingPillWarn: {
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
-    borderColor: COLORS.warning,
+    backgroundColor: COLORS.warningBg,
+    borderColor: '#EDD092',
   },
   remainingPillText: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '800',
-    letterSpacing: -0.5,
   },
   quickNoteIconBtn: {
-    width: 30,
-    height: 30,
+    width: 32,
+    height: 32,
     borderRadius: 10,
     backgroundColor: COLORS.surface,
     borderWidth: 1,
@@ -813,20 +1296,36 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  lowCreditBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+  },
+  lowCreditBannerText: {
+    color: COLORS.warningText,
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
   injuryWarningBox: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 9,
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
+    gap: 8,
+    backgroundColor: COLORS.warningBg,
     borderWidth: 1,
-    borderColor: '#F59E0B',
-    borderRadius: 12,
+    borderColor: '#EDD092',
+    borderRadius: 14,
     paddingHorizontal: 12,
     paddingVertical: 10,
   },
   injuryWarningText: {
     flex: 1,
-    color: '#FDE68A',
+    color: COLORS.warningText,
     fontSize: 12.5,
     fontWeight: '700',
     lineHeight: 18,
@@ -835,13 +1334,15 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: 'rgba(245, 158, 11, 0.18)',
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: '#EDD092',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
   },
   editNoteChipText: {
-    color: COLORS.warning,
+    color: COLORS.warningText,
     fontSize: 10.5,
     fontWeight: '800',
   },
@@ -849,17 +1350,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
+    alignSelf: 'flex-start',
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
+    paddingHorizontal: 11,
+    paddingVertical: 7,
+    borderRadius: 10,
   },
   addNoteSubtleText: {
     color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: '600',
+    fontSize: 11.5,
+    fontWeight: '700',
   },
   thumbActionsRow: {
     flexDirection: 'row',
@@ -867,119 +1369,220 @@ const styles = StyleSheet.create({
   },
   thumbBtn: {
     flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 12,
+    minHeight: 42,
     borderRadius: 12,
     backgroundColor: COLORS.surface,
     borderWidth: 1,
     borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 9,
   },
   thumbBtnAttendedActive: {
     backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
-    shadowColor: '#10B981',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
   },
   thumbBtnNoShowActive: {
     backgroundColor: COLORS.danger,
     borderColor: COLORS.danger,
-    shadowColor: '#EF4444',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
   },
   thumbBtnText: {
-    color: COLORS.textSecondary,
-    fontSize: 13.5,
+    color: COLORS.textPrimary,
+    fontSize: 13,
     fontWeight: '800',
   },
   thumbBtnTextAttendedActive: {
-    color: '#090D16',
+    color: COLORS.white,
   },
   thumbBtnTextNoShowActive: {
     color: COLORS.white,
   },
+  waitlistSectionBox: {
+    marginTop: 4,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 18,
+    padding: 15,
+    gap: 10,
+  },
+  waitlistHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  waitlistTitleCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    flex: 1,
+  },
+  waitlistTitleText: {
+    color: COLORS.warningText,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  autoPromoteTag: {
+    backgroundColor: COLORS.secondaryLight,
+    borderWidth: 1,
+    borderColor: '#E5C5C9',
+    paddingHorizontal: 9,
+    paddingVertical: 3,
+    borderRadius: 999,
+  },
+  autoPromoteTagText: {
+    color: COLORS.secondary,
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  waitlistSubDesc: {
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  waitlistRowsWrap: {
+    gap: 8,
+  },
+  waitlistMemberRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    backgroundColor: COLORS.surface,
+    borderRadius: 14,
+    padding: 11,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  waitlistPositionBadge: {
+    minWidth: 30,
+    height: 28,
+    borderRadius: 9,
+    backgroundColor: COLORS.warningBg,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 6,
+  },
+  waitlistPositionText: {
+    color: COLORS.warningText,
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  waitlistMemberInfo: {
+    flex: 1,
+    gap: 2,
+  },
+  waitlistMemberName: {
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  waitlistMemberContact: {
+    color: COLORS.textSecondary,
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  waitlistCreditBadge: {
+    backgroundColor: COLORS.secondaryLight,
+    borderWidth: 1,
+    borderColor: '#E5C5C9',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 9,
+  },
+  waitlistCreditText: {
+    color: COLORS.secondary,
+    fontSize: 11,
+    fontWeight: '800',
+  },
   modalBackdrop: {
     flex: 1,
-    backgroundColor: 'rgba(9, 13, 22, 0.84)',
+    backgroundColor: 'rgba(34, 29, 25, 0.36)',
     justifyContent: 'flex-end',
   },
   modalSheet: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    padding: 20,
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    padding: 22,
     borderTopWidth: 1,
-    borderColor: COLORS.border,
+    borderTopColor: COLORS.border,
+    gap: 15,
+    ...CARD_SHADOW,
   },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 14,
+    gap: 10,
+  },
+  modalHeaderUserRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
   },
   modalTitle: {
     color: COLORS.textPrimary,
-    fontSize: 17,
+    fontSize: 15.5,
     fontWeight: '800',
   },
   modalSubtitle: {
-    color: COLORS.accentVolt,
+    color: COLORS.warningText,
     fontSize: 13,
-    fontWeight: '800',
+    fontWeight: '700',
     marginTop: 2,
   },
   closeModalBtn: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
-    backgroundColor: COLORS.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.surfaceElevated,
     borderWidth: 1,
     borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   noteInput: {
-    backgroundColor: COLORS.background,
-    color: COLORS.textPrimary,
+    backgroundColor: COLORS.surfaceElevated,
     borderRadius: 16,
     borderWidth: 1,
     borderColor: COLORS.border,
-    padding: 14,
-    minHeight: 115,
+    color: COLORS.textPrimary,
     fontSize: 14,
+    padding: 14,
+    minHeight: 110,
     lineHeight: 20,
   },
   modalActions: {
     flexDirection: 'row',
     gap: 10,
-    marginTop: 16,
   },
   modalCancelBtn: {
     flex: 1,
     paddingVertical: 13,
-    borderRadius: 12,
-    backgroundColor: COLORS.surface,
-    alignItems: 'center',
+    borderRadius: 14,
+    backgroundColor: COLORS.surfaceElevated,
     borderWidth: 1,
     borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalCancelText: {
     color: COLORS.textSecondary,
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '800',
   },
   modalSaveBtn: {
-    flex: 1,
+    flex: 1.4,
     paddingVertical: 13,
-    borderRadius: 12,
-    backgroundColor: COLORS.trainerAccent,
+    borderRadius: 14,
+    backgroundColor: COLORS.secondary,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   modalSaveText: {
     color: COLORS.white,

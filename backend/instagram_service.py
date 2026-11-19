@@ -1,13 +1,13 @@
 import json
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 from sqlalchemy.orm import Session, joinedload
 
-from models import Booking, ClassSession, MemberPackage, User
+from models import Booking, ClassSession, MemberPackage, User, Waitlist
 
 
 def normalize_handle(handle: str) -> str:
@@ -193,12 +193,16 @@ def fallback_turkish_nlp_parse(message: str, today_iso: str, tomorrow_iso: str, 
 
     # 3. Ders türü anahtar kelimesi
     keyword: Optional[str] = None
-    if "fonksiyonel" in lower or "grup" in lower:
+    if "cadillac" in lower or "tower" in lower or "trapeze" in lower:
+        keyword = "cadillac"
+    elif "düet" in lower or "duet" in lower or "trio" in lower:
+        keyword = "duet"
+    elif "bireysel" in lower or "birebir" in lower or re.search(r"\bpt\b", lower) or "özel" in lower:
+        keyword = "bireysel"
+    elif "grup" in lower:
         keyword = "grup"
     elif "pilates" in lower or "reformer" in lower:
         keyword = "pilates"
-    elif "birebir" in lower or re.search(r"\bpt\b", lower) or "özel" in lower:
-        keyword = "pt"
 
     # 4. Niyet (Intent) tespiti
     cancel_words = ["iptal", "siler misin", "çıkar mısın", "gelemeyeceğim", "vazgeçtim", "gelemem"]
@@ -254,9 +258,11 @@ def match_session(
         kw_filtered = [
             s
             for s in candidates
-            if (kw == "grup" and ("grup" in s.title.lower() or "fonksiyonel" in s.title.lower()))
-            or (kw == "pilates" and "pilates" in s.title.lower())
-            or (kw == "pt" and ("pt" in s.title.lower() or "birebir" in s.title.lower()))
+            if (kw == "grup" and "grup" in s.title.lower())
+            or (kw == "pilates" and ("pilates" in s.title.lower() or "reformer" in s.title.lower()))
+            or (kw == "bireysel" and ("bireysel" in s.title.lower() or "birebir" in s.title.lower() or "özel" in s.title.lower()))
+            or (kw == "cadillac" and ("cadillac" in s.title.lower() or "tower" in s.title.lower()))
+            or (kw == "duet" and ("düet" in s.title.lower() or "duet" in s.title.lower() or "trio" in s.title.lower()))
         ]
         if kw_filtered:
             candidates = kw_filtered
@@ -301,6 +307,7 @@ def process_instagram_dm(db: Session, instagram_handle: str, message: str) -> Di
     all_sessions = (
         db.query(ClassSession)
         .options(joinedload(ClassSession.trainer))
+        .filter(ClassSession.date >= today_iso)
         .order_by(ClassSession.date.asc(), ClassSession.start_time.asc())
         .all()
     )
@@ -362,16 +369,83 @@ def process_instagram_dm(db: Session, instagram_handle: str, message: str) -> Di
         s_obj.current_enrolled = max(0, s_obj.current_enrolled - 1)
         if pkg:
             pkg.remaining_credits += 1
+        db.flush()
+
+        # Yedek listede bekleyen aktif kredili ilk üyeyi otomatik terfi ettir
+        promoted_name: Optional[str] = None
+        if s_obj.current_enrolled < s_obj.capacity:
+            waitlist_candidates = (
+                db.query(Waitlist)
+                .filter(Waitlist.session_id == s_obj.id)
+                .order_by(Waitlist.id.asc())
+                .all()
+            )
+            for w_entry in waitlist_candidates:
+                w_member = (
+                    db.query(User)
+                    .filter(User.id == w_entry.member_id, User.role == "member")
+                    .first()
+                )
+                if not w_member:
+                    db.delete(w_entry)
+                    continue
+                already_booked = (
+                    db.query(Booking)
+                    .filter(
+                        Booking.session_id == s_obj.id,
+                        Booking.member_id == w_member.id,
+                        Booking.status.in_(["booked", "attended"]),
+                    )
+                    .first()
+                )
+                if already_booked:
+                    db.delete(w_entry)
+                    continue
+                w_pkg = get_active_package(db, w_member.id)
+                if not w_pkg or w_pkg.remaining_credits <= 0:
+                    continue
+                prev_c = (
+                    db.query(Booking)
+                    .filter(
+                        Booking.session_id == s_obj.id,
+                        Booking.member_id == w_member.id,
+                        Booking.status == "cancelled",
+                    )
+                    .first()
+                )
+                if prev_c:
+                    prev_c.status = "booked"
+                    prev_c.package_id = w_pkg.id
+                else:
+                    db.add(
+                        Booking(
+                            session_id=s_obj.id,
+                            member_id=w_member.id,
+                            package_id=w_pkg.id,
+                            status="booked",
+                        )
+                    )
+                w_pkg.remaining_credits -= 1
+                s_obj.current_enrolled += 1
+                db.delete(w_entry)
+                promoted_name = w_member.full_name
+                break
+
         db.commit()
         if pkg:
             db.refresh(pkg)
 
         day_word = format_day_word_tr(s_obj.date)
         rem = pkg.remaining_credits if pkg else 0
+        promo_note = (
+            f" (Yedek listeden {promoted_name} otomatik olarak derse alındı.)"
+            if promoted_name
+            else ""
+        )
         return {
             "reply": (
                 f"Sayın {member.full_name}, {day_word} {s_obj.start_time} {s_obj.title} ders kaydınız iptal edildi "
-                f"ve +1 ders krediniz iade edildi. Güncel kalan ders hakkınız: {rem}"
+                f"ve +1 ders krediniz iade edildi. Güncel kalan ders hakkınız: {rem}.{promo_note}"
             ),
             "action": "cancelled",
             "member_name": member.full_name,
@@ -435,6 +509,41 @@ def process_instagram_dm(db: Session, instagram_handle: str, message: str) -> Di
             }
 
         if matched.current_enrolled >= matched.capacity:
+            lower_msg = message.replace("İ", "i").replace("I", "ı").lower()
+            wants_waitlist = any(w in lower_msg for w in ("yedek", "waitlist", "sıraya", "siraya"))
+            if wants_waitlist and pkg and pkg.remaining_credits > 0:
+                existing_wl = (
+                    db.query(Waitlist)
+                    .filter(Waitlist.session_id == matched.id, Waitlist.member_id == member.id)
+                    .first()
+                )
+                if not existing_wl:
+                    wl_obj = Waitlist(
+                        session_id=matched.id,
+                        member_id=member.id,
+                        created_at=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    db.add(wl_obj)
+                    db.commit()
+                queue = (
+                    db.query(Waitlist)
+                    .filter(Waitlist.session_id == matched.id)
+                    .order_by(Waitlist.id.asc())
+                    .all()
+                )
+                pos = next((idx for idx, item in enumerate(queue, start=1) if item.member_id == member.id), len(queue))
+                return {
+                    "reply": (
+                        f"Sayın {member.full_name}, {format_day_word_tr(matched.date)} {matched.start_time} "
+                        f"{matched.title} dersi dolu olduğu için yedek listeye #{pos}. sıradan kaydınız alındı."
+                    ),
+                    "action": "waitlisted",
+                    "member_name": member.full_name,
+                    "session_id": matched.id,
+                    "booking_id": None,
+                    "remaining_credits": pkg.remaining_credits,
+                }
+
             alt = [
                 f"{format_day_word_tr(s.date)} {s.start_time} {s.title}"
                 for s in all_sessions
@@ -444,7 +553,8 @@ def process_instagram_dm(db: Session, instagram_handle: str, message: str) -> Di
             return {
                 "reply": (
                     f"Sayın {member.full_name}, maalesef {format_day_word_tr(matched.date)} {matched.start_time} "
-                    f"{matched.title} dersimizin kontenjanı doludur ({matched.current_enrolled}/{matched.capacity}).{alt_text}"
+                    f"{matched.title} dersimizin kontenjanı doludur ({matched.current_enrolled}/{matched.capacity}). "
+                    f"Yedek listeye yazılmak için saati belirtip 'yedek listeye yaz' yazabilirsiniz.{alt_text}"
                 ),
                 "action": "session_full",
                 "member_name": member.full_name,
@@ -486,6 +596,14 @@ def process_instagram_dm(db: Session, instagram_handle: str, message: str) -> Di
                 status="booked",
             )
             db.add(booking_obj)
+
+        existing_wl = (
+            db.query(Waitlist)
+            .filter(Waitlist.session_id == matched.id, Waitlist.member_id == member.id)
+            .first()
+        )
+        if existing_wl:
+            db.delete(existing_wl)
 
         pkg.remaining_credits -= 1
         matched.current_enrolled += 1

@@ -6,45 +6,51 @@ import {
   RefreshControl,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import {
-  Activity,
   AlertTriangle,
-  ArrowLeft,
   ArrowRight,
+  Award,
   Calendar,
+  CalendarPlus,
   CheckCircle2,
-  ClipboardList,
-  Database,
-  Hash,
-  MessageCircle,
+  CreditCard,
+  Edit3,
+  Eye,
+  Layers,
+  LogOut,
+  Megaphone,
+  Pin,
   Plus,
   RefreshCw,
   Search,
-  Send,
   ShieldCheck,
-  Sparkles,
+  Sliders,
+  Trash2,
   UserPlus,
   Users,
   X,
-  Zap,
 } from 'lucide-react-native';
-import { apiRequest } from '@/config/api';
-import { AppUser, UserRole } from '@/types/fitness';
+import { EryaBrandLogo } from '@/components/EryaBrandLogo';
+import { useAuthDemo } from '@/context/AuthDemoContext';
+import { FONTS } from '@/theme/colors';
+import { AppUser } from '@/types/fitness';
 import {
-  AdminCreateUserResponse,
-  AdminDirectoryUser,
-  AdminOverviewResponse,
-  DataIntakeCollectPayload,
-  DataIntakeCollectResponse,
-  DataIntakeLogItem,
-  IntakeSource,
-  TargetDepartment,
+  ActivePanelMode,
+  AdminAnnouncementItem,
+  AdminClassSessionItem,
+  AdminMemberItem,
+  AdminPanelConfig,
+  AdminPaymentItem,
+  AdminSystemOverview,
+  AdminTrainerItem,
 } from '@/types/authAdmin';
+import { addMinutesToHhMm, getTodayIso, getUpcomingIsoDates } from '@/utils/dateHelpers';
 
 export interface AdminControlScreenProps {
   onClose?: () => void;
@@ -53,401 +59,2019 @@ export interface AdminControlScreenProps {
   onDataChanged?: () => void;
 }
 
-const THEME = {
-  bg: '#090D16',
-  card: '#131B2E',
-  elevated: '#1E293B',
-  border: 'rgba(255, 255, 255, 0.08)',
-  emerald: '#10B981',
-  emeraldSoft: 'rgba(16, 185, 129, 0.14)',
-  volt: '#A3E635',
-  indigo: '#6366F1',
-  indigoSoft: 'rgba(99, 102, 241, 0.16)',
-  amber: '#F59E0B',
-  amberSoft: 'rgba(245, 158, 11, 0.15)',
-  danger: '#EF4444',
-  dangerSoft: 'rgba(239, 68, 68, 0.15)',
-  pink: '#EC4899',
-  pinkSoft: 'rgba(236, 72, 153, 0.15)',
-  textPrimary: '#F8FAFC',
-  textSecondary: '#94A3B8',
+type AdminPrimaryTab = 'paneller' | 'haberler' | 'ogretmenler' | 'sistem';
+type SystemSubTab = 'musteriler' | 'dersler' | 'odemeler';
+
+const UI = {
+  bg: '#0B111E',
+  surface: '#121B2E',
+  elevated: '#18243C',
+  input: '#0E1626',
+  border: '#23324F',
+  borderStrong: '#32476E',
+  gold: '#C9A452',
+  goldBright: '#E5C16C',
+  goldSoft: 'rgba(201, 164, 82, 0.14)',
+  goldBorder: 'rgba(201, 164, 82, 0.36)',
+  emerald: '#34D399',
+  emeraldSoft: 'rgba(52, 211, 153, 0.14)',
+  indigo: '#818CF8',
+  indigoSoft: 'rgba(129, 140, 248, 0.14)',
+  rose: '#F472B6',
+  roseSoft: 'rgba(244, 114, 182, 0.14)',
+  amber: '#FBBF24',
+  amberSoft: 'rgba(251, 191, 36, 0.14)',
+  danger: '#F87171',
+  dangerSoft: 'rgba(248, 113, 113, 0.14)',
+  text: '#F8FAFC',
+  textSec: '#94A3B8',
   textMuted: '#64748B',
+  darkInk: '#090D16',
 };
 
-interface SimulationPreset {
-  id: string;
-  badge: string;
-  title: string;
-  source: IntakeSource;
-  sender_name: string;
-  sender_contact: string;
-  content: string;
-  notes?: string;
-  package_credits?: number | null;
-}
+const NEWS_TAGS = [
+  'Kulüp Haberleri',
+  'Kampanyalar',
+  'Kurallar & Bilgilendirme',
+  'Yeni Ders',
+] as const;
 
-const SIMULATION_PRESETS: SimulationPreset[] = [
-  {
-    id: 'ig-book-injury',
-    badge: 'Instagram DM',
-    title: 'Randevu + Diz Sakatlık Uyarısı Çek',
-    source: 'instagram',
-    sender_name: 'Ahmet Yılmaz',
-    sender_contact: '@ahmetyilmaz',
-    content:
-      'Hocam yarın 19:00 fonksiyonel grup dersine beni yazar mısınız? Bugün sol diz menisküs ağrım biraz hassas.',
-    notes: '',
-    package_credits: null,
-  },
-  {
-    id: 'wp-trainer-note',
-    badge: 'WhatsApp Hattı',
-    title: 'Eğitmen Yoklama Ekranına Fıtık Notu İlet',
-    source: 'whatsapp',
-    sender_name: 'Zeynep Kaya',
-    sender_contact: '0535 442 18 22',
-    content:
-      'Merhaba, doktorum L4-L5 bel fıtığı kontrolümde ağır rotasyon hareketlerinden kaçınmamı söyledi. Selin Hoca ekranına not düşer misiniz?',
-    notes: '',
-    package_credits: null,
-  },
-  {
-    id: 'ig-new-lead-member',
-    badge: 'Instagram Yeni Üye',
-    title: 'Yeni Üye + FIT-ID + 8 Ders + Randevu',
-    source: 'instagram',
-    sender_name: 'Caner Aydın',
-    sender_contact: '@caneraydin_fit',
-    content:
-      'Merhaba, 8 derslik pakete başlamak ve yarın 19:00 fonksiyonel grup dersine kayıt olmak istiyorum. Sağ omuz hassasiyetim mevcut.',
-    notes: 'Sağ omuz hassasiyeti (overhead press dikkat)',
-    package_credits: 8,
-  },
-  {
-    id: 'manual-desk-intake',
-    badge: 'Manuel Banko',
-    title: 'Resepsiyon Manuel Kayıt & Postür Notu',
-    source: 'manual',
-    sender_name: 'Mert Demir',
-    sender_contact: '0542 819 60 33',
-    content:
-      'Banko görüşmesi: Üyenin bilek mobilite kısıtlılığı değerlendirildi, eğitmen yoklama kartına eklendi.',
-    notes: 'Sol el bileği mobilite kısıtlılığı var, şınav tutuşunda paralel bar kullanılmalı.',
-    package_credits: null,
-  },
-];
+const SESSION_CATEGORIES = [
+  { label: 'Grup Reformer', room: 'Kemerli Ayna Reformer Salonu', cap: 6 },
+  { label: 'Bireysel Reformer', room: 'VIP Özel Reformer Odası', cap: 1 },
+  { label: 'Cadillac & Tower', room: 'Cadillac & Trapeze Alanı', cap: 2 },
+  { label: 'Düet & Trio', room: 'Kemerli Ayna Reformer Salonu', cap: 2 },
+] as const;
 
-function getSourceMeta(source: IntakeSource) {
-  if (source === 'instagram') {
-    return {
-      label: 'Instagram',
-      color: THEME.pink,
-      bg: THEME.pinkSoft,
-    };
-  }
-  if (source === 'whatsapp') {
-    return {
-      label: 'WhatsApp',
-      color: THEME.emerald,
-      bg: THEME.emeraldSoft,
-    };
-  }
-  return {
-    label: 'Manuel',
-    color: THEME.amber,
-    bg: THEME.amberSoft,
-  };
-}
-
-function getDepartmentMeta(dept: TargetDepartment) {
-  switch (dept) {
-    case 'booking':
-      return {
-        label: 'Ders Randevu Sistemi',
-        short: 'Ders Randevusu',
-        color: THEME.emerald,
-        bg: THEME.emeraldSoft,
-      };
-    case 'trainer_note':
-      return {
-        label: 'Eğitmen Sakatlık / Yoklama Notu',
-        short: 'Eğitmen Notu',
-        color: THEME.amber,
-        bg: THEME.amberSoft,
-      };
-    case 'member_registry':
-      return {
-        label: 'Üye Kaydı & FIT-ID Sicili',
-        short: 'Üye & ID Atama',
-        color: '#A5B4FC',
-        bg: THEME.indigoSoft,
-      };
-    default:
-      return {
-        label: 'Aday / İletişim Kuyruğu',
-        short: 'İletişim Havuzu',
-        color: THEME.textSecondary,
-        bg: THEME.elevated,
-      };
-  }
-}
+const DEFAULT_PANEL_CONFIG: AdminPanelConfig = {
+  admin_panel_enabled: true,
+  trainer_panel_enabled: true,
+  member_panel_enabled: true,
+  default_landing_panel: 'admin',
+  allow_google_login: true,
+  allow_member_booking: true,
+  allow_package_purchase: true,
+  studio_banner_enabled: false,
+  studio_banner_title: '',
+  studio_banner_message: '',
+};
 
 export function AdminControlScreen({
-  onClose,
-  onBack,
   onSelectUser,
   onDataChanged,
 }: AdminControlScreenProps) {
-  const [overview, setOverview] = useState<AdminOverviewResponse | null>(null);
+  const {
+    authRequest,
+    switchPanel,
+    logout,
+    reloadUsers,
+    reloadPanelConfig,
+    triggerGlobalRefresh,
+  } = useAuthDemo();
+
+  const [activeTab, setActiveTab] = useState<AdminPrimaryTab>('paneller');
+  const [systemSubTab, setSystemSubTab] = useState<SystemSubTab>('musteriler');
+
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<{
+    type: 'success' | 'error';
+    text: string;
+  } | null>(null);
 
-  // Çok Kanallı Veri Çekme & Yönlendirme Formu State
-  const [intakeSource, setIntakeSource] = useState<IntakeSource>('instagram');
-  const [senderName, setSenderName] = useState<string>('Ahmet Yılmaz');
-  const [senderContact, setSenderContact] = useState<string>('@ahmetyilmaz');
-  const [intakeContent, setIntakeContent] = useState<string>(
-    'Hocam yarın 19:00 fonksiyonel grup dersine beni yazar mısınız? Sol diz menisküs ağrım bugün biraz hassas.'
-  );
-  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
-  const [extraNotes, setExtraNotes] = useState<string>('');
-  const [intakePackageCredits, setIntakePackageCredits] = useState<number | null>(null);
-  const [intakeLoading, setIntakeLoading] = useState<boolean>(false);
-  const [intakeError, setIntakeError] = useState<string | null>(null);
-  const [lastIntakeResult, setLastIntakeResult] =
-    useState<DataIntakeCollectResponse | null>(null);
+  // Ana Veri Havuzları
+  const [overview, setOverview] = useState<AdminSystemOverview | null>(null);
+  const [panelForm, setPanelForm] = useState<AdminPanelConfig>(DEFAULT_PANEL_CONFIG);
+  const [announcements, setAnnouncements] = useState<AdminAnnouncementItem[]>([]);
+  const [trainers, setTrainers] = useState<AdminTrainerItem[]>([]);
+  const [members, setMembers] = useState<AdminMemberItem[]>([]);
+  const [sessions, setSessions] = useState<AdminClassSessionItem[]>([]);
+  const [payments, setPayments] = useState<AdminPaymentItem[]>([]);
 
-  // Üye ID Rehberi & Yeni Üye Oluşturma State
-  const [directorySearch, setDirectorySearch] = useState<string>('');
-  const [showCreateUserForm, setShowCreateUserForm] = useState<boolean>(false);
-  const [newFullName, setNewFullName] = useState<string>('');
-  const [newPhone, setNewPhone] = useState<string>('');
-  const [newRole, setNewRole] = useState<UserRole>('member');
-  const [newIgHandle, setNewIgHandle] = useState<string>('');
-  const [newNotes, setNewNotes] = useState<string>('');
-  const [newCredits, setNewCredits] = useState<number | null>(10);
-  const [creatingUser, setCreatingUser] = useState<boolean>(false);
-  const [createUserError, setCreateUserError] = useState<string | null>(null);
-  const [createdUserBanner, setCreatedUserBanner] =
-    useState<AdminCreateUserResponse | null>(null);
+  // Sekme 1: Panel Geçiş & Ayar State
+  const [selectedPreviewTrainerId, setSelectedPreviewTrainerId] = useState<number | null>(null);
+  const [selectedPreviewMemberId, setSelectedPreviewMemberId] = useState<number | null>(null);
+  const [savingPanels, setSavingPanels] = useState<boolean>(false);
 
-  // Log Filtresi
-  const [logFilter, setLogFilter] = useState<'all' | IntakeSource>('all');
+  // Sekme 2: Haber Yayınlama State
+  const [editingNewsId, setEditingNewsId] = useState<number | null>(null);
+  const [newsTitle, setNewsTitle] = useState<string>('');
+  const [newsTag, setNewsTag] = useState<string>('Kulüp Haberleri');
+  const [newsContent, setNewsContent] = useState<string>('');
+  const [newsPinned, setNewsPinned] = useState<boolean>(false);
+  const [savingNews, setSavingNews] = useState<boolean>(false);
 
-  const fetchOverview = useCallback(async (silent = false) => {
-    if (!silent) setLoading(true);
-    setError(null);
-    try {
-      const data = await apiRequest<AdminOverviewResponse>('/portal/admin/overview');
-      setOverview(data);
-    } catch (err: any) {
-      setError(err?.message || 'Admin panel verileri yüklenemedi.');
-    } finally {
-      setLoading(false);
-      setRefreshing(false);
-    }
+  // Sekme 3: Yeni Öğretmen Sisteme Girme State
+  const [editingTrainerId, setEditingTrainerId] = useState<number | null>(null);
+  const [trFullName, setTrFullName] = useState<string>('');
+  const [trSpecialty, setTrSpecialty] = useState<string>('Klinik Reformer & Postür Uzmanı');
+  const [trEmail, setTrEmail] = useState<string>('');
+  const [trUsername, setTrUsername] = useState<string>('');
+  const [trPassword, setTrPassword] = useState<string>('');
+  const [trPhone, setTrPhone] = useState<string>('');
+  const [trNotes, setTrNotes] = useState<string>('');
+  const [savingTrainer, setSavingTrainer] = useState<boolean>(false);
+
+  // Sekme 4A: Müşteri Arama, Yeni Müşteri & Kredi Düzenleme State
+  const [memberSearch, setMemberSearch] = useState<string>('');
+  const [showAddMemberForm, setShowAddMemberForm] = useState<boolean>(false);
+  const [memFullName, setMemFullName] = useState<string>('');
+  const [memPhone, setMemPhone] = useState<string>('');
+  const [memEmail, setMemEmail] = useState<string>('');
+  const [memUsername, setMemUsername] = useState<string>('');
+  const [memPassword, setMemPassword] = useState<string>('');
+  const [memNotes, setMemNotes] = useState<string>('');
+  const [memPackageName, setMemPackageName] = useState<string>('8 Seans Grup Reformer Paketi');
+  const [memCredits, setMemCredits] = useState<string>('8');
+  const [savingMember, setSavingMember] = useState<boolean>(false);
+
+  const [editingMemberId, setEditingMemberId] = useState<number | null>(null);
+  const [editMemberNotes, setEditMemberNotes] = useState<string>('');
+  const [editMemberSetCredits, setEditMemberSetCredits] = useState<string>('');
+  const [editMemberPkgName, setEditMemberPkgName] = useState<string>('');
+  const [busyMemberActionId, setBusyMemberActionId] = useState<number | null>(null);
+
+  // Sekme 4B: Ders Seansı Oluşturma State
+  const upcomingDates = useMemo(() => getUpcomingIsoDates(10), []);
+  const [showAddSessionForm, setShowAddSessionForm] = useState<boolean>(false);
+  const [sessTrainerId, setSessTrainerId] = useState<number | null>(null);
+  const [sessCategory, setSessCategory] = useState<string>('Grup Reformer');
+  const [sessTitle, setSessTitle] = useState<string>('Grup Reformer: Core & Duruş');
+  const [sessRoom, setSessRoom] = useState<string>('Kemerli Ayna Reformer Salonu');
+  const [sessDate, setSessDate] = useState<string>(upcomingDates[1] || getTodayIso());
+  const [sessStartTime, setSessStartTime] = useState<string>('18:00');
+  const [sessCapacity, setSessCapacity] = useState<string>('6');
+  const [savingSession, setSavingSession] = useState<boolean>(false);
+
+  const showNotice = useCallback((type: 'success' | 'error', text: string) => {
+    setFeedback({ type, text });
+    setTimeout(() => {
+      setFeedback((prev) => (prev?.text === text ? null : prev));
+    }, 4000);
   }, []);
 
+  const loadAllAdminData = useCallback(
+    async (silent = false) => {
+      if (!silent) setLoading(true);
+      try {
+        const [
+          overviewRes,
+          panelsRes,
+          newsRes,
+          trainersRes,
+          membersRes,
+          sessionsRes,
+          paymentsRes,
+        ] = await Promise.allSettled([
+          authRequest<AdminSystemOverview>('/admin/overview'),
+          authRequest<AdminPanelConfig>('/admin/panels'),
+          authRequest<AdminAnnouncementItem[]>('/admin/announcements'),
+          authRequest<AdminTrainerItem[]>('/admin/trainers'),
+          authRequest<AdminMemberItem[]>('/admin/members'),
+          authRequest<AdminClassSessionItem[]>('/admin/sessions'),
+          authRequest<AdminPaymentItem[]>('/admin/payments'),
+        ]);
+
+        if (overviewRes.status === 'fulfilled' && overviewRes.value) {
+          setOverview(overviewRes.value);
+          if (overviewRes.value.panel_config && panelsRes.status !== 'fulfilled') {
+            setPanelForm({ ...DEFAULT_PANEL_CONFIG, ...overviewRes.value.panel_config });
+          }
+        }
+
+        if (panelsRes.status === 'fulfilled' && panelsRes.value) {
+          setPanelForm({ ...DEFAULT_PANEL_CONFIG, ...panelsRes.value });
+        }
+
+        if (newsRes.status === 'fulfilled' && Array.isArray(newsRes.value)) {
+          setAnnouncements(newsRes.value);
+        } else {
+          try {
+            const pubNews = await authRequest<AdminAnnouncementItem[]>('/announcements');
+            if (Array.isArray(pubNews)) setAnnouncements(pubNews);
+          } catch {
+            // ignore
+          }
+        }
+
+        if (trainersRes.status === 'fulfilled' && Array.isArray(trainersRes.value)) {
+          const list = trainersRes.value;
+          setTrainers(list);
+          setSelectedPreviewTrainerId((prev) =>
+            prev && list.some((t) => t.id === prev) ? prev : list[0]?.id ?? null
+          );
+          setSessTrainerId((prev) =>
+            prev && list.some((t) => t.id === prev) ? prev : list[0]?.id ?? null
+          );
+        }
+
+        if (membersRes.status === 'fulfilled' && Array.isArray(membersRes.value)) {
+          const list = membersRes.value;
+          setMembers(list);
+          setSelectedPreviewMemberId((prev) =>
+            prev && list.some((m) => m.id === prev) ? prev : list[0]?.id ?? null
+          );
+        }
+
+        if (sessionsRes.status === 'fulfilled' && Array.isArray(sessionsRes.value)) {
+          setSessions(sessionsRes.value);
+        }
+
+        if (paymentsRes.status === 'fulfilled' && Array.isArray(paymentsRes.value)) {
+          setPayments(paymentsRes.value);
+        } else if (
+          overviewRes.status === 'fulfilled' &&
+          Array.isArray(overviewRes.value?.recent_payments)
+        ) {
+          setPayments(overviewRes.value.recent_payments);
+        }
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Yönetim verileri yüklenirken hata oluştu.');
+      } finally {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [authRequest, showNotice]
+  );
+
   useEffect(() => {
-    fetchOverview();
-  }, [fetchOverview]);
+    loadAllAdminData();
+  }, [loadAllAdminData]);
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
-    fetchOverview(true);
-  }, [fetchOverview]);
+    loadAllAdminData(true);
+  }, [loadAllAdminData]);
 
-  const executeIntakeCollect = useCallback(
-    async (customPayload?: DataIntakeCollectPayload) => {
-      const payload: DataIntakeCollectPayload = customPayload ?? {
-        source: intakeSource,
-        sender_name: senderName.trim(),
-        sender_contact: senderContact.trim(),
-        content: intakeContent.trim(),
-        session_id: selectedSessionId,
-        notes: extraNotes.trim() || undefined,
-        package_credits: intakePackageCredits,
+  const notifySystemUpdated = useCallback(() => {
+    reloadUsers();
+    reloadPanelConfig();
+    triggerGlobalRefresh();
+    onDataChanged?.();
+  }, [onDataChanged, reloadPanelConfig, reloadUsers, triggerGlobalRefresh]);
+
+  // ---------------------------------------------------------------------------
+  // 1. PANEL GEÇİŞ & PANEL AYARLARI İŞLEMLERİ
+  // ---------------------------------------------------------------------------
+  const handleEnterTrainerPanel = useCallback(
+    (trainerItem?: AdminTrainerItem) => {
+      const target =
+        trainerItem ||
+        trainers.find((t) => t.id === selectedPreviewTrainerId) ||
+        trainers[0];
+      if (!target) {
+        showNotice('error', 'Önizlenecek eğitmen bulunamadı. Önce eğitmen ekleyin.');
+        return;
+      }
+      const appTrainer: AppUser = {
+        id: target.id,
+        full_name: target.full_name,
+        phone: target.phone || '',
+        role: 'trainer',
+        instagram_handle: target.instagram_handle ?? null,
+        notes: target.notes ?? '',
+        avatar_url: target.avatar_url ?? null,
+        specialty: target.specialty ?? null,
       };
+      onSelectUser?.(appTrainer);
+      switchPanel('trainer', appTrainer);
+    },
+    [onSelectUser, selectedPreviewTrainerId, showNotice, switchPanel, trainers]
+  );
 
-      if (!payload.sender_name && !payload.sender_contact) {
-        setIntakeError('Gönderici adı veya iletişim (@handle / telefon) girilmelidir.');
+  const handleEnterMemberPanel = useCallback(
+    (memberItem?: AdminMemberItem) => {
+      const target =
+        memberItem ||
+        members.find((m) => m.id === selectedPreviewMemberId) ||
+        members[0];
+      if (!target) {
+        showNotice('error', 'Önizlenecek müşteri bulunamadı.');
         return;
       }
-      if (!payload.content && !payload.notes && !payload.session_id) {
-        setIntakeError('Çekilecek mesaj veya yönlendirilecek veri içeriği girin.');
-        return;
-      }
+      const appMember: AppUser = {
+        id: target.id,
+        full_name: target.full_name,
+        phone: target.phone || '',
+        role: 'member',
+        instagram_handle: target.instagram_handle ?? null,
+        notes: target.notes ?? '',
+      };
+      onSelectUser?.(appMember);
+      switchPanel('member', appMember);
+    },
+    [members, onSelectUser, selectedPreviewMemberId, showNotice, switchPanel]
+  );
 
-      setIntakeLoading(true);
-      setIntakeError(null);
+  const handleSavePanelConfig = useCallback(async () => {
+    setSavingPanels(true);
+    try {
+      const updated = await authRequest<AdminPanelConfig>('/admin/panels', {
+        method: 'PUT',
+        body: JSON.stringify(panelForm),
+      });
+      setPanelForm({ ...DEFAULT_PANEL_CONFIG, ...updated });
+      notifySystemUpdated();
+      showNotice('success', 'Panel ve sistem görünürlük ayarları güncellendi.');
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Panel ayarları kaydedilemedi.');
+    } finally {
+      setSavingPanels(false);
+    }
+  }, [authRequest, notifySystemUpdated, panelForm, showNotice]);
+
+  // ---------------------------------------------------------------------------
+  // 2. YENİ HABER YAYINLAMA İŞLEMLERİ
+  // ---------------------------------------------------------------------------
+  const resetNewsForm = useCallback(() => {
+    setEditingNewsId(null);
+    setNewsTitle('');
+    setNewsTag('Kulüp Haberleri');
+    setNewsContent('');
+    setNewsPinned(false);
+  }, []);
+
+  const handleSaveAnnouncement = useCallback(async () => {
+    if (!newsTitle.trim() || !newsContent.trim()) {
+      showNotice('error', 'Haber başlığı ve içerik metni zorunludur.');
+      return;
+    }
+    setSavingNews(true);
+    try {
+      const payload = {
+        title: newsTitle.trim(),
+        content: newsContent.trim(),
+        tag: newsTag,
+        is_pinned: newsPinned,
+      };
+      if (editingNewsId) {
+        await authRequest(`/admin/announcements/${editingNewsId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        showNotice('success', 'Duyuru güncellendi.');
+      } else {
+        await authRequest('/admin/announcements', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        showNotice('success', 'Yeni haber tüm üye ve eğitmen panellerinde yayınlandı.');
+      }
+      resetNewsForm();
+      await loadAllAdminData(true);
+      notifySystemUpdated();
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Duyuru kaydedilemedi.');
+    } finally {
+      setSavingNews(false);
+    }
+  }, [
+    authRequest,
+    editingNewsId,
+    loadAllAdminData,
+    newsContent,
+    newsPinned,
+    newsTag,
+    newsTitle,
+    notifySystemUpdated,
+    resetNewsForm,
+    showNotice,
+  ]);
+
+  const handleTogglePinNews = useCallback(
+    async (item: AdminAnnouncementItem) => {
       try {
-        const res = await apiRequest<DataIntakeCollectResponse>(
-          '/portal/intake/collect',
-          {
-            method: 'POST',
-            body: JSON.stringify(payload),
-          }
-        );
-        setLastIntakeResult(res);
-        await fetchOverview(true);
-        onDataChanged?.();
+        await authRequest(`/admin/announcements/${item.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            title: item.title,
+            content: item.content,
+            tag: item.tag,
+            is_pinned: !item.is_pinned,
+          }),
+        });
+        await loadAllAdminData(true);
+        notifySystemUpdated();
       } catch (err: any) {
-        setIntakeError(err?.message || 'Veri yönlendirme sırasında hata oluştu.');
-      } finally {
-        setIntakeLoading(false);
+        showNotice('error', err?.message || 'Sabitleme durumu değiştirilemedi.');
+      }
+    },
+    [authRequest, loadAllAdminData, notifySystemUpdated, showNotice]
+  );
+
+  const handleDeleteNews = useCallback(
+    async (id: number) => {
+      try {
+        await authRequest(`/admin/announcements/${id}`, { method: 'DELETE' });
+        if (editingNewsId === id) resetNewsForm();
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', 'Haber yayından kaldırıldı.');
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Haber silinemedi.');
+      }
+    },
+    [authRequest, editingNewsId, loadAllAdminData, notifySystemUpdated, resetNewsForm, showNotice]
+  );
+
+  // ---------------------------------------------------------------------------
+  // 3. YENİ ÖĞRETMEN SİSTEME GİRME İŞLEMLERİ
+  // ---------------------------------------------------------------------------
+  const resetTrainerForm = useCallback(() => {
+    setEditingTrainerId(null);
+    setTrFullName('');
+    setTrSpecialty('Klinik Reformer & Postür Uzmanı');
+    setTrEmail('');
+    setTrUsername('');
+    setTrPassword('');
+    setTrPhone('');
+    setTrNotes('');
+  }, []);
+
+  const handleSaveTrainer = useCallback(async () => {
+    if (!trFullName.trim()) {
+      showNotice('error', 'Öğretmen Ad Soyad alanı zorunludur.');
+      return;
+    }
+    if (!editingTrainerId && !trPassword.trim()) {
+      showNotice('error', 'Yeni öğretmenin giriş yapabilmesi için şifre belirleyin.');
+      return;
+    }
+    setSavingTrainer(true);
+    try {
+      const payload: Record<string, any> = {
+        full_name: trFullName.trim(),
+        specialty: trSpecialty.trim() || 'Reformer Pilates Eğitmeni',
+        email: trEmail.trim() || undefined,
+        username: trUsername.trim() || undefined,
+        phone: trPhone.trim() || '0532 000 00 00',
+        bio: trNotes.trim() || undefined,
+        notes: trNotes.trim() || '',
+      };
+      if (trPassword.trim()) {
+        payload.password = trPassword.trim();
+      }
+
+      if (editingTrainerId) {
+        await authRequest(`/admin/trainers/${editingTrainerId}`, {
+          method: 'PUT',
+          body: JSON.stringify(payload),
+        });
+        showNotice('success', 'Öğretmen bilgileri güncellendi.');
+      } else {
+        await authRequest('/admin/trainers', {
+          method: 'POST',
+          body: JSON.stringify(payload),
+        });
+        showNotice('success', 'Yeni öğretmen ve giriş hesabı sisteme kaydedildi.');
+      }
+      resetTrainerForm();
+      await loadAllAdminData(true);
+      notifySystemUpdated();
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Öğretmen kaydedilemedi.');
+    } finally {
+      setSavingTrainer(false);
+    }
+  }, [
+    authRequest,
+    editingTrainerId,
+    loadAllAdminData,
+    notifySystemUpdated,
+    resetTrainerForm,
+    showNotice,
+    trEmail,
+    trFullName,
+    trNotes,
+    trPassword,
+    trPhone,
+    trSpecialty,
+    trUsername,
+  ]);
+
+  const handleDeleteTrainer = useCallback(
+    async (id: number) => {
+      try {
+        await authRequest(`/admin/trainers/${id}`, { method: 'DELETE' });
+        if (editingTrainerId === id) resetTrainerForm();
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', 'Eğitmen kaydı silindi.');
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Eğitmen silinemedi.');
       }
     },
     [
-      intakeSource,
-      senderName,
-      senderContact,
-      intakeContent,
-      selectedSessionId,
-      extraNotes,
-      intakePackageCredits,
-      fetchOverview,
-      onDataChanged,
+      authRequest,
+      editingTrainerId,
+      loadAllAdminData,
+      notifySystemUpdated,
+      resetTrainerForm,
+      showNotice,
     ]
   );
 
-  const handleApplyPreset = useCallback(
-    (preset: SimulationPreset, runImmediately: boolean) => {
-      setIntakeSource(preset.source);
-      setSenderName(preset.sender_name);
-      setSenderContact(preset.sender_contact);
-      setIntakeContent(preset.content);
-      setExtraNotes(preset.notes || '');
-      setIntakePackageCredits(preset.package_credits ?? null);
-      setSelectedSessionId(null);
-      setIntakeError(null);
-
-      if (runImmediately) {
-        executeIntakeCollect({
-          source: preset.source,
-          sender_name: preset.sender_name,
-          sender_contact: preset.sender_contact,
-          content: preset.content,
-          session_id: null,
-          notes: preset.notes || undefined,
-          package_credits: preset.package_credits ?? null,
-        });
-      }
-    },
-    [executeIntakeCollect]
-  );
-
-  const handleCreateUser = useCallback(async () => {
-    if (!newFullName.trim() || !newPhone.trim()) {
-      setCreateUserError('Ad Soyad ve Telefon alanları zorunludur.');
+  // ---------------------------------------------------------------------------
+  // 4. MÜŞTERİLER, KREDİLER & SEANSLAR İŞLEMLERİ
+  // ---------------------------------------------------------------------------
+  const handleCreateMember = useCallback(async () => {
+    if (!memFullName.trim()) {
+      showNotice('error', 'Müşteri Ad Soyad alanı zorunludur.');
       return;
     }
-    setCreatingUser(true);
-    setCreateUserError(null);
+    setSavingMember(true);
     try {
-      const res = await apiRequest<AdminCreateUserResponse>('/portal/admin/users', {
+      const parsedCredits = Math.max(0, parseInt(memCredits || '8', 10) || 8);
+      await authRequest('/admin/members', {
         method: 'POST',
         body: JSON.stringify({
-          full_name: newFullName.trim(),
-          phone: newPhone.trim(),
-          role: newRole,
-          instagram_handle: newIgHandle.trim() || undefined,
-          notes: newNotes.trim() || '',
-          package_credits: newRole === 'member' ? newCredits : null,
-          package_duration_days: 30,
+          full_name: memFullName.trim(),
+          phone: memPhone.trim() || '0530 000 00 00',
+          email: memEmail.trim() || undefined,
+          username: memUsername.trim() || undefined,
+          password: memPassword.trim() || undefined,
+          notes: memNotes.trim() || '',
+          package_name: memPackageName.trim() || '8 Seans Grup Reformer Paketi',
+          credits: parsedCredits,
+          duration_days: 45,
         }),
       });
-      setCreatedUserBanner(res);
-      setNewFullName('');
-      setNewPhone('');
-      setNewIgHandle('');
-      setNewNotes('');
-      setShowCreateUserForm(false);
-      await fetchOverview(true);
-      onDataChanged?.();
+      setMemFullName('');
+      setMemPhone('');
+      setMemEmail('');
+      setMemUsername('');
+      setMemPassword('');
+      setMemNotes('');
+      setShowAddMemberForm(false);
+      await loadAllAdminData(true);
+      notifySystemUpdated();
+      showNotice('success', 'Yeni müşteri ve ders paketi sisteme eklendi.');
     } catch (err: any) {
-      setCreateUserError(err?.message || 'Yeni üye kaydı oluşturulamadı.');
+      showNotice('error', err?.message || 'Müşteri oluşturulamadı.');
     } finally {
-      setCreatingUser(false);
+      setSavingMember(false);
     }
   }, [
-    newFullName,
-    newPhone,
-    newRole,
-    newIgHandle,
-    newNotes,
-    newCredits,
-    fetchOverview,
-    onDataChanged,
+    authRequest,
+    loadAllAdminData,
+    memCredits,
+    memEmail,
+    memFullName,
+    memNotes,
+    memPackageName,
+    memPassword,
+    memPhone,
+    memUsername,
+    notifySystemUpdated,
+    showNotice,
   ]);
 
-  const filteredUsers = useMemo(() => {
-    const list = overview?.users || [];
-    const q = directorySearch.trim().toLowerCase();
-    if (!q) return list;
-    return list.filter(
-      (u) =>
-        u.full_name.toLowerCase().includes(q) ||
-        u.access_code.toLowerCase().includes(q) ||
-        u.phone.toLowerCase().includes(q) ||
-        (u.instagram_handle || '').toLowerCase().includes(q)
+  const handleAdjustMemberCredits = useCallback(
+    async (memberId: number, delta: number) => {
+      setBusyMemberActionId(memberId);
+      try {
+        await authRequest(`/admin/members/${memberId}/credits`, {
+          method: 'POST',
+          body: JSON.stringify({ credits_delta: delta }),
+        });
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice(
+          'success',
+          delta > 0
+            ? `Müşteri paketine +${delta} ders kredisi eklendi.`
+            : `Müşteri paketinden ${Math.abs(delta)} ders kredisi düşüldü.`
+        );
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Kredi güncellenemedi.');
+      } finally {
+        setBusyMemberActionId(null);
+      }
+    },
+    [authRequest, loadAllAdminData, notifySystemUpdated, showNotice]
+  );
+
+  const handleSaveMemberDetailsAndCredits = useCallback(
+    async (member: AdminMemberItem) => {
+      setBusyMemberActionId(member.id);
+      try {
+        await authRequest(`/admin/members/${member.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            notes: editMemberNotes,
+          }),
+        });
+
+        const parsedRemaining = parseInt(editMemberSetCredits, 10);
+        if (!Number.isNaN(parsedRemaining) && parsedRemaining >= 0) {
+          await authRequest(`/admin/members/${member.id}/credits`, {
+            method: 'POST',
+            body: JSON.stringify({
+              package_name: editMemberPkgName.trim() || member.package_name || 'Grup Reformer Paketi',
+              set_remaining_credits: parsedRemaining,
+              total_credits: Math.max(parsedRemaining, member.total_credits || parsedRemaining),
+              duration_days: 45,
+            }),
+          });
+        }
+
+        setEditingMemberId(null);
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', `${member.full_name} kaydı ve paket bilgileri güncellendi.`);
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Müşteri bilgileri kaydedilemedi.');
+      } finally {
+        setBusyMemberActionId(null);
+      }
+    },
+    [
+      authRequest,
+      editMemberNotes,
+      editMemberPkgName,
+      editMemberSetCredits,
+      loadAllAdminData,
+      notifySystemUpdated,
+      showNotice,
+    ]
+  );
+
+  const handleDeleteMember = useCallback(
+    async (member: AdminMemberItem) => {
+      setBusyMemberActionId(member.id);
+      try {
+        await authRequest(`/admin/members/${member.id}`, { method: 'DELETE' });
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', `${member.full_name} sistemden silindi.`);
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Müşteri silinemedi.');
+      } finally {
+        setBusyMemberActionId(null);
+      }
+    },
+    [authRequest, loadAllAdminData, notifySystemUpdated, showNotice]
+  );
+
+  const handleCreateSession = useCallback(async () => {
+    const targetTrainerId = sessTrainerId || trainers[0]?.id;
+    if (!targetTrainerId) {
+      showNotice('error', 'Ders atamak için sistemde en az bir eğitmen bulunmalıdır.');
+      return;
+    }
+    if (!sessTitle.trim()) {
+      showNotice('error', 'Ders başlığı zorunludur.');
+      return;
+    }
+    setSavingSession(true);
+    try {
+      const cap = Math.max(1, parseInt(sessCapacity || '6', 10) || 6);
+      await authRequest('/admin/sessions', {
+        method: 'POST',
+        body: JSON.stringify({
+          trainer_id: targetTrainerId,
+          title: sessTitle.trim(),
+          category: sessCategory,
+          room: sessRoom.trim() || 'Ana Stüdyo',
+          date: sessDate,
+          start_time: sessStartTime,
+          end_time: addMinutesToHhMm(sessStartTime, 50),
+          capacity: cap,
+        }),
+      });
+      setShowAddSessionForm(false);
+      await loadAllAdminData(true);
+      notifySystemUpdated();
+      showNotice('success', 'Yeni ders seansı takvime eklendi.');
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Ders seansı oluşturulamadı.');
+    } finally {
+      setSavingSession(false);
+    }
+  }, [
+    authRequest,
+    loadAllAdminData,
+    notifySystemUpdated,
+    sessCapacity,
+    sessCategory,
+    sessDate,
+    sessRoom,
+    sessStartTime,
+    sessTitle,
+    sessTrainerId,
+    showNotice,
+    trainers,
+  ]);
+
+  const handleDeleteSession = useCallback(
+    async (sessionId: number) => {
+      try {
+        await authRequest(`/admin/sessions/${sessionId}`, { method: 'DELETE' });
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', 'Ders seansı takvimden kaldırıldı.');
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Ders seansı silinemedi.');
+      }
+    },
+    [authRequest, loadAllAdminData, notifySystemUpdated, showNotice]
+  );
+
+  const filteredMembers = useMemo(() => {
+    const q = memberSearch.trim().toLocaleLowerCase('tr-TR');
+    if (!q) return members;
+    return members.filter(
+      (m) =>
+        m.full_name.toLocaleLowerCase('tr-TR').includes(q) ||
+        (m.email || '').toLocaleLowerCase('tr-TR').includes(q) ||
+        (m.phone || '').toLocaleLowerCase('tr-TR').includes(q) ||
+        (m.access_code || '').toLocaleLowerCase('tr-TR').includes(q) ||
+        (m.notes || '').toLocaleLowerCase('tr-TR').includes(q)
     );
-  }, [overview, directorySearch]);
+  }, [memberSearch, members]);
 
-  const filteredLogs = useMemo(() => {
-    const logs = overview?.recent_logs || [];
-    if (logFilter === 'all') return logs;
-    return logs.filter((l) => l.source === logFilter);
-  }, [overview, logFilter]);
+  // ---------------------------------------------------------------------------
+  // SEKME RENDER FONKSİYONLARI
+  // ---------------------------------------------------------------------------
+  const renderPanelsTab = () => (
+    <View style={styles.sectionStack}>
+      {/* Canlı Panel Değiştirici Kartı */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.iconBox, { backgroundColor: UI.goldSoft }]}>
+            <Layers size={18} color={UI.goldBright} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>Canlı Panel Geçiş Merkezi</Text>
+            <Text style={styles.cardSub}>
+              Oturumunuzdan çıkmadan Yönetim, Eğitmen ve Üye panelleri arasında anında geçiş yapın.
+            </Text>
+          </View>
+        </View>
 
-  const handleExit = onClose || onBack;
+        {/* 1. Yönetim Paneli Aktif Durumu */}
+        <View style={[styles.panelSwitchCard, styles.panelSwitchCardActive]}>
+          <View style={{ flex: 1 }}>
+            <View style={styles.inlineBadgeGold}>
+              <ShieldCheck size={12} color={UI.goldBright} />
+              <Text style={styles.inlineBadgeGoldText}>ŞU AN AKTİF MERKEZ</Text>
+            </View>
+            <Text style={styles.panelCardTitle}>Sistem Yönetim Paneli</Text>
+            <Text style={styles.panelCardDesc}>
+              Kişisel üye verisi taşımayan tam yetkili stüdyo kontrol merkezi.
+            </Text>
+          </View>
+        </View>
 
-  if (loading && !overview) {
+        {/* 2. Eğitmen Paneline Geç */}
+        <View style={styles.panelSwitchCard}>
+          <Text style={styles.panelCardTitle}>Eğitmen Paneli Önizleme & Kontrol</Text>
+          <Text style={styles.panelCardDesc}>
+            İncelemek istediğiniz öğretmeni seçerek günlük ders ve yoklama ekranına geçin:
+          </Text>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.pillsRow}
+          >
+            {trainers.map((tr) => {
+              const selected = selectedPreviewTrainerId === tr.id;
+              return (
+                <TouchableOpacity
+                  key={tr.id}
+                  style={[styles.selectChip, selected && styles.selectChipIndigo]}
+                  onPress={() => setSelectedPreviewTrainerId(tr.id)}
+                  activeOpacity={0.82}
+                >
+                  <Text
+                    style={[
+                      styles.selectChipText,
+                      selected && { color: UI.indigo, fontWeight: '800' },
+                    ]}
+                  >
+                    {tr.full_name}
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          <TouchableOpacity
+            style={[styles.actionBtn, { backgroundColor: '#4F46E5' }]}
+            onPress={() => handleEnterTrainerPanel()}
+            activeOpacity={0.85}
+          >
+            <Eye size={16} color="#FFFFFF" />
+            <Text style={[styles.actionBtnText, { color: '#FFFFFF' }]}>
+              Eğitmen Paneline Geç
+            </Text>
+            <ArrowRight size={16} color="#FFFFFF" />
+          </TouchableOpacity>
+        </View>
+
+        {/* 3. Üye Paneline Geç */}
+        <View style={styles.panelSwitchCard}>
+          <Text style={styles.panelCardTitle}>Üye Paneli Önizleme & Kontrol</Text>
+          <Text style={styles.panelCardDesc}>
+            Herhangi bir müşterinin kredi halkasını, takvimini ve paket ekranını canlı görüntüleyin:
+          </Text>
+
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.pillsRow}
+          >
+            {members.map((m) => {
+              const selected = selectedPreviewMemberId === m.id;
+              return (
+                <TouchableOpacity
+                  key={m.id}
+                  style={[styles.selectChip, selected && styles.selectChipGold]}
+                  onPress={() => setSelectedPreviewMemberId(m.id)}
+                  activeOpacity={0.82}
+                >
+                  <Text
+                    style={[
+                      styles.selectChipText,
+                      selected && { color: UI.goldBright, fontWeight: '800' },
+                    ]}
+                  >
+                    {m.full_name} ({m.remaining_credits}/{m.total_credits})
+                  </Text>
+                </TouchableOpacity>
+              );
+            })}
+          </ScrollView>
+
+          <TouchableOpacity
+            style={styles.actionBtn}
+            onPress={() => handleEnterMemberPanel()}
+            activeOpacity={0.85}
+          >
+            <Eye size={16} color={UI.darkInk} />
+            <Text style={styles.actionBtnText}>Üye Paneline Geç</Text>
+            <ArrowRight size={16} color={UI.darkInk} />
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      {/* Sistem & Panel Görünürlük Ayarları */}
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.iconBox, { backgroundColor: UI.indigoSoft }]}>
+            <Sliders size={18} color={UI.indigo} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>Panel & Modül Yetki Ayarları</Text>
+            <Text style={styles.cardSub}>
+              Uygulama genelindeki giriş, rezervasyon, satın alma ve duyuru bandı ayarlarını yönetin.
+            </Text>
+          </View>
+        </View>
+
+        {[
+          {
+            key: 'trainer_panel_enabled' as const,
+            title: 'Eğitmen Paneli Aktif',
+            desc: 'Öğretmenlerin ders takvimi ve yoklama ekranlarına erişimi',
+          },
+          {
+            key: 'member_panel_enabled' as const,
+            title: 'Üye Paneli Aktif',
+            desc: 'Müşterilerin kredi ve seans ekranlarına erişimi',
+          },
+          {
+            key: 'allow_google_login' as const,
+            title: 'Google ile Giriş Seçeneği',
+            desc: 'Giriş ekranında Google OAuth butonunu göster',
+          },
+          {
+            key: 'allow_member_booking' as const,
+            title: 'Online Ders Rezervasyonu',
+            desc: 'Üyelerin uygulama içinden ders seçip kredi kullanabilmesi',
+          },
+          {
+            key: 'allow_package_purchase' as const,
+            title: 'Online Paket Satın Alma',
+            desc: 'Üyelerin ödeme sayfasına yönlendirilerek paket yenileyebilmesi',
+          },
+          {
+            key: 'studio_banner_enabled' as const,
+            title: 'Üst Stüdyo Bilgi Bandı',
+            desc: 'Giriş ve uygulama üst alanında özel bilgilendirme mesajı göster',
+          },
+        ].map((row) => (
+          <View key={row.key} style={styles.toggleRow}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.toggleTitle}>{row.title}</Text>
+              <Text style={styles.toggleDesc}>{row.desc}</Text>
+            </View>
+            <Switch
+              value={Boolean(panelForm[row.key])}
+              onValueChange={(val) =>
+                setPanelForm((prev) => ({ ...prev, [row.key]: val }))
+              }
+              trackColor={{ false: '#26344E', true: UI.gold }}
+              thumbColor="#FFFFFF"
+            />
+          </View>
+        ))}
+
+        {panelForm.studio_banner_enabled && (
+          <View style={styles.bannerFieldsWrap}>
+            <Text style={styles.inputLabel}>Duyuru Bandı Başlığı</Text>
+            <TextInput
+              value={panelForm.studio_banner_title}
+              onChangeText={(v) =>
+                setPanelForm((prev) => ({ ...prev, studio_banner_title: v }))
+              }
+              placeholder="Örn: Bayram Çalışma Saatleri"
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+            <Text style={[styles.inputLabel, { marginTop: 10 }]}>Duyuru Bandı Mesajı</Text>
+            <TextInput
+              value={panelForm.studio_banner_message}
+              onChangeText={(v) =>
+                setPanelForm((prev) => ({ ...prev, studio_banner_message: v }))
+              }
+              placeholder="Kısa bilgilendirme metni..."
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+          </View>
+        )}
+
+        <TouchableOpacity
+          style={[styles.actionBtn, { marginTop: 16 }]}
+          onPress={handleSavePanelConfig}
+          disabled={savingPanels}
+          activeOpacity={0.86}
+        >
+          {savingPanels ? (
+            <ActivityIndicator size="small" color={UI.darkInk} />
+          ) : (
+            <>
+              <CheckCircle2 size={16} color={UI.darkInk} />
+              <Text style={styles.actionBtnText}>Panel Ayarlarını Kaydet</Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+
+  const renderNewsTab = () => (
+    <View style={styles.sectionStack}>
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.iconBox, { backgroundColor: UI.goldSoft }]}>
+            <Megaphone size={18} color={UI.goldBright} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>
+              {editingNewsId ? 'Haberi Düzenle' : 'Yeni Haber & Duyuru Yayınla'}
+            </Text>
+            <Text style={styles.cardSub}>
+              Yayınladığınız haberler tüm üye ve eğitmen ekranlarında anında görünür.
+            </Text>
+          </View>
+          {editingNewsId ? (
+            <TouchableOpacity style={styles.cancelEditPill} onPress={resetNewsForm}>
+              <X size={14} color={UI.textSec} />
+              <Text style={styles.cancelEditText}>Vazgeç</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+
+        <Text style={styles.inputLabel}>Haber Başlığı</Text>
+        <TextInput
+          value={newsTitle}
+          onChangeText={setNewsTitle}
+          placeholder="Örn: Pazar Sabahı Cadillac & Esneme Grubu Açıldı"
+          placeholderTextColor={UI.textMuted}
+          style={styles.input}
+        />
+
+        <Text style={[styles.inputLabel, { marginTop: 12 }]}>Kategori Etiketi</Text>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.pillsRow}
+        >
+          {NEWS_TAGS.map((tag) => {
+            const active = newsTag === tag;
+            return (
+              <TouchableOpacity
+                key={tag}
+                style={[styles.selectChip, active && styles.selectChipGold]}
+                onPress={() => setNewsTag(tag)}
+              >
+                <Text
+                  style={[
+                    styles.selectChipText,
+                    active && { color: UI.goldBright, fontWeight: '800' },
+                  ]}
+                >
+                  {tag}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+
+        <Text style={[styles.inputLabel, { marginTop: 12 }]}>Haber İçeriği</Text>
+        <TextInput
+          value={newsContent}
+          onChangeText={setNewsContent}
+          placeholder="Üyelerinize iletmek istediğiniz detaylı duyuru metnini yazın..."
+          placeholderTextColor={UI.textMuted}
+          multiline
+          numberOfLines={4}
+          style={[styles.input, styles.textArea]}
+        />
+
+        <View style={[styles.toggleRow, { borderBottomWidth: 0, paddingBottom: 0 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.toggleTitle}>En Üste Sabitle</Text>
+            <Text style={styles.toggleDesc}>Duyuru listesinin en başında vurgulu göster</Text>
+          </View>
+          <Switch
+            value={newsPinned}
+            onValueChange={setNewsPinned}
+            trackColor={{ false: '#26344E', true: UI.gold }}
+            thumbColor="#FFFFFF"
+          />
+        </View>
+
+        <TouchableOpacity
+          style={[styles.actionBtn, { marginTop: 14 }]}
+          onPress={handleSaveAnnouncement}
+          disabled={savingNews}
+          activeOpacity={0.86}
+        >
+          {savingNews ? (
+            <ActivityIndicator size="small" color={UI.darkInk} />
+          ) : (
+            <>
+              <Megaphone size={16} color={UI.darkInk} />
+              <Text style={styles.actionBtnText}>
+                {editingNewsId ? 'Değişiklikleri Kaydet' : 'Haberi Şimdi Yayınla'}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* Mevcut Haberler Listesi */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Yayındaki Duyurular ({announcements.length})</Text>
+
+        {announcements.length === 0 ? (
+          <Text style={styles.emptyListText}>Henüz yayınlanmış bir duyuru bulunmuyor.</Text>
+        ) : (
+          announcements.map((item) => (
+            <View key={item.id} style={styles.listItemCard}>
+              <View style={styles.listItemTopRow}>
+                <View style={styles.rowWrap}>
+                  <View style={styles.tagPill}>
+                    <Text style={styles.tagPillText}>{item.tag}</Text>
+                  </View>
+                  {item.is_pinned ? (
+                    <View style={styles.pinnedPill}>
+                      <Pin size={11} color={UI.goldBright} />
+                      <Text style={styles.pinnedPillText}>Sabit</Text>
+                    </View>
+                  ) : null}
+                </View>
+                <Text style={styles.dateMetaText}>{item.date}</Text>
+              </View>
+
+              <Text style={styles.listItemTitle}>{item.title}</Text>
+              <Text style={styles.listItemBody}>{item.content}</Text>
+
+              <View style={styles.itemActionsRow}>
+                <TouchableOpacity
+                  style={styles.smallBtn}
+                  onPress={() => handleTogglePinNews(item)}
+                >
+                  <Pin size={13} color={UI.goldBright} />
+                  <Text style={styles.smallBtnText}>
+                    {item.is_pinned ? 'Sabiti Kaldır' : 'Sabitle'}
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.smallBtn}
+                  onPress={() => {
+                    setEditingNewsId(item.id);
+                    setNewsTitle(item.title);
+                    setNewsTag(item.tag || 'Kulüp Haberleri');
+                    setNewsContent(item.content);
+                    setNewsPinned(Boolean(item.is_pinned));
+                  }}
+                >
+                  <Edit3 size={13} color={UI.indigo} />
+                  <Text style={[styles.smallBtnText, { color: UI.indigo }]}>Düzenle</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[styles.smallBtn, styles.smallBtnDanger]}
+                  onPress={() => handleDeleteNews(item.id)}
+                >
+                  <Trash2 size={13} color={UI.danger} />
+                  <Text style={[styles.smallBtnText, { color: UI.danger }]}>Sil</Text>
+                </TouchableOpacity>
+              </View>
+            </View>
+          ))
+        )}
+      </View>
+    </View>
+  );
+
+  const renderTrainersTab = () => (
+    <View style={styles.sectionStack}>
+      <View style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={[styles.iconBox, { backgroundColor: UI.indigoSoft }]}>
+            <Award size={18} color={UI.indigo} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.cardTitle}>
+              {editingTrainerId ? 'Öğretmen Bilgilerini Düzenle' : 'Yeni Öğretmen Sisteme Gir'}
+            </Text>
+            <Text style={styles.cardSub}>
+              Eklediğiniz öğretmen anında kendi şifresiyle giriş yapabilir ve derslere atanabilir.
+            </Text>
+          </View>
+          {editingTrainerId ? (
+            <TouchableOpacity style={styles.cancelEditPill} onPress={resetTrainerForm}>
+              <X size={14} color={UI.textSec} />
+              <Text style={styles.cancelEditText}>Vazgeç</Text>
+            </TouchableOpacity>
+          ) : null}
+        </View>
+
+        <View style={styles.twoCol}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inputLabel}>Ad Soyad *</Text>
+            <TextInput
+              value={trFullName}
+              onChangeText={setTrFullName}
+              placeholder="Örn: Derya Hoca"
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inputLabel}>Uzmanlık Alanı</Text>
+            <TextInput
+              value={trSpecialty}
+              onChangeText={setTrSpecialty}
+              placeholder="Klinik Reformer & Cadillac"
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+          </View>
+        </View>
+
+        <View style={[styles.twoCol, { marginTop: 10 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inputLabel}>E-posta Adresi</Text>
+            <TextInput
+              value={trEmail}
+              onChangeText={setTrEmail}
+              placeholder="derya@eryapilates.com"
+              placeholderTextColor={UI.textMuted}
+              autoCapitalize="none"
+              keyboardType="email-address"
+              style={styles.input}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inputLabel}>Kullanıcı Adı</Text>
+            <TextInput
+              value={trUsername}
+              onChangeText={setTrUsername}
+              placeholder="deryahoca"
+              placeholderTextColor={UI.textMuted}
+              autoCapitalize="none"
+              style={styles.input}
+            />
+          </View>
+        </View>
+
+        <View style={[styles.twoCol, { marginTop: 10 }]}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inputLabel}>
+              {editingTrainerId ? 'Yeni Şifre (Opsiyonel)' : 'Giriş Şifresi *'}
+            </Text>
+            <TextInput
+              value={trPassword}
+              onChangeText={setTrPassword}
+              placeholder={editingTrainerId ? 'Değiştirmek için yazın' : 'En az 4 karakter'}
+              placeholderTextColor={UI.textMuted}
+              autoCapitalize="none"
+              style={styles.input}
+            />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.inputLabel}>Telefon</Text>
+            <TextInput
+              value={trPhone}
+              onChangeText={setTrPhone}
+              placeholder="0532 000 00 00"
+              placeholderTextColor={UI.textMuted}
+              keyboardType="phone-pad"
+              style={styles.input}
+            />
+          </View>
+        </View>
+
+        <Text style={[styles.inputLabel, { marginTop: 10 }]}>Kısa Biyografi / Sertifika Notu</Text>
+        <TextInput
+          value={trNotes}
+          onChangeText={setTrNotes}
+          placeholder="Örn: Hamile pilatesi, skolyoz rehabilitasyonu ve ileri Reformer eğitmeni."
+          placeholderTextColor={UI.textMuted}
+          style={styles.input}
+        />
+
+        <TouchableOpacity
+          style={[styles.actionBtn, { marginTop: 16 }]}
+          onPress={handleSaveTrainer}
+          disabled={savingTrainer}
+          activeOpacity={0.86}
+        >
+          {savingTrainer ? (
+            <ActivityIndicator size="small" color={UI.darkInk} />
+          ) : (
+            <>
+              <UserPlus size={16} color={UI.darkInk} />
+              <Text style={styles.actionBtnText}>
+                {editingTrainerId ? 'Öğretmen Kaydını Güncelle' : 'Öğretmeni Sisteme Kaydet'}
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      </View>
+
+      {/* Mevcut Eğitmen Kadrosu */}
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Kayıtlı Eğitmen Kadrosu ({trainers.length})</Text>
+        {trainers.map((tr) => (
+          <View key={tr.id} style={styles.listItemCard}>
+            <View style={styles.listItemTopRow}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.listItemTitle}>{tr.full_name}</Text>
+                <Text style={styles.trainerSpecText}>
+                  {tr.specialty || 'Reformer Pilates Eğitmeni'}
+                </Text>
+              </View>
+              {tr.access_code ? (
+                <View style={styles.tagPill}>
+                  <Text style={styles.tagPillText}>{tr.access_code}</Text>
+                </View>
+              ) : null}
+            </View>
+
+            <Text style={styles.metaLine}>
+              Giriş: {tr.email || tr.username || tr.phone} • Tel: {tr.phone || '-'} • Aktif Seans:{' '}
+              {tr.active_sessions_count ?? 0}
+            </Text>
+            {tr.bio || tr.notes ? (
+              <Text style={styles.notePreviewText} numberOfLines={2}>
+                {tr.bio || tr.notes}
+              </Text>
+            ) : null}
+
+            <View style={styles.itemActionsRow}>
+              <TouchableOpacity
+                style={styles.smallBtn}
+                onPress={() => handleEnterTrainerPanel(tr)}
+              >
+                <Eye size={13} color={UI.goldBright} />
+                <Text style={styles.smallBtnText}>Panelini Aç</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={styles.smallBtn}
+                onPress={() => {
+                  setEditingTrainerId(tr.id);
+                  setTrFullName(tr.full_name);
+                  setTrSpecialty(tr.specialty || '');
+                  setTrEmail(tr.email || '');
+                  setTrUsername(tr.username || '');
+                  setTrPassword('');
+                  setTrPhone(tr.phone || '');
+                  setTrNotes(tr.bio || tr.notes || '');
+                }}
+              >
+                <Edit3 size={13} color={UI.indigo} />
+                <Text style={[styles.smallBtnText, { color: UI.indigo }]}>Düzenle</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[styles.smallBtn, styles.smallBtnDanger]}
+                onPress={() => handleDeleteTrainer(tr.id)}
+              >
+                <Trash2 size={13} color={UI.danger} />
+                <Text style={[styles.smallBtnText, { color: UI.danger }]}>Sil</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        ))}
+      </View>
+    </View>
+  );
+
+  const renderSystemTab = () => (
+    <View style={styles.sectionStack}>
+      {/* Üst Özet Metrik Kartları */}
+      <View style={styles.kpiGrid}>
+        <View style={styles.kpiBox}>
+          <Text style={styles.kpiLabel}>MÜŞTERİ & HOCA</Text>
+          <Text style={styles.kpiVal}>
+            {overview?.total_members ?? members.length} Üye •{' '}
+            {overview?.total_trainers ?? trainers.length} Eğitmen
+          </Text>
+        </View>
+        <View style={styles.kpiBox}>
+          <Text style={styles.kpiLabel}>TOPLAM AKTİF KREDİ</Text>
+          <Text style={[styles.kpiVal, { color: UI.emerald }]}>
+            {overview?.total_remaining_credits ??
+              members.reduce((acc, m) => acc + (m.remaining_credits || 0), 0)}{' '}
+            Ders
+          </Text>
+        </View>
+        <View style={styles.kpiBox}>
+          <Text style={styles.kpiLabel}>AKTİF RANDEVU & DERS</Text>
+          <Text style={styles.kpiVal}>
+            {overview?.active_bookings_count ?? 0} Kayıt •{' '}
+            {overview?.total_sessions ?? sessions.length} Seans
+          </Text>
+        </View>
+        <View style={styles.kpiBox}>
+          <Text style={styles.kpiLabel}>PAKET SATIŞ CİROSU</Text>
+          <Text style={[styles.kpiVal, { color: UI.goldBright }]}>
+            {(overview?.total_revenue_try ?? 0).toLocaleString('tr-TR')} TL
+          </Text>
+        </View>
+      </View>
+
+      {/* Alt Bölüm Seçici: Müşteriler | Ders Programı | Paket Ödemeleri */}
+      <View style={styles.subSegmentBar}>
+        {[
+          { key: 'musteriler' as const, label: `Müşteriler (${members.length})`, Icon: Users },
+          { key: 'dersler' as const, label: `Seanslar (${sessions.length})`, Icon: Calendar },
+          { key: 'odemeler' as const, label: `Ödemeler (${payments.length})`, Icon: CreditCard },
+        ].map((seg) => {
+          const active = systemSubTab === seg.key;
+          const SegIcon = seg.Icon;
+          return (
+            <TouchableOpacity
+              key={seg.key}
+              style={[styles.subSegmentBtn, active && styles.subSegmentBtnActive]}
+              onPress={() => setSystemSubTab(seg.key)}
+              activeOpacity={0.84}
+            >
+              <SegIcon size={14} color={active ? UI.darkInk : UI.textSec} />
+              <Text
+                style={[styles.subSegmentText, active && styles.subSegmentTextActive]}
+                numberOfLines={1}
+              >
+                {seg.label}
+              </Text>
+            </TouchableOpacity>
+          );
+        })}
+      </View>
+
+      {/* 4A: MÜŞTERİ TABLOSU & PAKET KREDİ YÖNETİMİ */}
+      {systemSubTab === 'musteriler' && (
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>Müşteri Tablosu & Paket Kredileri</Text>
+              <Text style={styles.cardSub}>
+                Tüm müşterileri görüntüleyin, yeni müşteri ekleyin, sakatlık notu ve kredi tanımlayın.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.headerAddBtn}
+              onPress={() => setShowAddMemberForm((prev) => !prev)}
+            >
+              {showAddMemberForm ? (
+                <X size={15} color={UI.darkInk} />
+              ) : (
+                <Plus size={15} color={UI.darkInk} />
+              )}
+              <Text style={styles.headerAddBtnText}>
+                {showAddMemberForm ? 'Kapat' : 'Yeni Müşteri'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {showAddMemberForm && (
+            <View style={styles.inlineCreateBox}>
+              <Text style={styles.inlineCreateTitle}>Yeni Müşteri & Paket Kaydı</Text>
+              <View style={styles.twoCol}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Ad Soyad *</Text>
+                  <TextInput
+                    value={memFullName}
+                    onChangeText={setMemFullName}
+                    placeholder="Örn: Seda Yalçın"
+                    placeholderTextColor={UI.textMuted}
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Telefon</Text>
+                  <TextInput
+                    value={memPhone}
+                    onChangeText={setMemPhone}
+                    placeholder="0533 000 00 00"
+                    placeholderTextColor={UI.textMuted}
+                    style={styles.input}
+                  />
+                </View>
+              </View>
+
+              <View style={[styles.twoCol, { marginTop: 8 }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>E-posta</Text>
+                  <TextInput
+                    value={memEmail}
+                    onChangeText={setMemEmail}
+                    placeholder="seda@eposta.com"
+                    placeholderTextColor={UI.textMuted}
+                    autoCapitalize="none"
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Giriş Şifresi</Text>
+                  <TextInput
+                    value={memPassword}
+                    onChangeText={setMemPassword}
+                    placeholder="Varsayılan: Erya2026!"
+                    placeholderTextColor={UI.textMuted}
+                    autoCapitalize="none"
+                    style={styles.input}
+                  />
+                </View>
+              </View>
+
+              <View style={[styles.twoCol, { marginTop: 8 }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Paket Adı</Text>
+                  <TextInput
+                    value={memPackageName}
+                    onChangeText={setMemPackageName}
+                    placeholder="8 Seans Grup Reformer"
+                    placeholderTextColor={UI.textMuted}
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ width: 110 }}>
+                  <Text style={styles.inputLabel}>Ders Kredisi</Text>
+                  <TextInput
+                    value={memCredits}
+                    onChangeText={setMemCredits}
+                    keyboardType="number-pad"
+                    placeholder="8"
+                    placeholderTextColor={UI.textMuted}
+                    style={styles.input}
+                  />
+                </View>
+              </View>
+
+              <Text style={[styles.inputLabel, { marginTop: 8 }]}>
+                Sağlık / Postür / Sakatlık Notu
+              </Text>
+              <TextInput
+                value={memNotes}
+                onChangeText={setMemNotes}
+                placeholder="Örn: Bel fıtığı başlangıcı, kontrollü core çalışması..."
+                placeholderTextColor={UI.textMuted}
+                style={styles.input}
+              />
+
+              <TouchableOpacity
+                style={[styles.actionBtn, { marginTop: 12 }]}
+                onPress={handleCreateMember}
+                disabled={savingMember}
+              >
+                {savingMember ? (
+                  <ActivityIndicator size="small" color={UI.darkInk} />
+                ) : (
+                  <>
+                    <UserPlus size={15} color={UI.darkInk} />
+                    <Text style={styles.actionBtnText}>Müşteriyi Tabloya Ekle</Text>
+                  </>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {/* Arama Kutusu */}
+          <View style={styles.searchBar}>
+            <Search size={16} color={UI.textMuted} />
+            <TextInput
+              value={memberSearch}
+              onChangeText={setMemberSearch}
+              placeholder="İsim, e-posta, telefon, FIT kodu veya sakatlık notu ara..."
+              placeholderTextColor={UI.textMuted}
+              style={styles.searchInput}
+            />
+            {memberSearch ? (
+              <TouchableOpacity onPress={() => setMemberSearch('')}>
+                <X size={15} color={UI.textSec} />
+              </TouchableOpacity>
+            ) : null}
+          </View>
+
+          {filteredMembers.map((m) => {
+            const isEditing = editingMemberId === m.id;
+            const isBusy = busyMemberActionId === m.id;
+            return (
+              <View
+                key={m.id}
+                style={[
+                  styles.listItemCard,
+                  m.low_credit_warning && { borderColor: 'rgba(251, 191, 36, 0.45)' },
+                ]}
+              >
+                <View style={styles.listItemTopRow}>
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.rowWrap}>
+                      <Text style={styles.listItemTitle}>{m.full_name}</Text>
+                      {m.access_code ? (
+                        <View style={styles.tagPill}>
+                          <Text style={styles.tagPillText}>{m.access_code}</Text>
+                        </View>
+                      ) : null}
+                      {m.low_credit_warning ? (
+                        <View style={styles.lowCreditPill}>
+                          <Text style={styles.lowCreditPillText}>Azalan Kredi</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <Text style={styles.metaLine}>
+                      {m.email || m.username || '-'} • {m.phone || '-'}
+                    </Text>
+                  </View>
+
+                  <View style={styles.creditCountBadge}>
+                    <Text
+                      style={[
+                        styles.creditCountValue,
+                        m.low_credit_warning && { color: UI.amber },
+                      ]}
+                    >
+                      {m.remaining_credits}/{m.total_credits}
+                    </Text>
+                    <Text style={styles.creditCountLabel}>KALAN</Text>
+                  </View>
+                </View>
+
+                <Text style={styles.packageMetaLine}>
+                  Paket: {m.package_name || 'Aktif Paket Yok'}
+                  {m.expiry_date ? ` • Bitiş: ${m.expiry_date}` : ''} • Randevu:{' '}
+                  {m.upcoming_bookings_count ?? 0}
+                </Text>
+
+                {m.notes ? (
+                  <View style={styles.healthNoteBox}>
+                    <Text style={styles.healthNoteText}>Not: {m.notes}</Text>
+                  </View>
+                ) : null}
+
+                {/* Hızlı Kredi Artır / Azalt ve Paneli Aç Aksiyonları */}
+                <View style={styles.itemActionsRow}>
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    disabled={isBusy}
+                    onPress={() => handleAdjustMemberCredits(m.id, 1)}
+                  >
+                    <Text style={[styles.smallBtnText, { color: UI.emerald }]}>+1 Ders</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    disabled={isBusy}
+                    onPress={() => handleAdjustMemberCredits(m.id, 8)}
+                  >
+                    <Text style={[styles.smallBtnText, { color: UI.emerald }]}>+8 Paket</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    disabled={isBusy}
+                    onPress={() => handleAdjustMemberCredits(m.id, -1)}
+                  >
+                    <Text style={[styles.smallBtnText, { color: UI.amber }]}>-1 Ders</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    onPress={() => {
+                      if (isEditing) {
+                        setEditingMemberId(null);
+                      } else {
+                        setEditingMemberId(m.id);
+                        setEditMemberNotes(m.notes || '');
+                        setEditMemberSetCredits(String(m.remaining_credits ?? 0));
+                        setEditMemberPkgName(m.package_name || '8 Seans Grup Reformer Paketi');
+                      }
+                    }}
+                  >
+                    <Edit3 size={12} color={UI.indigo} />
+                    <Text style={[styles.smallBtnText, { color: UI.indigo }]}>Düzenle</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={styles.smallBtn}
+                    onPress={() => handleEnterMemberPanel(m)}
+                  >
+                    <Eye size={12} color={UI.goldBright} />
+                    <Text style={styles.smallBtnText}>Üye Paneli</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity
+                    style={[styles.smallBtn, styles.smallBtnDanger]}
+                    disabled={isBusy}
+                    onPress={() => handleDeleteMember(m)}
+                  >
+                    <Trash2 size={12} color={UI.danger} />
+                  </TouchableOpacity>
+                </View>
+
+                {isEditing && (
+                  <View style={styles.memberEditDrawer}>
+                    <View style={styles.twoCol}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={styles.inputLabel}>Paket Adı</Text>
+                        <TextInput
+                          value={editMemberPkgName}
+                          onChangeText={setEditMemberPkgName}
+                          style={styles.input}
+                        />
+                      </View>
+                      <View style={{ width: 110 }}>
+                        <Text style={styles.inputLabel}>Kalan Kredi</Text>
+                        <TextInput
+                          value={editMemberSetCredits}
+                          onChangeText={setEditMemberSetCredits}
+                          keyboardType="number-pad"
+                          style={styles.input}
+                        />
+                      </View>
+                    </View>
+                    <Text style={[styles.inputLabel, { marginTop: 8 }]}>
+                      Eğitmen / Sakatlık Notu
+                    </Text>
+                    <TextInput
+                      value={editMemberNotes}
+                      onChangeText={setEditMemberNotes}
+                      placeholder="Sakatlık veya postür notu..."
+                      placeholderTextColor={UI.textMuted}
+                      style={styles.input}
+                    />
+                    <TouchableOpacity
+                      style={[styles.actionBtn, { marginTop: 10, minHeight: 42 }]}
+                      onPress={() => handleSaveMemberDetailsAndCredits(m)}
+                      disabled={isBusy}
+                    >
+                      <Text style={styles.actionBtnText}>Kaydet</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
+              </View>
+            );
+          })}
+        </View>
+      )}
+
+      {/* 4B: DERS PROGRAMI & SEANS YÖNETİMİ */}
+      {systemSubTab === 'dersler' && (
+        <View style={styles.card}>
+          <View style={styles.cardHeader}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.cardTitle}>Ders Programı & Seans Yönetimi</Text>
+              <Text style={styles.cardSub}>
+                Yeni grup veya bireysel ders açın, mevcut seansları yönetin.
+              </Text>
+            </View>
+            <TouchableOpacity
+              style={styles.headerAddBtn}
+              onPress={() => setShowAddSessionForm((prev) => !prev)}
+            >
+              {showAddSessionForm ? (
+                <X size={15} color={UI.darkInk} />
+              ) : (
+                <CalendarPlus size={15} color={UI.darkInk} />
+              )}
+              <Text style={styles.headerAddBtnText}>
+                {showAddSessionForm ? 'Kapat' : 'Yeni Seans'}
+              </Text>
+            </TouchableOpacity>
+          </View>
+
+          {showAddSessionForm && (
+            <View style={styles.inlineCreateBox}>
+              <Text style={styles.inlineCreateTitle}>Yeni Ders Seansı Planla</Text>
+
+              <Text style={styles.inputLabel}>Eğitmen Seçin</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.pillsRow}
+              >
+                {trainers.map((tr) => {
+                  const active = (sessTrainerId ?? trainers[0]?.id) === tr.id;
+                  return (
+                    <TouchableOpacity
+                      key={tr.id}
+                      style={[styles.selectChip, active && styles.selectChipIndigo]}
+                      onPress={() => setSessTrainerId(tr.id)}
+                    >
+                      <Text
+                        style={[
+                          styles.selectChipText,
+                          active && { color: UI.indigo, fontWeight: '800' },
+                        ]}
+                      >
+                        {tr.full_name}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <Text style={[styles.inputLabel, { marginTop: 8 }]}>Kategori</Text>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.pillsRow}
+              >
+                {SESSION_CATEGORIES.map((cat) => {
+                  const active = sessCategory === cat.label;
+                  return (
+                    <TouchableOpacity
+                      key={cat.label}
+                      style={[styles.selectChip, active && styles.selectChipGold]}
+                      onPress={() => {
+                        setSessCategory(cat.label);
+                        setSessTitle(`${cat.label} Seansı`);
+                        setSessRoom(cat.room);
+                        setSessCapacity(String(cat.cap));
+                      }}
+                    >
+                      <Text
+                        style={[
+                          styles.selectChipText,
+                          active && { color: UI.goldBright, fontWeight: '800' },
+                        ]}
+                      >
+                        {cat.label}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
+
+              <Text style={[styles.inputLabel, { marginTop: 8 }]}>Ders Başlığı</Text>
+              <TextInput
+                value={sessTitle}
+                onChangeText={setSessTitle}
+                style={styles.input}
+              />
+
+              <View style={[styles.twoCol, { marginTop: 8 }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Tarih (YYYY-MM-DD)</Text>
+                  <TextInput
+                    value={sessDate}
+                    onChangeText={setSessDate}
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ width: 95 }}>
+                  <Text style={styles.inputLabel}>Saat</Text>
+                  <TextInput
+                    value={sessStartTime}
+                    onChangeText={setSessStartTime}
+                    placeholder="18:00"
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ width: 85 }}>
+                  <Text style={styles.inputLabel}>Kontenjan</Text>
+                  <TextInput
+                    value={sessCapacity}
+                    onChangeText={setSessCapacity}
+                    keyboardType="number-pad"
+                    style={styles.input}
+                  />
+                </View>
+              </View>
+
+              <TouchableOpacity
+                style={[styles.actionBtn, { marginTop: 12 }]}
+                onPress={handleCreateSession}
+                disabled={savingSession}
+              >
+                {savingSession ? (
+                  <ActivityIndicator size="small" color={UI.darkInk} />
+                ) : (
+                  <Text style={styles.actionBtnText}>Seansı Takvime Ekle</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          )}
+
+          {sessions.length === 0 ? (
+            <Text style={styles.emptyListText}>Kayıtlı ders seansı bulunamadı.</Text>
+          ) : (
+            sessions.map((s) => (
+              <View key={s.id} style={styles.listItemCard}>
+                <View style={styles.listItemTopRow}>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.listItemTitle}>{s.title}</Text>
+                    <Text style={styles.metaLine}>
+                      {s.date} • {s.start_time}-{s.end_time} • {s.trainer_name}
+                    </Text>
+                  </View>
+                  <View style={styles.tagPill}>
+                    <Text style={styles.tagPillText}>
+                      {s.current_enrolled}/{s.capacity} Kayıt
+                    </Text>
+                  </View>
+                </View>
+                <View style={styles.itemActionsRow}>
+                  <Text style={[styles.dateMetaText, { flex: 1 }]}>
+                    Salon: {s.room || 'Ana Stüdyo'}
+                  </Text>
+                  <TouchableOpacity
+                    style={[styles.smallBtn, styles.smallBtnDanger]}
+                    onPress={() => handleDeleteSession(s.id)}
+                  >
+                    <Trash2 size={12} color={UI.danger} />
+                    <Text style={[styles.smallBtnText, { color: UI.danger }]}>İptal / Sil</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            ))
+          )}
+        </View>
+      )}
+
+      {/* 4C: SON PAKET ÖDEMELERİ */}
+      {systemSubTab === 'odemeler' && (
+        <View style={styles.card}>
+          <Text style={styles.cardTitle}>Son Paket Ödemeleri ({payments.length})</Text>
+          <Text style={styles.cardSub}>
+            Online ödeme geçidi üzerinden veya stüdyodan gerçekleşen paket satın alımları.
+          </Text>
+
+          {payments.length === 0 ? (
+            <Text style={styles.emptyListText}>Henüz ödeme hareketi bulunmuyor.</Text>
+          ) : (
+            payments.map((p) => {
+              const amountVal = p.amount_try ?? p.amount ?? 0;
+              return (
+                <View key={`${p.id}-${p.transaction_code || p.session_id}`} style={styles.listItemCard}>
+                  <View style={styles.listItemTopRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.listItemTitle}>
+                        {p.member_name || `Üye #${p.member_id}`}
+                      </Text>
+                      <Text style={styles.metaLine}>
+                        {p.package_name || p.plan_name || 'Ders Paketi'}
+                      </Text>
+                    </View>
+                    <Text style={[styles.listItemTitle, { color: UI.emerald }]}>
+                      {amountVal.toLocaleString('tr-TR')} TL
+                    </Text>
+                  </View>
+                  <Text style={styles.dateMetaText}>
+                    Durum: {p.status} • Kod: {p.transaction_code || p.session_id || `#${p.id}`} •{' '}
+                    {p.created_at}
+                  </Text>
+                </View>
+              );
+            })
+          )}
+        </View>
+      )}
+    </View>
+  );
+
+  if (loading && !overview && members.length === 0) {
     return (
-      <View style={styles.loadingScreen}>
-        <ActivityIndicator size="large" color={THEME.emerald} />
-        <Text style={styles.loadingText}>Admin Kontrol & Veri Merkezi Yükleniyor...</Text>
+      <View style={styles.loadingRoot}>
+        <ActivityIndicator size="large" color={UI.gold} />
+        <Text style={styles.loadingText}>Sistem Yönetim Merkezi Yükleniyor...</Text>
       </View>
     );
   }
 
   return (
     <KeyboardAvoidingView
-      style={styles.rootContainer}
+      style={styles.root}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
-      {/* Üst Başlık Çubuğu */}
-      <View style={styles.headerBar}>
-        <View style={{ flex: 1 }}>
-          <View style={styles.adminLivePill}>
-            <ShieldCheck size={12} color="#A5B4FC" />
-            <Text style={styles.adminLivePillText}>ADMIN KONTROL & VERİ MERKEZİ</Text>
+      {/* Üst Yönetici Başlık Barı — Kişisel Üye/Sporcu Bilgisi Taşımaz */}
+      <View style={styles.topHeader}>
+        <View style={styles.topHeaderLeft}>
+          <EryaBrandLogo size={34} lightText />
+          <View style={{ flex: 1 }}>
+            <View style={styles.zeroProfileBadge}>
+              <ShieldCheck size={11} color={UI.goldBright} />
+              <Text style={styles.zeroProfileBadgeText}>SİSTEM YÖNETİM MERKEZİ</Text>
+            </View>
+            <Text style={styles.topHeaderTitle} numberOfLines={1}>
+              Tam Yetkili Stüdyo Kontrolü
+            </Text>
           </View>
-          <Text style={styles.headerTitle}>Stüdyo Yönetim & Veri Yönlendirme</Text>
         </View>
 
-        <View style={styles.headerActions}>
+        <View style={styles.topHeaderRight}>
           <TouchableOpacity
-            style={styles.iconBtn}
+            style={styles.iconActionBtn}
             onPress={handleRefresh}
-            activeOpacity={0.8}
+            accessibilityLabel="Verileri yenile"
           >
-            <RefreshCw size={17} color={THEME.textPrimary} />
+            <RefreshCw size={16} color={UI.text} />
           </TouchableOpacity>
 
-          {handleExit ? (
-            <TouchableOpacity
-              style={styles.exitBtn}
-              onPress={handleExit}
-              activeOpacity={0.85}
-            >
-              <ArrowLeft size={15} color={THEME.textPrimary} />
-              <Text style={styles.exitBtnText}>Çıkış</Text>
-            </TouchableOpacity>
-          ) : null}
+          <TouchableOpacity
+            style={styles.logoutBtn}
+            onPress={logout}
+            activeOpacity={0.85}
+            accessibilityLabel="Çıkış Yap"
+          >
+            <LogOut size={15} color={UI.danger} />
+            <Text style={styles.logoutBtnText}>Çıkış Yap</Text>
+          </TouchableOpacity>
         </View>
       </View>
 
+      {/* Ana 4 Sekme Navigasyonu */}
+      <View style={styles.primaryTabsWrap}>
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          contentContainerStyle={styles.primaryTabsScroll}
+        >
+          {[
+            { key: 'paneller' as const, label: 'Panelleri Değiştir', Icon: Layers },
+            { key: 'haberler' as const, label: 'Yeni Haber Yayınla', Icon: Megaphone },
+            { key: 'ogretmenler' as const, label: 'Yeni Öğretmen Ekle', Icon: Award },
+            { key: 'sistem' as const, label: 'Müşteriler & Sistem', Icon: Users },
+          ].map((tab) => {
+            const active = activeTab === tab.key;
+            const TabIcon = tab.Icon;
+            return (
+              <TouchableOpacity
+                key={tab.key}
+                style={[styles.primaryTabBtn, active && styles.primaryTabBtnActive]}
+                onPress={() => setActiveTab(tab.key)}
+                activeOpacity={0.85}
+              >
+                <TabIcon size={15} color={active ? UI.darkInk : UI.textSec} />
+                <Text style={[styles.primaryTabText, active && styles.primaryTabTextActive]}>
+                  {tab.label}
+                </Text>
+              </TouchableOpacity>
+            );
+          })}
+        </ScrollView>
+      </View>
+
+      {/* Geri Bildirim Bandı */}
+      {feedback ? (
+        <View
+          style={[
+            styles.feedbackBanner,
+            feedback.type === 'error' ? styles.feedbackError : styles.feedbackSuccess,
+          ]}
+        >
+          {feedback.type === 'error' ? (
+            <AlertTriangle size={15} color={UI.danger} />
+          ) : (
+            <CheckCircle2 size={15} color={UI.emerald} />
+          )}
+          <Text style={styles.feedbackText}>{feedback.text}</Text>
+        </View>
+      ) : null}
+
+      {/* Sekme İçeriği */}
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={styles.scrollContent}
@@ -457,1573 +2081,658 @@ export function AdminControlScreen({
           <RefreshControl
             refreshing={refreshing}
             onRefresh={handleRefresh}
-            tintColor={THEME.emerald}
+            tintColor={UI.gold}
           />
         }
       >
-        {error ? (
-          <View style={styles.errorCard}>
-            <AlertTriangle size={18} color={THEME.danger} />
-            <Text style={styles.errorCardText}>{error}</Text>
-          </View>
-        ) : null}
-
-        {/* 1. ÜST BENTO KPI KARTLARI */}
-        {overview ? (
-          <View style={styles.kpiGrid}>
-            <View style={styles.kpiCard}>
-              <View style={styles.kpiTopRow}>
-                <Users size={16} color={THEME.emerald} />
-                <Text style={styles.kpiLabel}>ÜYE & EĞİTMEN</Text>
-              </View>
-              <Text style={styles.kpiValue}>
-                {overview.stats.total_members}{' '}
-                <Text style={styles.kpiValueSub}>
-                  Üye • {overview.stats.total_trainers} Hoca
-                </Text>
-              </Text>
-            </View>
-
-            <View style={styles.kpiCard}>
-              <View style={styles.kpiTopRow}>
-                <Calendar size={16} color={THEME.volt} />
-                <Text style={styles.kpiLabel}>AKTİF RANDEVU</Text>
-              </View>
-              <Text style={styles.kpiValue}>
-                {overview.stats.active_bookings_count}{' '}
-                <Text style={styles.kpiValueSub}>
-                  Kayıt • {overview.stats.total_remaining_credits} Kredi
-                </Text>
-              </Text>
-            </View>
-
-            <View style={styles.kpiCard}>
-              <View style={styles.kpiTopRow}>
-                <Database size={16} color="#A5B4FC" />
-                <Text style={styles.kpiLabel}>ÇEKİLEN VERİ</Text>
-              </View>
-              <Text style={styles.kpiValue}>
-                {overview.stats.total_intake_logs}{' '}
-                <Text style={styles.kpiValueSub}>
-                  IG:{overview.channel_counts.instagram || 0} WP:
-                  {overview.channel_counts.whatsapp || 0}
-                </Text>
-              </Text>
-            </View>
-
-            <View
-              style={[
-                styles.kpiCard,
-                overview.stats.low_credit_members_count > 0 && {
-                  borderColor: 'rgba(245, 158, 11, 0.35)',
-                },
-              ]}
-            >
-              <View style={styles.kpiTopRow}>
-                <AlertTriangle size={16} color={THEME.amber} />
-                <Text style={styles.kpiLabel}>KRİTİK KREDİ</Text>
-              </View>
-              <Text style={[styles.kpiValue, { color: THEME.amber }]}>
-                {overview.stats.low_credit_members_count}{' '}
-                <Text style={styles.kpiValueSub}>Azalan Paket</Text>
-              </Text>
-            </View>
-          </View>
-        ) : null}
-
-        {/* 2. INSTAGRAM / WHATSAPP / MANUEL VERİ ÇEKME & YÖNLENDİRME PANELİ */}
-        <View style={[styles.bentoCard, styles.intakeEngineCard]}>
-          <View style={styles.sectionHeaderRow}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, flex: 1 }}>
-              <View style={styles.engineIconBox}>
-                <Zap size={18} color={THEME.volt} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={styles.sectionTitle}>
-                  Çok Kanallı Veri Çekme & Birim Yönlendirme Motoru
-                </Text>
-                <Text style={styles.sectionSubtitle}>
-                  Instagram, WhatsApp veya Manuel gelen veriyi çekip Üye ID, Eğitmen Sakatlık Notu
-                  ve Ders Randevusu birimlerine otomatik dağıtır.
-                </Text>
-              </View>
-            </View>
-          </View>
-
-          {/* Kanal Seçici: Instagram | WhatsApp | Manuel */}
-          <Text style={styles.fieldLabel}>1. VERİ KAYNAĞI KANALI SEÇİN</Text>
-          <View style={styles.channelSwitchRow}>
-            {(['instagram', 'whatsapp', 'manual'] as IntakeSource[]).map((ch) => {
-              const meta = getSourceMeta(ch);
-              const active = intakeSource === ch;
-              return (
-                <TouchableOpacity
-                  key={ch}
-                  style={[
-                    styles.channelTab,
-                    active && {
-                      backgroundColor: meta.bg,
-                      borderColor: meta.color,
-                    },
-                  ]}
-                  onPress={() => setIntakeSource(ch)}
-                  activeOpacity={0.85}
-                >
-                  <MessageCircle
-                    size={14}
-                    color={active ? meta.color : THEME.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.channelTabText,
-                      active && { color: THEME.textPrimary, fontWeight: '800' },
-                    ]}
-                  >
-                    {meta.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {/* Tek Tıkla Simülasyon Kartları */}
-          <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
-            2. TEK TIKLA ÖRNEK IG / WHATSAPP VERİSİ ÇEKME SİMÜLASYONU
-          </Text>
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.presetsScrollRow}
-          >
-            {SIMULATION_PRESETS.map((preset) => {
-              const sMeta = getSourceMeta(preset.source);
-              return (
-                <View key={preset.id} style={styles.presetCard}>
-                  <View style={styles.presetTopRow}>
-                    <View style={[styles.presetBadge, { backgroundColor: sMeta.bg }]}>
-                      <Text style={[styles.presetBadgeText, { color: sMeta.color }]}>
-                        {preset.badge}
-                      </Text>
-                    </View>
-                    <Text style={styles.presetContact}>{preset.sender_contact}</Text>
-                  </View>
-
-                  <Text style={styles.presetTitle}>{preset.title}</Text>
-                  <Text style={styles.presetPreview} numberOfLines={2}>
-                    "{preset.content}"
-                  </Text>
-
-                  <View style={styles.presetBtnRow}>
-                    <TouchableOpacity
-                      style={styles.presetFillBtn}
-                      onPress={() => handleApplyPreset(preset, false)}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={styles.presetFillBtnText}>Forma Doldur</Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      style={styles.presetRunBtn}
-                      onPress={() => handleApplyPreset(preset, true)}
-                      disabled={intakeLoading}
-                      activeOpacity={0.85}
-                    >
-                      <Zap size={12} color="#04130D" />
-                      <Text style={styles.presetRunBtnText}>Hemen Çek</Text>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              );
-            })}
-          </ScrollView>
-
-          {/* Detaylı Veri Giriş Formu */}
-          <Text style={[styles.fieldLabel, { marginTop: 16 }]}>
-            3. DETAYLI VERİ GİRİŞİ & HEDEF SEANS SEÇİMİ
-          </Text>
-
-          <View style={styles.twoColRow}>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.miniLabel}>Gönderici Adı Soyadı</Text>
-              <TextInput
-                value={senderName}
-                onChangeText={setSenderName}
-                placeholder="Örn: Ahmet Yılmaz"
-                placeholderTextColor={THEME.textMuted}
-                style={styles.inputBox}
-              />
-            </View>
-            <View style={{ flex: 1 }}>
-              <Text style={styles.miniLabel}>@handle / Telefon / FIT-ID</Text>
-              <TextInput
-                value={senderContact}
-                onChangeText={setSenderContact}
-                placeholder="@kullanici veya 05xx"
-                placeholderTextColor={THEME.textMuted}
-                autoCapitalize="none"
-                style={styles.inputBox}
-              />
-            </View>
-          </View>
-
-          <Text style={[styles.miniLabel, { marginTop: 10 }]}>
-            Çekilen Mesaj / Talep İçeriği (NLP ile Saat & Sakatlık Analiz Edilir)
-          </Text>
-          <TextInput
-            value={intakeContent}
-            onChangeText={setIntakeContent}
-            placeholder="Örn: Yarın 19:00 grup dersine katılmak istiyorum, bel hassasiyetim var..."
-            placeholderTextColor={THEME.textMuted}
-            multiline
-            numberOfLines={3}
-            style={[styles.inputBox, styles.multilineInput]}
-          />
-
-          {/* Ders Seansı Seçici */}
-          {overview && overview.sessions.length > 0 ? (
-            <View style={{ marginTop: 10 }}>
-              <Text style={styles.miniLabel}>
-                Ders Randevu Yönlendirmesi (Otomatik NLP veya Doğrudan Seans Seç):
-              </Text>
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                contentContainerStyle={styles.sessionPillsRow}
-              >
-                <TouchableOpacity
-                  style={[
-                    styles.sessionPill,
-                    selectedSessionId === null && styles.sessionPillActive,
-                  ]}
-                  onPress={() => setSelectedSessionId(null)}
-                >
-                  <Sparkles
-                    size={12}
-                    color={selectedSessionId === null ? THEME.emerald : THEME.textSecondary}
-                  />
-                  <Text
-                    style={[
-                      styles.sessionPillText,
-                      selectedSessionId === null && { color: THEME.textPrimary },
-                    ]}
-                  >
-                    Mesajdan Otomatik Bul
-                  </Text>
-                </TouchableOpacity>
-
-                {overview.sessions.map((s) => {
-                  const isSel = selectedSessionId === s.id;
-                  return (
-                    <TouchableOpacity
-                      key={s.id}
-                      style={[
-                        styles.sessionPill,
-                        isSel && styles.sessionPillActive,
-                        s.is_full && { opacity: 0.6 },
-                      ]}
-                      onPress={() => setSelectedSessionId(isSel ? null : s.id)}
-                    >
-                      <Text
-                        style={[
-                          styles.sessionPillText,
-                          isSel && { color: THEME.textPrimary, fontWeight: '800' },
-                        ]}
-                      >
-                        {s.day_label.split(' ')[0]} {s.start_time} • {s.title} (
-                        {s.current_enrolled}/{s.capacity})
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </ScrollView>
-            </View>
-          ) : null}
-
-          {/* Ek Eğitmen Notu & Opsiyonel Paket Kredisi */}
-          <Text style={[styles.miniLabel, { marginTop: 10 }]}>
-            Eğitmen Yoklama Ekranına Özel / Sakatlık Notu (Opsiyonel)
-          </Text>
-          <TextInput
-            value={extraNotes}
-            onChangeText={setExtraNotes}
-            placeholder="Örn: Sağ omuz impingement, baş üstü press dikkat..."
-            placeholderTextColor={THEME.textMuted}
-            style={styles.inputBox}
-          />
-
-          <View style={styles.creditAssignRow}>
-            <Text style={styles.miniLabel}>Başlangıç / Ek Kredi Tanımla:</Text>
-            <View style={styles.creditPillsWrap}>
-              {[null, 4, 8, 12].map((val) => {
-                const active = intakePackageCredits === val;
-                return (
-                  <TouchableOpacity
-                    key={`cred-${String(val)}`}
-                    style={[
-                      styles.creditMiniPill,
-                      active && styles.creditMiniPillActive,
-                    ]}
-                    onPress={() => setIntakePackageCredits(val)}
-                  >
-                    <Text
-                      style={[
-                        styles.creditMiniPillText,
-                        active && { color: '#04130D', fontWeight: '800' },
-                      ]}
-                    >
-                      {val === null ? 'Yok' : `+${val} Ders`}
-                    </Text>
-                  </TouchableOpacity>
-                );
-              })}
-            </View>
-          </View>
-
-          {intakeError ? (
-            <View style={styles.inlineErrorBox}>
-              <AlertTriangle size={15} color={THEME.danger} />
-              <Text style={styles.inlineErrorText}>{intakeError}</Text>
-            </View>
-          ) : null}
-
-          <TouchableOpacity
-            style={styles.collectSubmitBtn}
-            onPress={() => executeIntakeCollect()}
-            disabled={intakeLoading}
-            activeOpacity={0.88}
-          >
-            {intakeLoading ? (
-              <ActivityIndicator size="small" color="#04130D" />
-            ) : (
-              <>
-                <Send size={16} color="#04130D" />
-                <Text style={styles.collectSubmitBtnText}>
-                  Veriyi Çek, Analiz Et & İlgili Birimlere Gönder
-                </Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          {/* CANLI YÖNLENDİRME SONUÇ KARTI */}
-          {lastIntakeResult ? (
-            <View style={styles.liveResultCard}>
-              <View style={styles.liveResultHeader}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-                  <CheckCircle2 size={19} color={THEME.emerald} />
-                  <Text style={styles.liveResultTitle}>
-                    Canlı Veri Dağıtım & Yönlendirme Raporu
-                  </Text>
-                </View>
-                <TouchableOpacity onPress={() => setLastIntakeResult(null)}>
-                  <X size={16} color={THEME.textSecondary} />
-                </TouchableOpacity>
-              </View>
-
-              {/* Atanan / Eşleşen FIT-XXXX Kodu */}
-              <View style={styles.routedMemberBanner}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.routedMemberName}>
-                    {lastIntakeResult.user.full_name}{' '}
-                    {lastIntakeResult.is_new_user ? '(Yeni Kayıt)' : '(Mevcut Üye)'}
-                  </Text>
-                  <Text style={styles.routedMemberSub}>
-                    Kalan Ders Hakkı: {lastIntakeResult.remaining_credits} /{' '}
-                    {lastIntakeResult.total_credits}
-                  </Text>
-                </View>
-                <View style={styles.assignedCodePill}>
-                  <Text style={styles.assignedCodePillText}>
-                    {lastIntakeResult.assigned_access_code}
-                  </Text>
-                </View>
-              </View>
-
-              {/* Birim Dağıtım Matrisi */}
-              <View style={styles.deptMatrix}>
-                {(
-                  [
-                    'booking',
-                    'trainer_note',
-                    'member_registry',
-                  ] as TargetDepartment[]
-                ).map((deptKey) => {
-                  const active = lastIntakeResult.routed_departments.includes(deptKey);
-                  const dMeta = getDepartmentMeta(deptKey);
-                  return (
-                    <View
-                      key={deptKey}
-                      style={[
-                        styles.deptStatusCard,
-                        active && {
-                          borderColor: dMeta.color,
-                          backgroundColor: dMeta.bg,
-                        },
-                      ]}
-                    >
-                      <View style={styles.deptStatusTop}>
-                        <CheckCircle2
-                          size={14}
-                          color={active ? dMeta.color : THEME.textMuted}
-                        />
-                        <Text
-                          style={[
-                            styles.deptStatusTitle,
-                            active && { color: THEME.textPrimary },
-                          ]}
-                        >
-                          {dMeta.short}
-                        </Text>
-                      </View>
-                      <Text style={styles.deptStatusState}>
-                        {active ? '✓ İletildi' : '— İşlem Yok'}
-                      </Text>
-                    </View>
-                  );
-                })}
-              </View>
-
-              {lastIntakeResult.booking_result ? (
-                <View style={styles.resultDetailLine}>
-                  <Calendar size={14} color={THEME.emerald} />
-                  <Text style={styles.resultDetailText}>
-                    {lastIntakeResult.booking_result.message}
-                  </Text>
-                </View>
-              ) : null}
-
-              {lastIntakeResult.notes_updated && lastIntakeResult.updated_notes ? (
-                <View style={styles.resultDetailLine}>
-                  <AlertTriangle size={14} color={THEME.amber} />
-                  <Text style={[styles.resultDetailText, { color: '#FDE68A' }]}>
-                    Eğitmen Yoklama Notu: {lastIntakeResult.updated_notes}
-                  </Text>
-                </View>
-              ) : null}
-
-              <Text style={styles.resultSummaryFooter}>
-                {lastIntakeResult.action_summary}
-              </Text>
-            </View>
-          ) : null}
-        </View>
-
-        {/* 3. ÜYE ID (FIT-XXXX) REHBERİ & YENİ ÜYE / ID OLUŞTURMA */}
-        <View style={styles.bentoCard}>
-          <View style={styles.sectionHeaderRow}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 }}>
-              <Hash size={18} color="#A5B4FC" />
-              <Text style={styles.sectionTitle}>Üye ID (FIT-XXXX) Rehberi & Kayıt</Text>
-            </View>
-
-            <TouchableOpacity
-              style={styles.newMemberToggleBtn}
-              onPress={() => {
-                setShowCreateUserForm((prev) => !prev);
-                setCreateUserError(null);
-              }}
-              activeOpacity={0.85}
-            >
-              {showCreateUserForm ? (
-                <>
-                  <X size={14} color="#FFFFFF" />
-                  <Text style={styles.newMemberToggleText}>Kapat</Text>
-                </>
-              ) : (
-                <>
-                  <UserPlus size={14} color="#FFFFFF" />
-                  <Text style={styles.newMemberToggleText}>Yeni Üye & ID</Text>
-                </>
-              )}
-            </TouchableOpacity>
-          </View>
-
-          {createdUserBanner ? (
-            <View style={styles.createdBanner}>
-              <CheckCircle2 size={16} color={THEME.emerald} />
-              <Text style={styles.createdBannerText}>{createdUserBanner.message}</Text>
-            </View>
-          ) : null}
-
-          {/* Yeni Üye / Eğitmen + FIT-XXXX Oluşturma Formu */}
-          {showCreateUserForm ? (
-            <View style={styles.createFormBox}>
-              <Text style={styles.createFormTitle}>
-                Manuel Yeni Üye / Eğitmen & Otomatik FIT-XXXX Atama
-              </Text>
-
-              <View style={styles.roleSwitchRow}>
-                <TouchableOpacity
-                  style={[
-                    styles.roleOptionBtn,
-                    newRole === 'member' && styles.roleOptionBtnActive,
-                  ]}
-                  onPress={() => setNewRole('member')}
-                >
-                  <Text
-                    style={[
-                      styles.roleOptionText,
-                      newRole === 'member' && { color: '#04130D', fontWeight: '800' },
-                    ]}
-                  >
-                    Müşteri (Üye)
-                  </Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity
-                  style={[
-                    styles.roleOptionBtn,
-                    newRole === 'trainer' && styles.roleOptionBtnIndigo,
-                  ]}
-                  onPress={() => setNewRole('trainer')}
-                >
-                  <Text
-                    style={[
-                      styles.roleOptionText,
-                      newRole === 'trainer' && { color: '#FFFFFF', fontWeight: '800' },
-                    ]}
-                  >
-                    Eğitmen (Trainer)
-                  </Text>
-                </TouchableOpacity>
-              </View>
-
-              <View style={styles.twoColRow}>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.miniLabel}>Ad Soyad *</Text>
-                  <TextInput
-                    value={newFullName}
-                    onChangeText={setNewFullName}
-                    placeholder="Örn: Deniz Arslan"
-                    placeholderTextColor={THEME.textMuted}
-                    style={styles.inputBox}
-                  />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.miniLabel}>Telefon *</Text>
-                  <TextInput
-                    value={newPhone}
-                    onChangeText={setNewPhone}
-                    placeholder="0532 xxx xx xx"
-                    placeholderTextColor={THEME.textMuted}
-                    keyboardType="phone-pad"
-                    style={styles.inputBox}
-                  />
-                </View>
-              </View>
-
-              <Text style={[styles.miniLabel, { marginTop: 8 }]}>
-                Instagram Kullanıcı Adı (Opsiyonel)
-              </Text>
-              <TextInput
-                value={newIgHandle}
-                onChangeText={setNewIgHandle}
-                placeholder="@denizarslan"
-                placeholderTextColor={THEME.textMuted}
-                autoCapitalize="none"
-                style={styles.inputBox}
-              />
-
-              {newRole === 'member' ? (
-                <View style={styles.creditAssignRow}>
-                  <Text style={styles.miniLabel}>Başlangıç Paketi:</Text>
-                  <View style={styles.creditPillsWrap}>
-                    {[4, 8, 10, 12].map((c) => (
-                      <TouchableOpacity
-                        key={`new-c-${c}`}
-                        style={[
-                          styles.creditMiniPill,
-                          newCredits === c && styles.creditMiniPillActive,
-                        ]}
-                        onPress={() => setNewCredits(c)}
-                      >
-                        <Text
-                          style={[
-                            styles.creditMiniPillText,
-                            newCredits === c && { color: '#04130D', fontWeight: '800' },
-                          ]}
-                        >
-                          {c} Ders
-                        </Text>
-                      </TouchableOpacity>
-                    ))}
-                  </View>
-                </View>
-              ) : null}
-
-              <Text style={[styles.miniLabel, { marginTop: 8 }]}>
-                Sakatlık / Seviye / Uzmanlık Notu
-              </Text>
-              <TextInput
-                value={newNotes}
-                onChangeText={setNewNotes}
-                placeholder="Eğitmen yoklama ekranında görünecek özel not..."
-                placeholderTextColor={THEME.textMuted}
-                style={styles.inputBox}
-              />
-
-              {createUserError ? (
-                <View style={styles.inlineErrorBox}>
-                  <AlertTriangle size={15} color={THEME.danger} />
-                  <Text style={styles.inlineErrorText}>{createUserError}</Text>
-                </View>
-              ) : null}
-
-              <TouchableOpacity
-                style={styles.saveNewUserBtn}
-                onPress={handleCreateUser}
-                disabled={creatingUser}
-                activeOpacity={0.88}
-              >
-                {creatingUser ? (
-                  <ActivityIndicator size="small" color="#FFFFFF" />
-                ) : (
-                  <>
-                    <Plus size={16} color="#FFFFFF" />
-                    <Text style={styles.saveNewUserBtnText}>
-                      Kaydet & Otomatik FIT-XXXX ID Ata
-                    </Text>
-                  </>
-                )}
-              </TouchableOpacity>
-            </View>
-          ) : null}
-
-          {/* Rehber Arama Kutusu */}
-          <View style={styles.directorySearchWrap}>
-            <Search size={15} color={THEME.textMuted} />
-            <TextInput
-              value={directorySearch}
-              onChangeText={setDirectorySearch}
-              placeholder="İsim, FIT-XXXX kodu, @handle veya telefon ara..."
-              placeholderTextColor={THEME.textMuted}
-              style={styles.directorySearchInput}
-            />
-          </View>
-
-          {/* Kullanıcı ve FIT-XXXX Kartları */}
-          {filteredUsers.map((u: AdminDirectoryUser) => {
-            const isTrainer = u.role === 'trainer';
-            return (
-              <View key={`dir-${u.id}`} style={styles.directoryUserCard}>
-                <View style={styles.directoryTopRow}>
-                  <View style={styles.fitCodeTag}>
-                    <Text style={styles.fitCodeTagText}>{u.access_code}</Text>
-                  </View>
-
-                  <View
-                    style={[
-                      styles.dirRoleBadge,
-                      {
-                        backgroundColor: isTrainer
-                          ? THEME.indigoSoft
-                          : THEME.emeraldSoft,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={{
-                        color: isTrainer ? '#A5B4FC' : THEME.emerald,
-                        fontSize: 10.5,
-                        fontWeight: '800',
-                      }}
-                    >
-                      {isTrainer ? 'EĞİTMEN' : `KALAN: ${u.remaining_credits}/${u.total_credits} DERS`}
-                    </Text>
-                  </View>
-
-                  {onSelectUser ? (
-                    <TouchableOpacity
-                      style={styles.jumpUserBtn}
-                      onPress={() => {
-                        onSelectUser({
-                          id: u.id,
-                          full_name: u.full_name,
-                          phone: u.phone,
-                          role: u.role,
-                          instagram_handle: u.instagram_handle,
-                          notes: u.notes,
-                        });
-                        handleExit?.();
-                      }}
-                    >
-                      <Text style={styles.jumpUserBtnText}>Aç</Text>
-                      <ArrowRight size={12} color={THEME.textPrimary} />
-                    </TouchableOpacity>
-                  ) : null}
-                </View>
-
-                <Text style={styles.dirUserName}>{u.full_name}</Text>
-                <Text style={styles.dirUserContact}>
-                  {u.phone}
-                  {u.instagram_handle ? ` • ${u.instagram_handle}` : ''} • PIN: {u.pin_code}
-                </Text>
-
-                {u.notes ? (
-                  <View style={styles.dirNoteBox}>
-                    <AlertTriangle size={12} color={THEME.amber} />
-                    <Text style={styles.dirNoteText} numberOfLines={2}>
-                      {u.notes}
-                    </Text>
-                  </View>
-                ) : null}
-              </View>
-            );
-          })}
-        </View>
-
-        {/* 4. CANLI VERİ ÇEKME & YÖNLENDİRME GEÇMİŞİ (DataIntakeLog) */}
-        <View style={styles.bentoCard}>
-          <View style={styles.sectionHeaderRow}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <Activity size={18} color={THEME.emerald} />
-              <Text style={styles.sectionTitle}>Canlı Veri Akışı (DataIntakeLog)</Text>
-            </View>
-            <ClipboardList size={17} color={THEME.textMuted} />
-          </View>
-
-          {/* Kanal Filtresi */}
-          <View style={styles.logFilterRow}>
-            {(
-              [
-                { key: 'all', label: 'Tümü' },
-                { key: 'instagram', label: 'Instagram' },
-                { key: 'whatsapp', label: 'WhatsApp' },
-                { key: 'manual', label: 'Manuel' },
-              ] as const
-            ).map((f) => {
-              const active = logFilter === f.key;
-              return (
-                <TouchableOpacity
-                  key={f.key}
-                  style={[styles.logFilterPill, active && styles.logFilterPillActive]}
-                  onPress={() => setLogFilter(f.key)}
-                >
-                  <Text
-                    style={[
-                      styles.logFilterText,
-                      active && { color: '#04130D', fontWeight: '800' },
-                    ]}
-                  >
-                    {f.label}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-
-          {filteredLogs.length === 0 ? (
-            <Text style={styles.emptyLogText}>Bu filtrede henüz veri kaydı bulunmuyor.</Text>
-          ) : (
-            filteredLogs.map((log: DataIntakeLogItem) => {
-              const sMeta = getSourceMeta(log.source);
-              const dMeta = getDepartmentMeta(log.target_department);
-              return (
-                <View key={`log-${log.id}`} style={styles.logItemCard}>
-                  <View style={styles.logTopRow}>
-                    <View style={[styles.logSourceBadge, { backgroundColor: sMeta.bg }]}>
-                      <Text style={[styles.logSourceText, { color: sMeta.color }]}>
-                        {sMeta.label}
-                      </Text>
-                    </View>
-
-                    <View style={[styles.logDeptBadge, { backgroundColor: dMeta.bg }]}>
-                      <Text style={[styles.logDeptText, { color: dMeta.color }]}>
-                        → {dMeta.short}
-                      </Text>
-                    </View>
-
-                    {log.assigned_access_code ? (
-                      <Text style={styles.logAccessCode}>{log.assigned_access_code}</Text>
-                    ) : null}
-                  </View>
-
-                  <Text style={styles.logSenderLine}>
-                    {log.sender_name}{' '}
-                    <Text style={styles.logContactSpan}>({log.sender_contact})</Text>
-                  </Text>
-
-                  <Text style={styles.logPayloadText}>"{log.message_or_payload}"</Text>
-
-                  <View style={styles.logSummaryRow}>
-                    <CheckCircle2 size={12} color={THEME.emerald} />
-                    <Text style={styles.logSummaryText}>{log.action_summary}</Text>
-                  </View>
-
-                  <Text style={styles.logTimeText}>{log.created_at}</Text>
-                </View>
-              );
-            })
-          )}
-        </View>
+        {activeTab === 'paneller' && renderPanelsTab()}
+        {activeTab === 'haberler' && renderNewsTab()}
+        {activeTab === 'ogretmenler' && renderTrainersTab()}
+        {activeTab === 'sistem' && renderSystemTab()}
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
-export default AdminControlScreen;
-
 const styles = StyleSheet.create({
-  rootContainer: {
+  root: {
     flex: 1,
-    backgroundColor: THEME.bg,
+    backgroundColor: UI.bg,
   },
-  loadingScreen: {
+  loadingRoot: {
     flex: 1,
-    backgroundColor: THEME.bg,
+    backgroundColor: UI.bg,
     alignItems: 'center',
     justifyContent: 'center',
     padding: 24,
   },
   loadingText: {
-    color: THEME.textPrimary,
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '600',
     marginTop: 12,
   },
-  headerBar: {
+  topHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: 18,
-    paddingTop: 10,
-    paddingBottom: 12,
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    backgroundColor: UI.surface,
     borderBottomWidth: 1,
-    borderBottomColor: THEME.border,
+    borderBottomColor: UI.border,
     gap: 10,
   },
-  adminLivePill: {
+  topHeaderLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  zeroProfileBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: 4,
+    backgroundColor: UI.goldSoft,
+    borderWidth: 1,
+    borderColor: UI.goldBorder,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+  },
+  zeroProfileBadgeText: {
+    fontFamily: FONTS.sans,
+    color: UI.goldBright,
+    fontSize: 9.5,
+    fontWeight: '800',
+    letterSpacing: 0.8,
+  },
+  topHeaderTitle: {
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 15.5,
+    fontWeight: '800',
+    marginTop: 3,
+  },
+  topHeaderRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  iconActionBtn: {
+    width: 38,
+    height: 38,
+    borderRadius: 11,
+    backgroundColor: UI.elevated,
+    borderWidth: 1,
+    borderColor: UI.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoutBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    height: 38,
+    paddingHorizontal: 12,
+    borderRadius: 11,
+    backgroundColor: UI.dangerSoft,
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.3)',
+  },
+  logoutBtnText: {
+    fontFamily: FONTS.sans,
+    color: UI.danger,
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  primaryTabsWrap: {
+    backgroundColor: UI.surface,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.border,
+  },
+  primaryTabsScroll: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    gap: 8,
+  },
+  primaryTabBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    paddingHorizontal: 14,
+    paddingVertical: 9,
+    borderRadius: 12,
+    backgroundColor: UI.elevated,
+    borderWidth: 1,
+    borderColor: UI.border,
+  },
+  primaryTabBtnActive: {
+    backgroundColor: UI.gold,
+    borderColor: UI.goldBright,
+  },
+  primaryTabText: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  primaryTabTextActive: {
+    color: UI.darkInk,
+    fontWeight: '800',
+  },
+  feedbackBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginHorizontal: 16,
+    marginTop: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+  },
+  feedbackSuccess: {
+    backgroundColor: UI.emeraldSoft,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+  },
+  feedbackError: {
+    backgroundColor: UI.dangerSoft,
+    borderColor: 'rgba(248, 113, 113, 0.35)',
+  },
+  feedbackText: {
+    flex: 1,
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  scrollContent: {
+    padding: 16,
+    paddingBottom: 36,
+  },
+  sectionStack: {
+    gap: 16,
+  },
+  card: {
+    backgroundColor: UI.surface,
+    borderRadius: 20,
+    padding: 18,
+    borderWidth: 1,
+    borderColor: UI.border,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    marginBottom: 14,
+  },
+  iconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cardTitle: {
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  cardSub: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginTop: 3,
+  },
+  panelSwitchCard: {
+    backgroundColor: UI.elevated,
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: UI.border,
+    marginTop: 12,
+  },
+  panelSwitchCardActive: {
+    borderColor: UI.goldBorder,
+    backgroundColor: 'rgba(201, 164, 82, 0.08)',
+  },
+  inlineBadgeGold: {
     flexDirection: 'row',
     alignItems: 'center',
     alignSelf: 'flex-start',
     gap: 5,
-    backgroundColor: THEME.indigoSoft,
-    paddingHorizontal: 9,
+    backgroundColor: UI.goldSoft,
+    paddingHorizontal: 8,
     paddingVertical: 3,
-    borderRadius: 9,
-    marginBottom: 4,
+    borderRadius: 999,
+    marginBottom: 6,
   },
-  adminLivePillText: {
-    color: '#C7D2FE',
+  inlineBadgeGoldText: {
+    fontFamily: FONTS.sans,
+    color: UI.goldBright,
     fontSize: 10,
     fontWeight: '800',
-    letterSpacing: 0.6,
   },
-  headerTitle: {
-    color: THEME.textPrimary,
-    fontSize: 18.5,
+  panelCardTitle: {
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 14.5,
     fontWeight: '800',
-    letterSpacing: -0.4,
   },
-  headerActions: {
+  panelCardDesc: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12.5,
+    marginTop: 3,
+    lineHeight: 17,
+  },
+  pillsRow: {
+    gap: 8,
+    paddingVertical: 10,
+  },
+  selectChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    backgroundColor: UI.input,
+    borderWidth: 1,
+    borderColor: UI.border,
+  },
+  selectChipGold: {
+    backgroundColor: UI.goldSoft,
+    borderColor: UI.gold,
+  },
+  selectChipIndigo: {
+    backgroundColor: UI.indigoSoft,
+    borderColor: UI.indigo,
+  },
+  selectChipText: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12.5,
+    fontWeight: '600',
+  },
+  actionBtn: {
+    minHeight: 46,
+    borderRadius: 13,
+    backgroundColor: UI.gold,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
-  },
-  iconBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 12,
-    backgroundColor: THEME.card,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    alignItems: 'center',
     justifyContent: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
   },
-  exitBtn: {
+  actionBtnText: {
+    fontFamily: FONTS.sans,
+    color: UI.darkInk,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  toggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: UI.border,
+  },
+  toggleTitle: {
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  toggleDesc: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12,
+    marginTop: 2,
+  },
+  bannerFieldsWrap: {
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 14,
+    backgroundColor: UI.elevated,
+    borderWidth: 1,
+    borderColor: UI.border,
+  },
+  inputLabel: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  input: {
+    backgroundColor: UI.input,
+    borderWidth: 1,
+    borderColor: UI.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 13.5,
+  },
+  textArea: {
+    minHeight: 88,
+    textAlignVertical: 'top',
+  },
+  twoCol: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  cancelEditPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 10,
+    backgroundColor: UI.elevated,
+    borderWidth: 1,
+    borderColor: UI.border,
+  },
+  cancelEditText: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  emptyListText: {
+    fontFamily: FONTS.sans,
+    color: UI.textMuted,
+    fontSize: 13,
+    marginTop: 10,
+  },
+  listItemCard: {
+    backgroundColor: UI.elevated,
+    borderRadius: 15,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: UI.border,
+    marginTop: 12,
+  },
+  listItemTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  rowWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  tagPill: {
+    backgroundColor: UI.input,
+    borderWidth: 1,
+    borderColor: UI.borderStrong,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  tagPillText: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  pinnedPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: UI.goldSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  pinnedPillText: {
+    fontFamily: FONTS.sans,
+    color: UI.goldBright,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  lowCreditPill: {
+    backgroundColor: UI.amberSoft,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  lowCreditPillText: {
+    fontFamily: FONTS.sans,
+    color: UI.amber,
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  dateMetaText: {
+    fontFamily: FONTS.sans,
+    color: UI.textMuted,
+    fontSize: 11.5,
+  },
+  listItemTitle: {
+    fontFamily: FONTS.sans,
+    color: UI.text,
+    fontSize: 14.5,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  listItemBody: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12.5,
+    lineHeight: 18,
+    marginTop: 5,
+  },
+  trainerSpecText: {
+    fontFamily: FONTS.sans,
+    color: UI.indigo,
+    fontSize: 12.5,
+    fontWeight: '700',
+    marginTop: 2,
+  },
+  metaLine: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  packageMetaLine: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
+    fontSize: 12,
+    marginTop: 6,
+  },
+  notePreviewText: {
+    fontFamily: FONTS.sans,
+    color: UI.textMuted,
+    fontSize: 12,
+    marginTop: 4,
+  },
+  healthNoteBox: {
+    marginTop: 8,
+    backgroundColor: UI.amberSoft,
+    borderRadius: 9,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+  },
+  healthNoteText: {
+    fontFamily: FONTS.sans,
+    color: UI.amber,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  itemActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+    paddingTop: 10,
+    borderTopWidth: 1,
+    borderTopColor: UI.border,
+  },
+  smallBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: THEME.elevated,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 12,
+    backgroundColor: UI.input,
     borderWidth: 1,
-    borderColor: THEME.border,
+    borderColor: UI.border,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 9,
   },
-  exitBtnText: {
-    color: THEME.textPrimary,
-    fontSize: 12.5,
-    fontWeight: '800',
+  smallBtnDanger: {
+    backgroundColor: UI.dangerSoft,
+    borderColor: 'rgba(248, 113, 113, 0.25)',
   },
-  scrollContent: {
-    padding: 16,
-    paddingBottom: 42,
-    gap: 16,
-  },
-  errorCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: THEME.dangerSoft,
-    padding: 14,
-    borderRadius: 16,
-  },
-  errorCardText: {
-    flex: 1,
-    color: '#FCA5A5',
-    fontSize: 13,
-    fontWeight: '600',
+  smallBtnText: {
+    fontFamily: FONTS.sans,
+    color: UI.goldBright,
+    fontSize: 11.5,
+    fontWeight: '700',
   },
   kpiGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: 10,
   },
-  kpiCard: {
-    width: '48%',
+  kpiBox: {
     flexGrow: 1,
-    backgroundColor: THEME.card,
-    borderRadius: 20,
-    padding: 15,
+    minWidth: 150,
+    backgroundColor: UI.surface,
     borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  kpiTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginBottom: 8,
+    borderColor: UI.border,
+    borderRadius: 16,
+    padding: 14,
   },
   kpiLabel: {
-    color: THEME.textMuted,
-    fontSize: 10.5,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  kpiValue: {
-    color: THEME.textPrimary,
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.5,
-  },
-  kpiValueSub: {
-    color: THEME.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  bentoCard: {
-    backgroundColor: THEME.card,
-    borderRadius: 20,
-    padding: 18,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  intakeEngineCard: {
-    borderColor: 'rgba(16, 185, 129, 0.3)',
-  },
-  sectionHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 14,
-  },
-  engineIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: 'rgba(163, 230, 53, 0.14)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sectionTitle: {
-    color: THEME.textPrimary,
-    fontSize: 16,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  sectionSubtitle: {
-    color: THEME.textSecondary,
-    fontSize: 12,
-    lineHeight: 17,
-    marginTop: 2,
-  },
-  fieldLabel: {
-    color: THEME.textMuted,
+    fontFamily: FONTS.sans,
+    color: UI.textMuted,
     fontSize: 10.5,
     fontWeight: '800',
     letterSpacing: 0.6,
-    marginBottom: 8,
   },
-  channelSwitchRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  channelTab: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    backgroundColor: THEME.elevated,
-    paddingVertical: 11,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  channelTabText: {
-    color: THEME.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  presetsScrollRow: {
-    gap: 10,
-    paddingRight: 6,
-  },
-  presetCard: {
-    width: 248,
-    backgroundColor: THEME.elevated,
-    borderRadius: 16,
-    padding: 13,
-    borderWidth: 1,
-    borderColor: THEME.border,
-    justifyContent: 'space-between',
-  },
-  presetTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  presetBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  presetBadgeText: {
-    fontSize: 10.5,
-    fontWeight: '800',
-  },
-  presetContact: {
-    color: THEME.textMuted,
-    fontSize: 11,
-    fontWeight: '600',
-  },
-  presetTitle: {
-    color: THEME.textPrimary,
-    fontSize: 13.5,
-    fontWeight: '800',
-    marginBottom: 4,
-  },
-  presetPreview: {
-    color: THEME.textSecondary,
-    fontSize: 11.5,
-    lineHeight: 16,
-    marginBottom: 10,
-  },
-  presetBtnRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  presetFillBtn: {
-    flex: 1,
-    backgroundColor: THEME.card,
-    paddingVertical: 8,
-    borderRadius: 10,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  presetFillBtnText: {
-    color: THEME.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '700',
-  },
-  presetRunBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 4,
-    backgroundColor: THEME.emerald,
-    paddingVertical: 8,
-    borderRadius: 10,
-  },
-  presetRunBtnText: {
-    color: '#04130D',
-    fontSize: 11.5,
-    fontWeight: '800',
-  },
-  twoColRow: {
-    flexDirection: 'row',
-    gap: 10,
-  },
-  miniLabel: {
-    color: THEME.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '700',
-    marginBottom: 5,
-  },
-  inputBox: {
-    backgroundColor: THEME.elevated,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 11,
-    color: THEME.textPrimary,
-    fontSize: 13.5,
-    fontWeight: '600',
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  multilineInput: {
-    minHeight: 72,
-    textAlignVertical: 'top',
-  },
-  sessionPillsRow: {
-    gap: 8,
-    paddingVertical: 4,
-  },
-  sessionPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    backgroundColor: THEME.elevated,
-    paddingHorizontal: 11,
-    paddingVertical: 8,
-    borderRadius: 11,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  sessionPillActive: {
-    backgroundColor: THEME.emeraldSoft,
-    borderColor: THEME.emerald,
-  },
-  sessionPillText: {
-    color: THEME.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  creditAssignRow: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 8,
-  },
-  creditPillsWrap: {
-    flexDirection: 'row',
-    gap: 6,
-  },
-  creditMiniPill: {
-    backgroundColor: THEME.elevated,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  creditMiniPillActive: {
-    backgroundColor: THEME.volt,
-    borderColor: THEME.volt,
-  },
-  creditMiniPillText: {
-    color: THEME.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '700',
-  },
-  inlineErrorBox: {
-    marginTop: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: THEME.dangerSoft,
-    padding: 10,
-    borderRadius: 12,
-  },
-  inlineErrorText: {
-    flex: 1,
-    color: '#FCA5A5',
-    fontSize: 12.5,
-    fontWeight: '600',
-  },
-  collectSubmitBtn: {
-    marginTop: 14,
-    backgroundColor: THEME.emerald,
-    borderRadius: 14,
-    paddingVertical: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  collectSubmitBtnText: {
-    color: '#04130D',
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  liveResultCard: {
-    marginTop: 16,
-    backgroundColor: '#0E1729',
-    borderRadius: 16,
-    padding: 15,
-    borderWidth: 1.5,
-    borderColor: THEME.emerald,
-    gap: 10,
-  },
-  liveResultHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-  },
-  liveResultTitle: {
-    color: THEME.textPrimary,
+  kpiVal: {
+    fontFamily: FONTS.sans,
+    color: UI.text,
     fontSize: 14.5,
     fontWeight: '800',
+    marginTop: 5,
   },
-  routedMemberBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: THEME.elevated,
-    padding: 12,
-    borderRadius: 12,
-    gap: 10,
-  },
-  routedMemberName: {
-    color: THEME.textPrimary,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  routedMemberSub: {
-    color: THEME.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  assignedCodePill: {
-    backgroundColor: 'rgba(163, 230, 53, 0.16)',
-    paddingHorizontal: 11,
-    paddingVertical: 6,
-    borderRadius: 10,
-  },
-  assignedCodePillText: {
-    color: THEME.volt,
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  deptMatrix: {
+  subSegmentBar: {
     flexDirection: 'row',
     gap: 8,
-  },
-  deptStatusCard: {
-    flex: 1,
-    backgroundColor: THEME.elevated,
-    borderRadius: 12,
-    padding: 10,
+    backgroundColor: UI.surface,
+    padding: 6,
+    borderRadius: 14,
     borderWidth: 1,
-    borderColor: THEME.border,
+    borderColor: UI.border,
   },
-  deptStatusTop: {
+  subSegmentBtn: {
+    flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    marginBottom: 4,
-  },
-  deptStatusTitle: {
-    color: THEME.textMuted,
-    fontSize: 11,
-    fontWeight: '800',
-    flexShrink: 1,
-  },
-  deptStatusState: {
-    color: THEME.textSecondary,
-    fontSize: 10.5,
-    fontWeight: '700',
-  },
-  resultDetailLine: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 7,
-    backgroundColor: 'rgba(255,255,255,0.03)',
-    padding: 9,
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 9,
+    paddingHorizontal: 8,
     borderRadius: 10,
   },
-  resultDetailText: {
-    flex: 1,
-    color: THEME.textPrimary,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '600',
+  subSegmentBtnActive: {
+    backgroundColor: UI.gold,
   },
-  resultSummaryFooter: {
-    color: THEME.emerald,
+  subSegmentText: {
+    fontFamily: FONTS.sans,
+    color: UI.textSec,
     fontSize: 12,
     fontWeight: '700',
-    lineHeight: 17,
   },
-  newMemberToggleBtn: {
+  subSegmentTextActive: {
+    color: UI.darkInk,
+    fontWeight: '800',
+  },
+  headerAddBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
-    backgroundColor: THEME.indigo,
+    backgroundColor: UI.gold,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 11,
   },
-  newMemberToggleText: {
-    color: '#FFFFFF',
+  headerAddBtnText: {
+    fontFamily: FONTS.sans,
+    color: UI.darkInk,
     fontSize: 12,
     fontWeight: '800',
   },
-  createdBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    backgroundColor: THEME.emeraldSoft,
-    padding: 11,
-    borderRadius: 12,
-    marginBottom: 12,
-  },
-  createdBannerText: {
-    flex: 1,
-    color: THEME.emerald,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  createFormBox: {
-    backgroundColor: '#0E1627',
+  inlineCreateBox: {
+    backgroundColor: UI.elevated,
     borderRadius: 16,
     padding: 14,
+    borderWidth: 1,
+    borderColor: UI.goldBorder,
     marginBottom: 14,
-    borderWidth: 1,
-    borderColor: 'rgba(99, 102, 241, 0.35)',
   },
-  createFormTitle: {
-    color: THEME.textPrimary,
-    fontSize: 14,
-    fontWeight: '800',
-    marginBottom: 10,
-  },
-  roleSwitchRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 10,
-  },
-  roleOptionBtn: {
-    flex: 1,
-    backgroundColor: THEME.elevated,
-    paddingVertical: 9,
-    borderRadius: 10,
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  roleOptionBtnActive: {
-    backgroundColor: THEME.emerald,
-    borderColor: THEME.emerald,
-  },
-  roleOptionBtnIndigo: {
-    backgroundColor: THEME.indigo,
-    borderColor: THEME.indigo,
-  },
-  roleOptionText: {
-    color: THEME.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  saveNewUserBtn: {
-    marginTop: 12,
-    backgroundColor: THEME.indigo,
-    borderRadius: 12,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  saveNewUserBtnText: {
-    color: '#FFFFFF',
+  inlineCreateTitle: {
+    fontFamily: FONTS.sans,
+    color: UI.goldBright,
     fontSize: 13.5,
     fontWeight: '800',
+    marginBottom: 10,
   },
-  directorySearchWrap: {
+  searchBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 8,
-    backgroundColor: THEME.elevated,
+    backgroundColor: UI.input,
+    borderWidth: 1,
+    borderColor: UI.border,
     borderRadius: 12,
     paddingHorizontal: 12,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: THEME.border,
+    minHeight: 44,
   },
-  directorySearchInput: {
+  searchInput: {
     flex: 1,
-    paddingVertical: 10,
-    color: THEME.textPrimary,
+    fontFamily: FONTS.sans,
+    color: UI.text,
     fontSize: 13,
+    paddingVertical: 8,
   },
-  directoryUserCard: {
-    backgroundColor: THEME.elevated,
-    borderRadius: 15,
-    padding: 13,
-    marginBottom: 9,
+  creditCountBadge: {
+    backgroundColor: UI.input,
     borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  directoryTopRow: {
-    flexDirection: 'row',
+    borderColor: UI.borderStrong,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     alignItems: 'center',
-    gap: 8,
-    marginBottom: 6,
   },
-  fitCodeTag: {
-    backgroundColor: THEME.card,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  fitCodeTagText: {
-    color: THEME.volt,
-    fontSize: 11.5,
-    fontWeight: '800',
-  },
-  dirRoleBadge: {
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  jumpUserBtn: {
-    marginLeft: 'auto',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 3,
-    backgroundColor: THEME.card,
-    paddingHorizontal: 9,
-    paddingVertical: 4,
-    borderRadius: 8,
-  },
-  jumpUserBtnText: {
-    color: THEME.textPrimary,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  dirUserName: {
-    color: THEME.textPrimary,
+  creditCountValue: {
+    fontFamily: FONTS.sans,
+    color: UI.emerald,
     fontSize: 14.5,
     fontWeight: '800',
   },
-  dirUserContact: {
-    color: THEME.textSecondary,
-    fontSize: 12,
-    marginTop: 2,
-  },
-  dirNoteBox: {
-    marginTop: 8,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: THEME.amberSoft,
-    paddingHorizontal: 9,
-    paddingVertical: 6,
-    borderRadius: 9,
-  },
-  dirNoteText: {
-    flex: 1,
-    color: '#FDE68A',
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  logFilterRow: {
-    flexDirection: 'row',
-    gap: 6,
-    marginBottom: 12,
-  },
-  logFilterPill: {
-    backgroundColor: THEME.elevated,
-    paddingHorizontal: 11,
-    paddingVertical: 7,
-    borderRadius: 10,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  logFilterPillActive: {
-    backgroundColor: THEME.emerald,
-    borderColor: THEME.emerald,
-  },
-  logFilterText: {
-    color: THEME.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  emptyLogText: {
-    color: THEME.textMuted,
-    fontSize: 13,
-    textAlign: 'center',
-    paddingVertical: 16,
-  },
-  logItemCard: {
-    backgroundColor: THEME.elevated,
-    borderRadius: 15,
-    padding: 13,
-    marginBottom: 10,
-    borderWidth: 1,
-    borderColor: THEME.border,
-  },
-  logTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: 6,
-    marginBottom: 6,
-  },
-  logSourceBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  logSourceText: {
-    fontSize: 10.5,
+  creditCountLabel: {
+    fontFamily: FONTS.sans,
+    color: UI.textMuted,
+    fontSize: 9,
     fontWeight: '800',
   },
-  logDeptBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 8,
-  },
-  logDeptText: {
-    fontSize: 10.5,
-    fontWeight: '800',
-  },
-  logAccessCode: {
-    marginLeft: 'auto',
-    color: THEME.volt,
-    fontSize: 11.5,
-    fontWeight: '800',
-  },
-  logSenderLine: {
-    color: THEME.textPrimary,
-    fontSize: 13.5,
-    fontWeight: '800',
-  },
-  logContactSpan: {
-    color: THEME.textSecondary,
-    fontWeight: '600',
-    fontSize: 12,
-  },
-  logPayloadText: {
-    color: THEME.textSecondary,
-    fontSize: 12.5,
-    lineHeight: 18,
-    marginTop: 4,
-    fontStyle: 'italic',
-  },
-  logSummaryRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 6,
-    marginTop: 7,
-  },
-  logSummaryText: {
-    flex: 1,
-    color: THEME.emerald,
-    fontSize: 11.5,
-    fontWeight: '700',
-    lineHeight: 16,
-  },
-  logTimeText: {
-    color: THEME.textMuted,
-    fontSize: 10.5,
-    marginTop: 5,
-    textAlign: 'right',
+  memberEditDrawer: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: UI.border,
   },
 });

@@ -27,6 +27,38 @@ export function getTomorrowIso(): string {
   return `${y}-${m}-${d}`;
 }
 
+export function getUpcomingIsoDates(count = 8): string[] {
+  const result: string[] = [];
+  const base = new Date();
+  for (let i = 0; i < count; i += 1) {
+    const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + i);
+    const y = dt.getFullYear();
+    const m = String(dt.getMonth() + 1).padStart(2, '0');
+    const d = String(dt.getDate()).padStart(2, '0');
+    result.push(`${y}-${m}-${d}`);
+  }
+  return result;
+}
+
+export function addMinutesToHhMm(hhmm: string, minutes = 60): string {
+  const cleaned = (hhmm || '').trim().replace('.', ':');
+  const match = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(cleaned);
+  if (!match) return '';
+  const totalMinutes = Number(match[1]) * 60 + Number(match[2]) + minutes;
+  const wrapped = ((totalMinutes % 1440) + 1440) % 1440;
+  const h = String(Math.floor(wrapped / 60)).padStart(2, '0');
+  const m = String(wrapped % 60).padStart(2, '0');
+  return `${h}:${m}`;
+}
+
+export function getDaysRemaining(dateStr?: string | null): number {
+  if (!dateStr) return 0;
+  const today = toLocalMidnight(getTodayIso());
+  const target = toLocalMidnight(dateStr);
+  const diffMs = target.getTime() - today.getTime();
+  return Math.round(diffMs / (1000 * 60 * 60 * 24));
+}
+
 export function formatTurkishDateLabel(dateStr: string): {
   primary: string;
   secondary: string;
