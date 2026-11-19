@@ -7,3 +7,4 @@
   2. Müşteri derse kayıt olduğunda (`booked`) paketindeki `remaining_credits` anında 1 düşer, dersin `current_enrolled` sayısı 1 artar.
   3. İptal durumunda (`cancelled`) kredi müşteriye iade edilir ve kontenjan boşalır.
   4. Eğitmen yoklama ekranında müşterinin sakatlık/özel notlarını (`notes`) ve kalan ders sayısını görür, tek tuşla "Geldi" (`attended`) veya "Gelmedi" (`no_show`) işaretler.
+- Otomatik Git Kuralı: Her görev veya kod değişikliği isteği aldığımda, işe başlamadan önce otomatik olarak `git pull --rebase` çalıştırarak GitHub'daki son değişiklikleri çek. Kod düzenlemesini tamamladığımda ise bana sormadan otomatik olarak `git add .`, anlamlı bir mesajla `git commit` ve `git push` komutlarını çalıştırarak değişiklikleri GitHub'a kaydet.
