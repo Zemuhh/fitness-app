@@ -1,0 +1,40 @@
+# Ortam Değişkenleri & Gizli Anahtarlar
+.env
+.env.*
+!.env.example
+
+# Python Sanal Ortamlar & Önbellek
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Node.js & Mobil Bağımlılıklar
+node_modules/
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# Expo & Derleme Çıktıları
+.expo/
+dist/
+web-build/
+.metro-health-check*
+*.tsbuildinfo
+
+# Geçici SQLite Kilit / Günlük Dosyaları
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Sertifikalar & İşletim Sistemi Dosyaları
+*.jks
+*.p8
+*.p12
+*.key
+*.pem
+*.mobileprovision
+.DS_Store
+Thumbs.db
