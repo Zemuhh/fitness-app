@@ -198,19 +198,163 @@ async def lifespan(app: FastAPI):
     yield
 
 
+CORS_ALLOWED_ORIGINS = [
+    "https://fitness-app-mobile-ios.vercel.app",
+    "*",
+]
+
+CORS_ALLOWED_METHODS = [
+    "GET",
+    "POST",
+    "PUT",
+    "DELETE",
+    "OPTIONS",
+    "PATCH",
+]
+
+CORS_ALLOWED_HEADERS = ["*"]
+
+CORS_ALLOW_METHODS_STR = ", ".join(CORS_ALLOWED_METHODS)
+CORS_DEFAULT_ALLOW_HEADERS_STR = (
+    "Authorization, Content-Type, Accept, Origin, X-Requested-With"
+)
+
+
+class CORSHeaderGuaranteeMiddleware:
+    """
+    Guarantees valid, mobile-browser-compatible CORS headers on every HTTP
+    response (OPTIONS preflight, bare OPTIONS, GET, POST, PUT, DELETE, PATCH,
+    and error responses) for https://fitness-app-mobile-ios.vercel.app and any
+    HTTP/HTTPS origin without ever pairing Access-Control-Allow-Origin: * with
+    Access-Control-Allow-Credentials: true.
+    """
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "GET").upper()
+        req_headers = {
+            k.decode("latin1").lower(): v.decode("latin1")
+            for k, v in scope.get("headers", [])
+        }
+        origin = req_headers.get("origin")
+        requested_headers = req_headers.get("access-control-request-headers")
+
+        if method == "OPTIONS" and "access-control-request-method" not in req_headers:
+            allow_origin = origin if origin else "*"
+            allow_headers_val = (
+                requested_headers
+                if requested_headers
+                else CORS_DEFAULT_ALLOW_HEADERS_STR
+            )
+            resp_headers = [
+                (b"access-control-allow-origin", allow_origin.encode("latin1")),
+                (
+                    b"access-control-allow-methods",
+                    CORS_ALLOW_METHODS_STR.encode("latin1"),
+                ),
+                (
+                    b"access-control-allow-headers",
+                    allow_headers_val.encode("latin1"),
+                ),
+                (b"access-control-max-age", b"86400"),
+                (b"vary", b"Origin"),
+                (b"content-length", b"2"),
+                (b"content-type", b"text/plain; charset=utf-8"),
+            ]
+            if origin:
+                resp_headers.append((b"access-control-allow-credentials", b"true"))
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": resp_headers,
+                }
+            )
+            await send({"type": "http.response.body", "body": b"OK"})
+            return
+
+        async def send_with_cors(message):
+            if message["type"] == "http.response.start":
+                raw_headers = list(message.get("headers", []))
+                existing_keys = {k.decode("latin1").lower() for k, _ in raw_headers}
+
+                allow_origin = origin if origin else "*"
+                if "access-control-allow-origin" not in existing_keys:
+                    raw_headers.append(
+                        (b"access-control-allow-origin", allow_origin.encode("latin1"))
+                    )
+                elif origin:
+                    raw_headers = [
+                        (
+                            k,
+                            origin.encode("latin1")
+                            if k.decode("latin1").lower() == "access-control-allow-origin"
+                            else v,
+                        )
+                        for k, v in raw_headers
+                    ]
+
+                if origin and "access-control-allow-credentials" not in existing_keys:
+                    raw_headers.append((b"access-control-allow-credentials", b"true"))
+
+                if "access-control-allow-methods" not in existing_keys:
+                    raw_headers.append(
+                        (
+                            b"access-control-allow-methods",
+                            CORS_ALLOW_METHODS_STR.encode("latin1"),
+                        )
+                    )
+
+                if "access-control-allow-headers" not in existing_keys:
+                    allow_headers_val = (
+                        requested_headers
+                        if requested_headers
+                        else CORS_DEFAULT_ALLOW_HEADERS_STR
+                    )
+                    raw_headers.append(
+                        (
+                            b"access-control-allow-headers",
+                            allow_headers_val.encode("latin1"),
+                        )
+                    )
+
+                message = {**message, "headers": raw_headers}
+            await send(message)
+
+        await self.app(scope, receive, send_with_cors)
+
+
+def configure_cors(target_app: FastAPI) -> None:
+    if not any(m.cls is CORSMiddleware for m in target_app.user_middleware):
+        target_app.add_middleware(
+            CORSMiddleware,
+            allow_origins=CORS_ALLOWED_ORIGINS,
+            allow_origin_regex=r"https?://.*",
+            allow_credentials=True,
+            allow_methods=CORS_ALLOWED_METHODS,
+            allow_headers=CORS_ALLOWED_HEADERS,
+            max_age=86400,
+        )
+    if not any(
+        m.cls.__name__ == "CORSHeaderGuaranteeMiddleware"
+        for m in target_app.user_middleware
+    ):
+        target_app.add_middleware(CORSHeaderGuaranteeMiddleware)
+
+
 app = FastAPI(
     title="Fitness Randevu & Kulüp Yönetim API",
     version="2.0.0",
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+configure_cors(app)
 
 app.include_router(auth_router)
 app.include_router(admin_router)
