@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -14,6 +14,7 @@ import {
   View,
 } from 'react-native';
 import {
+  Activity,
   AlertTriangle,
   Calendar,
   CalendarPlus,
@@ -30,16 +31,28 @@ import {
   Phone,
   Users,
   X,
+  Zap,
 } from 'lucide-react-native';
+import { apiRequest } from '@/config/api';
+import {
+  BodyZonesApiResponse,
+  BodyZonesRecord,
+  EnrichedTrainerMemberFields,
+  MemberDailyWellness,
+  extractBodyZoneAlerts,
+  normalizeBodyZones,
+} from '@/components/BodyHeatmapCard';
 import { CARD_SHADOW, COLORS } from '@/theme/colors';
 import {
   AttendanceStatus,
   TrainerAttendee,
+  TrainerMemberCrm,
   TrainerScheduleData,
   TrainerSession,
   WaitlistEntry,
 } from '@/types/fitness';
 import { MemberAvatar, getCategoryVisuals } from '@/screens/member/MemberAvatar';
+import { TrainerMemberCrmModal } from '@/screens/trainer/TrainerMemberCrmModal';
 import {
   formatTurkishDateLabel,
   getTodayIso,
@@ -91,6 +104,18 @@ export function TrainerScheduleTab({
   const [expandedSessionIds, setExpandedSessionIds] = useState<Record<number, boolean>>({});
   const [editingMember, setEditingMember] = useState<TrainerAttendee | null>(null);
   const [noteDraft, setNoteDraft] = useState<string>('');
+  const [selectedCrmMember, setSelectedCrmMember] = useState<
+    (TrainerMemberCrm & EnrichedTrainerMemberFields) | null
+  >(null);
+  const [memberSnapshots, setMemberSnapshots] = useState<
+    Record<
+      number,
+      {
+        zones?: BodyZonesRecord;
+        wellness?: MemberDailyWellness;
+      }
+    >
+  >({});
 
   useEffect(() => {
     if (focusDate) {
@@ -115,6 +140,107 @@ export function TrainerScheduleTab({
       });
     }
   }, [visibleSessions]);
+
+  // Katılımcıların bölge haritası ve günlük enerji verilerini yedekli olarak çek
+  useEffect(() => {
+    const attendeeMap = new Map<
+      number,
+      TrainerAttendee & EnrichedTrainerMemberFields
+    >();
+    for (const sess of visibleSessions) {
+      for (const att of sess.attendees) {
+        if (!attendeeMap.has(att.member_id)) {
+          attendeeMap.set(
+            att.member_id,
+            att as TrainerAttendee & EnrichedTrainerMemberFields
+          );
+        }
+      }
+    }
+
+    if (attendeeMap.size === 0) return;
+
+    let cancelled = false;
+
+    const hydrate = async () => {
+      await Promise.all(
+        Array.from(attendeeMap.values()).map(async (att) => {
+          let fetchedZones: BodyZonesRecord | undefined;
+          let fetchedWellness: MemberDailyWellness | undefined;
+
+          if (!att.body_zones) {
+            try {
+              const zRes = await apiRequest<BodyZonesApiResponse>(
+                `/users/${att.member_id}/body-zones`
+              );
+              if (zRes?.zones) {
+                fetchedZones = normalizeBodyZones(zRes.zones);
+              }
+            } catch {
+              // sessiz yedek
+            }
+          }
+
+          if (!att.today_energy_status) {
+            try {
+              fetchedWellness = await apiRequest<MemberDailyWellness>(
+                `/wellness/${att.member_id}/today`
+              );
+            } catch {
+              // sessiz yedek
+            }
+          }
+
+          if (!cancelled && (fetchedZones || fetchedWellness)) {
+            setMemberSnapshots((prev) => ({
+              ...prev,
+              [att.member_id]: {
+                zones: fetchedZones ?? prev[att.member_id]?.zones,
+                wellness: fetchedWellness ?? prev[att.member_id]?.wellness,
+              },
+            }));
+          }
+        })
+      );
+    };
+
+    hydrate();
+    return () => {
+      cancelled = true;
+    };
+  }, [visibleSessions]);
+
+  const openStudentHeatmapModal = useCallback(
+    (att: TrainerAttendee) => {
+      const enriched = att as TrainerAttendee & EnrichedTrainerMemberFields;
+      const snap = memberSnapshots[att.member_id];
+      setSelectedCrmMember({
+        id: att.member_id,
+        full_name: att.full_name,
+        phone: att.phone,
+        instagram_handle: att.instagram_handle,
+        avatar_url: att.avatar_url,
+        streak_days: 0,
+        notes: att.notes || '',
+        package_name: att.package_name,
+        remaining_credits: att.remaining_credits,
+        total_credits: att.total_credits,
+        low_credit_warning: att.low_credit_warning,
+        attended_sessions_count: 0,
+        body_zones: snap?.zones ?? enriched.body_zones ?? null,
+        today_energy_status:
+          snap?.wellness?.energy_status ?? enriched.today_energy_status ?? null,
+        today_water_ml: snap?.wellness?.water_ml ?? enriched.today_water_ml ?? null,
+        water_goal_ml:
+          snap?.wellness?.water_goal_ml ?? enriched.water_goal_ml ?? 3000,
+        today_protein_g:
+          snap?.wellness?.protein_g ?? enriched.today_protein_g ?? null,
+        protein_goal_g:
+          snap?.wellness?.protein_goal_g ?? enriched.protein_goal_g ?? 140,
+      });
+    },
+    [memberSnapshots]
+  );
 
   const summaryStats = useMemo(() => {
     const totalClasses = visibleSessions.length;
@@ -522,36 +648,105 @@ export function TrainerScheduleTab({
                       </View>
                     ) : (
                       session.attendees.map((att) => {
+                        const enrichedAtt = att as TrainerAttendee &
+                          EnrichedTrainerMemberFields;
+                        const snap = memberSnapshots[att.member_id];
+                        const effectiveZones = snap?.zones ?? enrichedAtt.body_zones;
+                        const zoneAlerts = extractBodyZoneAlerts(effectiveZones);
+                        const hasInjuredZone = zoneAlerts.some(
+                          (z) => z.status === 'injured'
+                        );
+                        const hasWarningZone = zoneAlerts.some(
+                          (z) => z.status === 'warning'
+                        );
+                        const effectiveEnergy =
+                          snap?.wellness?.energy_status ??
+                          enrichedAtt.today_energy_status ??
+                          'normal';
+                        const isLowEnergy = effectiveEnergy === 'low';
+
                         const isBusy = busyBookingId === att.booking_id;
                         const isLow = att.low_credit_warning || att.remaining_credits <= 2;
                         const hasNote = Boolean(att.notes && att.notes.trim().length > 0);
 
                         return (
-                          <View key={att.booking_id} style={styles.attendeeCard}>
-                            {/* Üst Satır: Avatar + İsim/İletişim + Kalan Kredi */}
+                          <View
+                            key={att.booking_id}
+                            style={[
+                              styles.attendeeCard,
+                              hasWarningZone && styles.attendeeCardWarningBorder,
+                              hasInjuredZone && styles.attendeeCardInjuredBorder,
+                            ]}
+                          >
+                            {/* Üst Satır: Avatar + İsim/İletişim (Tıklanabilir Harita/CRM) + Kalan Kredi & Hızlı Harita */}
                             <View style={styles.attendeeHeaderRow}>
-                              <MemberAvatar
-                                uri={att.avatar_url}
-                                name={att.full_name}
-                                size={44}
-                                borderRadius={14}
-                                accentColor={isLow ? COLORS.warning : COLORS.primary}
-                              />
+                              <TouchableOpacity
+                                style={styles.attendeeIdentityTouch}
+                                onPress={() => openStudentHeatmapModal(att)}
+                                activeOpacity={0.8}
+                              >
+                                <MemberAvatar
+                                  uri={att.avatar_url}
+                                  name={att.full_name}
+                                  size={44}
+                                  borderRadius={14}
+                                  accentColor={
+                                    hasInjuredZone
+                                      ? '#EF4444'
+                                      : hasWarningZone || isLow
+                                      ? COLORS.warning
+                                      : COLORS.primary
+                                  }
+                                />
 
-                              <View style={styles.attendeeInfoCol}>
-                                <Text style={styles.attendeeName} numberOfLines={1}>
-                                  {att.full_name}
-                                </Text>
-                                <View style={styles.contactInlineRow}>
-                                  <Phone size={11} color={COLORS.textMuted} />
-                                  <Text style={styles.attendeeContactText} numberOfLines={1}>
-                                    {att.phone}
-                                    {att.instagram_handle
-                                      ? ` • ${att.instagram_handle}`
-                                      : ''}
-                                  </Text>
+                                <View style={styles.attendeeInfoCol}>
+                                  <View style={styles.attendeeNameInlineWrap}>
+                                    <Text style={styles.attendeeName} numberOfLines={1}>
+                                      {att.full_name}
+                                    </Text>
+                                    {zoneAlerts.length > 0 && (
+                                      <View
+                                        style={[
+                                          styles.nameSideAlertDot,
+                                          hasInjuredZone
+                                            ? styles.nameSideAlertDotRed
+                                            : styles.nameSideAlertDotAmber,
+                                        ]}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.nameSideAlertDotText,
+                                            {
+                                              color: hasInjuredZone
+                                                ? '#B91C1C'
+                                                : '#B45309',
+                                            },
+                                          ]}
+                                          numberOfLines={1}
+                                        >
+                                          {zoneAlerts[0].shortText}
+                                          {zoneAlerts.length > 1
+                                            ? ` +${zoneAlerts.length - 1}`
+                                            : ''}
+                                        </Text>
+                                      </View>
+                                    )}
+                                  </View>
+
+                                  <View style={styles.contactInlineRow}>
+                                    <Phone size={11} color={COLORS.textMuted} />
+                                    <Text
+                                      style={styles.attendeeContactText}
+                                      numberOfLines={1}
+                                    >
+                                      {att.phone}
+                                      {att.instagram_handle
+                                        ? ` • ${att.instagram_handle}`
+                                        : ''}
+                                    </Text>
+                                  </View>
                                 </View>
-                              </View>
+                              </TouchableOpacity>
 
                               <View style={styles.headerBadgesRight}>
                                 <View
@@ -578,6 +773,15 @@ export function TrainerScheduleTab({
                                 </View>
 
                                 <TouchableOpacity
+                                  style={styles.quickHeatmapBtn}
+                                  onPress={() => openStudentHeatmapModal(att)}
+                                  activeOpacity={0.8}
+                                >
+                                  <Activity size={13} color={COLORS.primary} />
+                                  <Text style={styles.quickHeatmapBtnText}>Harita</Text>
+                                </TouchableOpacity>
+
+                                <TouchableOpacity
                                   style={styles.quickNoteIconBtn}
                                   onPress={() => openEditModal(att)}
                                   activeOpacity={0.78}
@@ -586,6 +790,53 @@ export function TrainerScheduleTab({
                                 </TouchableOpacity>
                               </View>
                             </View>
+
+                            {/* Kırmızı / Sarı Bölge Uyarıları (Vücut Haritası) */}
+                            {zoneAlerts.length > 0 && (
+                              <View style={styles.attendeeZoneBadgesWrap}>
+                                {zoneAlerts.map((za) => (
+                                  <TouchableOpacity
+                                    key={za.zone}
+                                    style={[
+                                      styles.attendeeZoneAlertBadge,
+                                      za.status === 'injured'
+                                        ? styles.attendeeZoneAlertInjured
+                                        : styles.attendeeZoneAlertWarning,
+                                    ]}
+                                    onPress={() => openStudentHeatmapModal(att)}
+                                    activeOpacity={0.82}
+                                  >
+                                    <Text
+                                      style={[
+                                        styles.attendeeZoneAlertText,
+                                        {
+                                          color:
+                                            za.status === 'injured'
+                                              ? '#B91C1C'
+                                              : '#B45309',
+                                        },
+                                      ]}
+                                    >
+                                      {za.badgeText}
+                                    </Text>
+                                  </TouchableOpacity>
+                                ))}
+                              </View>
+                            )}
+
+                            {/* Müşteri O Gün "low" Enerji Seçtiyse Otomatik Uyarı Rozeti */}
+                            {isLowEnergy && (
+                              <TouchableOpacity
+                                style={styles.lowEnergyAttendeeBadge}
+                                onPress={() => openStudentHeatmapModal(att)}
+                                activeOpacity={0.84}
+                              >
+                                <Zap size={14} color="#7C2D12" />
+                                <Text style={styles.lowEnergyAttendeeBadgeText}>
+                                  ⚡ Bugün Enerjisi/Uykusu Düşük - Tempolu Yüklenme
+                                </Text>
+                              </TouchableOpacity>
+                            )}
 
                             {/* Düşük Kredi Bilgilendirme Etiketi */}
                             {isLow && (
@@ -837,6 +1088,28 @@ export function TrainerScheduleTab({
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* İnteraktif Vücut Haritası & Öğrenci CRM Detay Modalı */}
+      <TrainerMemberCrmModal
+        visible={Boolean(selectedCrmMember)}
+        member={selectedCrmMember}
+        onClose={() => setSelectedCrmMember(null)}
+        onMemberMutated={async () => {
+          onRefresh();
+        }}
+        onZonesMutated={(mid, updatedZones) => {
+          setMemberSnapshots((prev) => ({
+            ...prev,
+            [mid]: {
+              ...prev[mid],
+              zones: updatedZones,
+            },
+          }));
+          setSelectedCrmMember((prev) =>
+            prev && prev.id === mid ? { ...prev, body_zones: updatedZones } : prev
+          );
+        }}
+      />
     </View>
   );
 }
@@ -1588,5 +1861,100 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontSize: 14,
     fontWeight: '800',
+  },
+  attendeeCardWarningBorder: {
+    borderColor: '#FCD34D',
+    borderWidth: 1.4,
+  },
+  attendeeCardInjuredBorder: {
+    borderColor: '#FCA5A5',
+    borderWidth: 1.5,
+  },
+  attendeeIdentityTouch: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  attendeeNameInlineWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  nameSideAlertDot: {
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  nameSideAlertDotRed: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  nameSideAlertDotAmber: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  nameSideAlertDotText: {
+    fontSize: 10,
+    fontWeight: '800',
+  },
+  quickHeatmapBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    borderRadius: 10,
+    paddingHorizontal: 8,
+    height: 32,
+  },
+  quickHeatmapBtnText: {
+    color: COLORS.primary,
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  attendeeZoneBadgesWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  attendeeZoneAlertBadge: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 11,
+    borderWidth: 1.2,
+  },
+  attendeeZoneAlertInjured: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#EF4444',
+  },
+  attendeeZoneAlertWarning: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#F59E0B',
+  },
+  attendeeZoneAlertText: {
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  lowEnergyAttendeeBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1.2,
+    borderColor: '#FB923C',
+    borderRadius: 12,
+    paddingHorizontal: 11,
+    paddingVertical: 8,
+  },
+  lowEnergyAttendeeBadgeText: {
+    flex: 1,
+    color: '#9A3412',
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 16,
   },
 });

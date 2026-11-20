@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   ChevronRight,
   CreditCard,
+  Droplets,
   Flame,
   Phone,
   PlusCircle,
@@ -22,6 +23,15 @@ import {
   X,
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
+import {
+  BodyZonesApiResponse,
+  BodyZonesRecord,
+  EnrichedTrainerMemberFields,
+  MemberDailyWellness,
+  extractBodyZoneAlerts,
+  getEnergyStatusDisplay,
+  normalizeBodyZones,
+} from '@/components/BodyHeatmapCard';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS } from '@/theme/colors';
 import { TrainerMemberCrm } from '@/types/fitness';
@@ -48,6 +58,64 @@ export function TrainerStudentsCrmTab({
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [activeFilter, setActiveFilter] = useState<FilterChipKey>('all');
   const [selectedMemberId, setSelectedMemberId] = useState<number | null>(null);
+  const [memberSnapshots, setMemberSnapshots] = useState<
+    Record<
+      number,
+      {
+        zones?: BodyZonesRecord;
+        wellness?: MemberDailyWellness;
+      }
+    >
+  >({});
+
+  const hydrateMissingSnapshots = useCallback(async (list: TrainerMemberCrm[]) => {
+    const missing = list.filter((item) => {
+      const enriched = item as TrainerMemberCrm & EnrichedTrainerMemberFields;
+      return !enriched.body_zones || enriched.today_water_ml === undefined;
+    });
+    if (missing.length === 0) return;
+
+    await Promise.all(
+      missing.map(async (m) => {
+        const enriched = m as TrainerMemberCrm & EnrichedTrainerMemberFields;
+        let fetchedZones: BodyZonesRecord | undefined;
+        let fetchedWellness: MemberDailyWellness | undefined;
+
+        if (!enriched.body_zones) {
+          try {
+            const zRes = await apiRequest<BodyZonesApiResponse>(
+              `/users/${m.id}/body-zones`
+            );
+            if (zRes?.zones) {
+              fetchedZones = normalizeBodyZones(zRes.zones);
+            }
+          } catch {
+            // sessiz yedek
+          }
+        }
+
+        if (enriched.today_water_ml === undefined) {
+          try {
+            fetchedWellness = await apiRequest<MemberDailyWellness>(
+              `/wellness/${m.id}/today`
+            );
+          } catch {
+            // sessiz yedek
+          }
+        }
+
+        if (fetchedZones || fetchedWellness) {
+          setMemberSnapshots((prev) => ({
+            ...prev,
+            [m.id]: {
+              zones: fetchedZones ?? prev[m.id]?.zones,
+              wellness: fetchedWellness ?? prev[m.id]?.wellness,
+            },
+          }));
+        }
+      })
+    );
+  }, []);
 
   const fetchMembers = useCallback(
     async (silent = false) => {
@@ -55,6 +123,7 @@ export function TrainerStudentsCrmTab({
       try {
         const res = await apiRequest<TrainerMemberCrm[]>('/trainer/members');
         setMembers(res);
+        hydrateMissingSnapshots(res);
       } catch (err: any) {
         onShowBanner?.('error', err?.message || 'Öğrenci CRM listesi yüklenemedi.');
       } finally {
@@ -62,7 +131,7 @@ export function TrainerStudentsCrmTab({
         setRefreshing(false);
       }
     },
-    [onShowBanner]
+    [hydrateMissingSnapshots, onShowBanner]
   );
 
   useEffect(() => {
@@ -85,15 +154,18 @@ export function TrainerStudentsCrmTab({
     const lowCredit = members.filter(
       (m) => m.low_credit_warning || m.remaining_credits <= 2
     ).length;
-    const withNotes = members.filter(
-      (m) => Boolean(m.notes && m.notes.trim().length > 0)
-    ).length;
+    const withNotes = members.filter((m) => {
+      const enriched = m as TrainerMemberCrm & EnrichedTrainerMemberFields;
+      const zMap = memberSnapshots[m.id]?.zones ?? enriched.body_zones;
+      const alerts = extractBodyZoneAlerts(zMap);
+      return Boolean((m.notes && m.notes.trim().length > 0) || alerts.length > 0);
+    }).length;
     return {
       all: members.length,
       lowCredit,
       withNotes,
     };
-  }, [members]);
+  }, [members, memberSnapshots]);
 
   const filteredMembers = useMemo(() => {
     const q = searchQuery.trim().toLocaleLowerCase('tr-TR');
@@ -103,7 +175,11 @@ export function TrainerStudentsCrmTab({
       if (activeFilter === 'low_credit') {
         if (!(m.low_credit_warning || m.remaining_credits <= 2)) return false;
       } else if (activeFilter === 'has_notes') {
-        if (!m.notes || m.notes.trim().length === 0) return false;
+        const enriched = m as TrainerMemberCrm & EnrichedTrainerMemberFields;
+        const zMap = memberSnapshots[m.id]?.zones ?? enriched.body_zones;
+        const alerts = extractBodyZoneAlerts(zMap);
+        const hasTextNote = Boolean(m.notes && m.notes.trim().length > 0);
+        if (!hasTextNote && alerts.length === 0) return false;
       }
 
       if (!q) return true;
@@ -118,7 +194,7 @@ export function TrainerStudentsCrmTab({
 
       return nameMatch || handleMatch || phoneMatch;
     });
-  }, [members, activeFilter, searchQuery]);
+  }, [members, activeFilter, searchQuery, memberSnapshots]);
 
   const selectedMember = useMemo(
     () => members.find((m) => m.id === selectedMemberId) ?? null,
@@ -288,6 +364,39 @@ export function TrainerStudentsCrmTab({
           </View>
         ) : (
           filteredMembers.map((m) => {
+            const enriched = m as TrainerMemberCrm & EnrichedTrainerMemberFields;
+            const snap = memberSnapshots[m.id];
+            const effectiveZones = snap?.zones ?? enriched.body_zones;
+            const zoneAlerts = extractBodyZoneAlerts(effectiveZones);
+
+            const waterMl = snap?.wellness?.water_ml ?? enriched.today_water_ml ?? 0;
+            const waterGoalMl =
+              snap?.wellness?.water_goal_ml ?? enriched.water_goal_ml ?? 3000;
+            const waterPct =
+              enriched.water_pct !== undefined &&
+              enriched.water_pct !== null &&
+              !snap?.wellness
+                ? Math.min(100, Math.max(0, Math.round(enriched.water_pct)))
+                : waterGoalMl > 0
+                ? Math.min(100, Math.max(0, Math.round((waterMl / waterGoalMl) * 100)))
+                : 0;
+
+            const proteinG = snap?.wellness?.protein_g ?? enriched.today_protein_g ?? 0;
+            const proteinGoalG =
+              snap?.wellness?.protein_goal_g ?? enriched.protein_goal_g ?? 140;
+            const proteinPct =
+              enriched.protein_pct !== undefined &&
+              enriched.protein_pct !== null &&
+              !snap?.wellness
+                ? Math.min(100, Math.max(0, Math.round(enriched.protein_pct)))
+                : proteinGoalG > 0
+                ? Math.min(100, Math.max(0, Math.round((proteinG / proteinGoalG) * 100)))
+                : 0;
+
+            const energyRaw =
+              snap?.wellness?.energy_status ?? enriched.today_energy_status ?? 'normal';
+            const energyMeta = getEnergyStatusDisplay(energyRaw);
+
             const isLow = m.low_credit_warning || m.remaining_credits <= 2;
             const hasNote = Boolean(m.notes && m.notes.trim().length > 0);
             const creditRatio =
@@ -386,6 +495,111 @@ export function TrainerStudentsCrmTab({
                   )}
                 </View>
 
+                {/* Aktif Bölge Uyarı Rozetleri (Vücut Haritası) */}
+                {zoneAlerts.length > 0 && (
+                  <View style={styles.zoneAlertsWrap}>
+                    {zoneAlerts.map((za) => (
+                      <View
+                        key={za.zone}
+                        style={[
+                          styles.zoneAlertChip,
+                          za.status === 'injured'
+                            ? styles.zoneAlertChipInjured
+                            : styles.zoneAlertChipWarning,
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.zoneAlertChipText,
+                            {
+                              color:
+                                za.status === 'injured' ? '#B91C1C' : '#B45309',
+                            },
+                          ]}
+                        >
+                          {za.badgeText}
+                        </Text>
+                      </View>
+                    ))}
+                  </View>
+                )}
+
+                {/* Günlük Su, Protein & Enerji Tamamlama Çubukları */}
+                <View style={styles.dailyWellnessStrip}>
+                  <View style={styles.dailyWellnessTopRow}>
+                    <View style={styles.dailyWellnessTitleCluster}>
+                      <Droplets size={13} color="#0284C7" />
+                      <Text style={styles.dailyWellnessTitle}>
+                        Bugünkü Su, Protein & Enerji
+                      </Text>
+                    </View>
+                    <View
+                      style={[
+                        styles.crmEnergyBadge,
+                        {
+                          backgroundColor: energyMeta.bg,
+                          borderColor: energyMeta.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.crmEnergyBadgeText,
+                          { color: energyMeta.color },
+                        ]}
+                      >
+                        {energyMeta.label}
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.dualWellnessBarsRow}>
+                    <View style={styles.miniWellnessCol}>
+                      <View style={styles.miniWellnessHeader}>
+                        <Text style={styles.miniWellnessLabel}>💧 Su</Text>
+                        <Text style={[styles.miniWellnessVal, { color: '#0284C7' }]}>
+                          %{waterPct} • {waterMl}/{waterGoalMl}ml
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.miniWellnessTrack,
+                          { backgroundColor: '#E0F2FE' },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.miniWellnessFill,
+                            { width: `${waterPct}%`, backgroundColor: '#0EA5E9' },
+                          ]}
+                        />
+                      </View>
+                    </View>
+
+                    <View style={styles.miniWellnessCol}>
+                      <View style={styles.miniWellnessHeader}>
+                        <Text style={styles.miniWellnessLabel}>🥩 Protein</Text>
+                        <Text style={[styles.miniWellnessVal, { color: '#047857' }]}>
+                          %{proteinPct} • {proteinG}/{proteinGoalG}g
+                        </Text>
+                      </View>
+                      <View
+                        style={[
+                          styles.miniWellnessTrack,
+                          { backgroundColor: '#D1FAE5' },
+                        ]}
+                      >
+                        <View
+                          style={[
+                            styles.miniWellnessFill,
+                            { width: `${proteinPct}%`, backgroundColor: '#10B981' },
+                          ]}
+                        />
+                      </View>
+                    </View>
+                  </View>
+                </View>
+
                 {/* Varsa Sakatlık / Özel Not Özeti */}
                 {hasNote && (
                   <View style={styles.notePreviewBox}>
@@ -452,6 +666,15 @@ export function TrainerStudentsCrmTab({
         member={selectedMember}
         onClose={() => setSelectedMemberId(null)}
         onMemberMutated={handleMemberMutated}
+        onZonesMutated={(mid, updatedZones) => {
+          setMemberSnapshots((prev) => ({
+            ...prev,
+            [mid]: {
+              ...prev[mid],
+              zones: updatedZones,
+            },
+          }));
+        }}
         onShowBanner={onShowBanner}
       />
     </View>
@@ -828,5 +1051,94 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontSize: 12,
     fontWeight: '700',
+  },
+  zoneAlertsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 6,
+  },
+  zoneAlertChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 10,
+    borderWidth: 1,
+  },
+  zoneAlertChipInjured: {
+    backgroundColor: '#FEF2F2',
+    borderColor: '#FECACA',
+  },
+  zoneAlertChipWarning: {
+    backgroundColor: '#FFFBEB',
+    borderColor: '#FDE68A',
+  },
+  zoneAlertChipText: {
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  dailyWellnessStrip: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 10,
+  },
+  dailyWellnessTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  dailyWellnessTitleCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  dailyWellnessTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  crmEnergyBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  crmEnergyBadgeText: {
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  dualWellnessBarsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  miniWellnessCol: {
+    flex: 1,
+    gap: 5,
+  },
+  miniWellnessHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 4,
+  },
+  miniWellnessLabel: {
+    color: COLORS.textSecondary,
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  miniWellnessVal: {
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  miniWellnessTrack: {
+    height: 6,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  miniWellnessFill: {
+    height: '100%',
+    borderRadius: 999,
   },
 });

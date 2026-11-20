@@ -23,7 +23,14 @@
     },
     "web": {
       "output": "single",
-      "favicon": "./assets/images/favicon.png"
+      "lang": "tr",
+      "favicon": "./assets/images/favicon.png",
+      "name": "FitClub Studio",
+      "shortName": "FitClub",
+      "display": "standalone",
+      "orientation": "portrait",
+      "backgroundColor": "#F4F7FB",
+      "themeColor": "#0D9488"
     },
     "plugins": [
       "expo-router"

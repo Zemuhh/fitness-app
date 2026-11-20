@@ -28,7 +28,17 @@ from auth_admin_models import (
 )
 from database import engine, get_db
 from instagram_service import fallback_turkish_nlp_parse, match_session, normalize_handle
-from models import Announcement, Booking, ClassSession, MemberPackage, User
+from models import (
+    Announcement,
+    Booking,
+    ClassSession,
+    MemberPackage,
+    User,
+    generate_unique_referral_code,
+    grant_bonus_credit_to_member,
+    infer_default_body_zones,
+    normalize_referral_code_input,
+)
 import payment_models
 from payment_models import PackageCatalogPlan, PaymentTransaction
 from schemas import AnnouncementOut, UserOut
@@ -124,6 +134,7 @@ class AuthRegisterRequest(BaseModel):
     password: str
     phone: Optional[str] = "0500 000 00 00"
     instagram_handle: Optional[str] = None
+    referral_code: Optional[str] = None
 
 
 class GoogleAuthRequest(BaseModel):
@@ -1007,6 +1018,20 @@ def ensure_portal_initialized(db: Session) -> None:
             u.email = existing_auth[u.id].email
             dirty = True
 
+        if not u.referral_code:
+            u.referral_code = generate_unique_referral_code(db, u.full_name, exclude_user_id=u.id)
+            db.flush()
+            dirty = True
+        if u.referral_count is None:
+            u.referral_count = 0
+            dirty = True
+        if not u.body_zones:
+            u.body_zones = json.dumps(
+                infer_default_body_zones(u.full_name, u.notes),
+                ensure_ascii=False,
+            )
+            dirty = True
+
     # 2. Kişisel bilgi taşımayan Tam Yetkili Admin hesabı ('admin' / 'admin@eryapilates.com' / 'EryaAdmin2026!')
     admin_acc = db.query(AdminAccount).filter(AdminAccount.username == "admin").first()
     if not admin_acc:
@@ -1432,8 +1457,12 @@ def auth_register(payload: AuthRegisterRequest, db: Session = Depends(get_db)):
         instagram_handle=ig,
         notes="",
         streak_days=0,
+        body_zones=json.dumps(infer_default_body_zones(full_name, ""), ensure_ascii=False),
+        referral_count=0,
     )
     db.add(new_user)
+    db.flush()
+    new_user.referral_code = generate_unique_referral_code(db, full_name, exclude_user_id=new_user.id)
     db.flush()
 
     _ensure_user_credential(db, new_user)
@@ -1445,11 +1474,43 @@ def auth_register(payload: AuthRegisterRequest, db: Session = Depends(get_db)):
         raw_password=password,
         auth_provider="password",
     )
+
+    referral_applied = False
+    raw_ref = (payload.referral_code or "").strip()
+    if raw_ref:
+        clean_ref = normalize_referral_code_input(raw_ref)
+        if clean_ref:
+            inviter = (
+                db.query(User)
+                .filter(User.referral_code == clean_ref, User.id != new_user.id)
+                .first()
+            )
+            if inviter:
+                inviter.referral_count = (inviter.referral_count or 0) + 1
+                grant_bonus_credit_to_member(
+                    db,
+                    inviter.id,
+                    credits_to_add=1,
+                    fallback_package_name="Arkadaş Daveti Hediye Paketi",
+                )
+                grant_bonus_credit_to_member(
+                    db,
+                    new_user.id,
+                    credits_to_add=1,
+                    fallback_package_name="Hoş Geldin Hediye Ders Paketi",
+                )
+                referral_applied = True
+
     db.commit()
     db.refresh(new_user)
 
     sess = _issue_session(db, account_type="user", role="member", auth_provider="password", user_id=new_user.id)
-    return _build_user_session_out(db, new_user, sess, message=f"Hesabınız oluşturuldu, hoş geldiniz {new_user.full_name}!")
+    welcome_msg = (
+        f"🎉 Hesabınız oluşturuldu ve davet koduyla +1 Hediye Ders paketinize tanımlandı, hoş geldiniz {new_user.full_name}!"
+        if referral_applied
+        else f"Hesabınız oluşturuldu, hoş geldiniz {new_user.full_name}!"
+    )
+    return _build_user_session_out(db, new_user, sess, message=welcome_msg)
 
 
 @auth_router.get("/me", response_model=AuthSessionOut)

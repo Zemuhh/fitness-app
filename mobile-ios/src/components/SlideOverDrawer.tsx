@@ -17,6 +17,7 @@ import {
   Calendar,
   CalendarPlus,
   CreditCard,
+  Gift,
   Home,
   LayoutGrid,
   LogOut,
@@ -24,6 +25,7 @@ import {
   Megaphone,
   MessageCircle,
   QrCode,
+  Sparkles,
   User,
   Users,
   X,
@@ -89,6 +91,8 @@ export function registerMemberQrOpener(fn: (() => void) | null) {
 export const DEFAULT_MEMBER_DRAWER_ITEMS: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
   { key: 'home', Icon: Home, label: 'Ana Sayfa' },
   { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
+  { key: 'nutrition', Icon: Sparkles, label: '🥗 AI Beslenme & Toparlanma' },
+  { key: 'referral', Icon: Gift, label: '🎁 Arkadaşını Getir (+1 Ders)' },
   { key: 'packages', Icon: CreditCard, label: 'Paketler' },
   { key: 'qr', Icon: QrCode, label: 'QR Giriş', isQrAction: true },
   { key: 'metrics', Icon: Activity, label: 'Gelişim' },
@@ -157,7 +161,7 @@ export function SlideOverDrawer({
   const { refreshSignal } = authCtx;
 
   const windowWidth = Dimensions.get('window').width;
-  const drawerWidth = Math.min(Math.round(windowWidth * 0.78), 296);
+  const drawerWidth = Math.min(Math.round(windowWidth * 0.82), 308);
 
   const [rendered, setRendered] = useState<boolean>(visible);
   const [fetchedCredits, setFetchedCredits] = useState<string | null>(null);

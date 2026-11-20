@@ -25,6 +25,7 @@ import {
   User,
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
+import { BodyHeatmapCard } from '@/components/BodyHeatmapCard';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS } from '@/theme/colors';
 import { AppUser, BodyMetric, MemberMetricsSummary } from '@/types/fitness';
@@ -48,11 +49,12 @@ export function MemberProgressTab({
   onGoToSchedule,
   onOpenTrainerDetail,
 }: Props) {
-  const { refreshSignal } = useAuthDemo();
+  const { refreshSignal, triggerGlobalRefresh } = useAuthDemo();
   const [summary, setSummary] = useState<MemberMetricsSummary | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [heatmapRefreshTick, setHeatmapRefreshTick] = useState<number>(0);
   const loadedMemberIdRef = useRef<number | null>(null);
 
   const fetchMetrics = useCallback(
@@ -82,6 +84,7 @@ export function MemberProgressTab({
 
   const handleRefresh = useCallback(() => {
     setRefreshing(true);
+    setHeatmapRefreshTick((prev) => prev + 1);
     fetchMetrics(true);
   }, [fetchMetrics]);
 
@@ -251,6 +254,16 @@ export function MemberProgressTab({
           </View>
         </View>
       </View>
+
+      {/* İNTERAKTİF KAS & SAKATLIK HARİTASI */}
+      <BodyHeatmapCard
+        userId={member.id}
+        userName={member.full_name}
+        title="İnteraktif Kas & Sakatlık Haritam"
+        subtitle="Bölgelere dokunarak sağlam, hassasiyet veya sakatlık durumunuzu eğitmeninizle anında paylaşın"
+        refreshKey={refreshSignal + heatmapRefreshTick}
+        onZonesSaved={() => triggerGlobalRefresh()}
+      />
 
       {/* 2. EĞİTMENİN SON ANTRENMAN & BESLENME TAVSİYESİ */}
       {summary?.latest_trainer_comment ? (

@@ -3,27 +3,32 @@ import { Platform } from 'react-native';
 
 /**
  * ============================================================================
- * CANLI GENEL PAYLAŞIM (HTTPS CLOUDFLARE TUNNEL) & YEREL AĞ (LAN) YAPILANDIRMASI
- * - Google Chrome / Safari üzerinden canlı HTTPS paylaşım linkinden girildiğinde:
- *   PUBLIC_HTTPS_BACKEND_URL otomatik kullanılır (sıfır CORS ve sıfır Mixed-Content hatası).
- * - Bilgisayardan (localhost / 127.0.0.1) girildiğinde: http://127.0.0.1:8000
- * - Aynı Wi-Fi ağındaki telefondan (LAN IPv4 / Expo Go) girildiğinde:
- *   http://192.168.1.147:8000 (4G/5G veya tünel bağlantısında HTTPS tünele geçer).
+ * AKILLI API ADRESİ YÖNETİMİ (BULUT PRODUCTION + YEREL GELİŞTİRME)
+ * 1. Öncelik: `process.env.EXPO_PUBLIC_API_URL` (Vercel / Production canlı backend)
+ * 2. Öncelik: `MANUAL_API_URL_OVERRIDE` veya `?api_url=` web sorgu parametresi
+ * 3. Öncelik (Yerel Geliştirme):
+ *    - Web localhost / 127.0.0.1 -> http://127.0.0.1:8000
+ *    - Web yerel Wi-Fi IPv4 -> http://<LAN_IP>:8000
+ *    - Native Expo Go -> Algılanan LAN IP veya http://192.168.1.147:8000
  * ============================================================================
  */
 export const LOCAL_WIFI_IP = '192.168.1.147';
 export const BACKEND_PORT = 8000;
 
-// Canlı Cloudflare HTTPS Backend Tüneli (Google Chrome & Uzaktan Canlı Erişim)
-export const PUBLIC_HTTPS_BACKEND_URL =
-  'https://vacancies-allocation-opportunity-summary.trycloudflare.com';
-
-// Özel bir URL zorlamak isterseniz buraya yazabilirsiniz (boş bırakıldığında otomatik algılar)
-export const MANUAL_API_URL_OVERRIDE = '';
-
 function normalizeBaseUrl(url: string): string {
   return url.trim().replace(/\/+$/, '');
 }
+
+// Metro / Expo derlemesinde statik olarak gömülebilmesi için doğrudan erişim kullanılır
+const ENV_PUBLIC_API_URL = (process.env.EXPO_PUBLIC_API_URL || '').trim();
+
+// Geriye dönük dışa aktarım uyumluluğu korunur (eski geçici trycloudflare tüneli kaldırıldı)
+export const PUBLIC_HTTPS_BACKEND_URL = ENV_PUBLIC_API_URL
+  ? normalizeBaseUrl(ENV_PUBLIC_API_URL)
+  : '';
+
+// Özel bir URL zorlamak isterseniz buraya yazabilirsiniz (boş bırakıldığında otomatik algılar)
+export const MANUAL_API_URL_OVERRIDE = '';
 
 function isPrivateLanIpv4(host: string): boolean {
   if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
@@ -64,16 +69,13 @@ function readWebQueryApiOverride(): string | null {
 }
 
 function resolveApiBaseUrl(): string {
-  if (MANUAL_API_URL_OVERRIDE.trim().length > 0) {
-    return normalizeBaseUrl(MANUAL_API_URL_OVERRIDE);
+  // 1. BİRİNCİ ÖNCELİK: Ortam değişkeni (Vercel / Canlı Bulut Backend URL)
+  if (ENV_PUBLIC_API_URL.length > 0) {
+    return normalizeBaseUrl(ENV_PUBLIC_API_URL);
   }
 
-  const envUrl =
-    typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_API_URL
-      ? process.env.EXPO_PUBLIC_API_URL.trim()
-      : '';
-  if (envUrl.length > 0) {
-    return normalizeBaseUrl(envUrl);
+  if (MANUAL_API_URL_OVERRIDE.trim().length > 0) {
+    return normalizeBaseUrl(MANUAL_API_URL_OVERRIDE);
   }
 
   const queryOverride = readWebQueryApiOverride();
@@ -81,35 +83,22 @@ function resolveApiBaseUrl(): string {
     return queryOverride;
   }
 
-  // 1. Web Tarayıcı (Google Chrome, Safari, Mobil Tarayıcı):
-  //    - HTTPS tünelden (*.trycloudflare.com veya genel alan adı) girildiğinde HTTPS Backend Tüneli
-  //    - localhost / 127.0.0.1 üzerinden HTTP ile girildiğinde http://127.0.0.1:8000
-  //    - Yerel Wi-Fi IPv4 üzerinden HTTP ile girildiğinde http://192.168.x.x:8000
+  // 2. Yerel Web Tarayıcı Geliştirme Ortamı:
   if (Platform.OS === 'web' && typeof window !== 'undefined') {
-    const protocol = window.location.protocol;
     const hostname = (window.location.hostname || '').trim().toLowerCase();
-
-    if (
-      protocol === 'https:' ||
-      hostname.endsWith('.trycloudflare.com') ||
-      (hostname.length > 0 &&
-        hostname !== 'localhost' &&
-        hostname !== '127.0.0.1' &&
-        !isPrivateLanIpv4(hostname))
-    ) {
-      if (PUBLIC_HTTPS_BACKEND_URL.trim().length > 0) {
-        return normalizeBaseUrl(PUBLIC_HTTPS_BACKEND_URL);
-      }
-    }
 
     if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1') {
       return `http://127.0.0.1:${BACKEND_PORT}`;
     }
 
-    return `http://${hostname}:${BACKEND_PORT}`;
+    if (isPrivateLanIpv4(hostname)) {
+      return `http://${hostname}:${BACKEND_PORT}`;
+    }
+
+    return `http://127.0.0.1:${BACKEND_PORT}`;
   }
 
-  // 2. iOS / Android (Expo Go - Yerel Wi-Fi veya Tünel / Hücresel Veri):
+  // 3. Native iOS / Android (Expo Go - Yerel Wi-Fi / LAN):
   const candidates = [
     Constants.expoConfig?.hostUri,
     (Constants as any).manifest2?.extra?.expoGo?.debuggerHost,
@@ -124,21 +113,18 @@ function resolveApiBaseUrl(): string {
     }
   }
 
-  // Eğer Expo Tunnel (exp.direct) veya hücresel ağ üzerinden bağlanıldıysa genel HTTPS tünelini kullan
-  if (PUBLIC_HTTPS_BACKEND_URL.trim().length > 0) {
-    return normalizeBaseUrl(PUBLIC_HTTPS_BACKEND_URL);
-  }
-
-  // 3. Yedek: Bilgisayarın yerel IPv4 adresi
+  // 4. Yedek: Yerel Wi-Fi IPv4 geliştirme adresi
   return `http://${LOCAL_WIFI_IP}:${BACKEND_PORT}`;
 }
 
 export const API_BASE_URL = resolveApiBaseUrl();
 
 function getFallbackBaseUrl(primaryBase: string): string | null {
-  const cleanTunnel = PUBLIC_HTTPS_BACKEND_URL.trim()
-    ? normalizeBaseUrl(PUBLIC_HTTPS_BACKEND_URL)
-    : null;
+  // Canlı ortam değişkeni tanımlıysa başka geçici adrese düşme
+  if (ENV_PUBLIC_API_URL.length > 0) {
+    const cleanEnvUrl = normalizeBaseUrl(ENV_PUBLIC_API_URL);
+    return primaryBase !== cleanEnvUrl ? cleanEnvUrl : null;
+  }
 
   // HTTPS sayfalarda mixed-content engeline takılmamak için HTTP fallback yapma
   if (
@@ -146,11 +132,7 @@ function getFallbackBaseUrl(primaryBase: string): string | null {
     typeof window !== 'undefined' &&
     window.location.protocol === 'https:'
   ) {
-    return cleanTunnel && cleanTunnel !== primaryBase ? cleanTunnel : null;
-  }
-
-  if (cleanTunnel && primaryBase !== cleanTunnel) {
-    return cleanTunnel;
+    return null;
   }
 
   const localFallback =

@@ -9,9 +9,11 @@ import {
   Activity,
   Calendar,
   CreditCard,
+  Gift,
   Home,
   Megaphone,
   QrCode,
+  Sparkles,
   User,
   Users,
 } from 'lucide-react-native';
@@ -37,6 +39,8 @@ import {
 } from '@/types/fitness';
 import { MemberDashboardTab } from '@/screens/member/MemberDashboardTab';
 import { MemberBookingTab } from '@/screens/member/MemberBookingTab';
+import { MemberNutritionScreen } from '@/screens/member/MemberNutritionScreen';
+import { MemberReferralScreen } from '@/screens/member/MemberReferralScreen';
 import { MemberTrainersScreen } from '@/screens/member/MemberTrainersScreen';
 import { MemberPackageRenewScreen } from '@/screens/member/MemberPackageRenewScreen';
 import { MemberNewsScreen } from '@/screens/member/MemberNewsScreen';
@@ -51,6 +55,8 @@ import { TrainerDetailModal } from '@/screens/member/TrainerDetailModal';
 export const MEMBER_DRAWER_MENU: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
   { key: 'home', Icon: Home, label: 'Ana Sayfa' },
   { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
+  { key: 'nutrition', Icon: Sparkles, label: '🥗 AI Beslenme & Toparlanma' },
+  { key: 'referral', Icon: Gift, label: '🎁 Arkadaşını Getir (+1 Ders)' },
   { key: 'packages', Icon: CreditCard, label: 'Paketler' },
   { key: 'qr', Icon: QrCode, label: 'QR Giriş', isQrAction: true },
   { key: 'metrics', Icon: Activity, label: 'Gelişim' },
@@ -62,6 +68,8 @@ export const MEMBER_DRAWER_MENU: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
 export const MEMBER_CONCISE_TITLES: Record<MemberDrawerRoute, string> = {
   home: 'Ana Sayfa',
   schedule: 'Ders Programı',
+  nutrition: '🥗 AI Beslenme & Toparlanma',
+  referral: '🎁 Arkadaşını Getir (+1 Ders)',
   packages: 'Paketler',
   metrics: 'Gelişim',
   trainers: 'Eğitmenler',
@@ -475,6 +483,23 @@ export function MemberRootView({
             onOpenPackageRenew={() => handleNavigate('packages')}
             onOpenTrainerDetail={(tId) => setSelectedTrainerId(tId)}
             busySessionId={busySessionId}
+          />
+        ) : currentRoute === 'nutrition' ? (
+          <MemberNutritionScreen
+            member={dashboard.member}
+            onNavigate={handleNavigate}
+            onShowBanner={showBanner}
+          />
+        ) : currentRoute === 'referral' ? (
+          <MemberReferralScreen
+            member={dashboard.member}
+            activePackage={dashboard.active_package}
+            onCreditsUpdated={async () => {
+              await fetchDashboard(true);
+              triggerGlobalRefresh();
+            }}
+            onNavigate={handleNavigate}
+            onShowBanner={showBanner}
           />
         ) : currentRoute === 'trainers' ? (
           <MemberTrainersScreen

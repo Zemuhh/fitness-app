@@ -1,6 +1,8 @@
 export type MemberDrawerRoute =
   | 'home'
   | 'schedule'
+  | 'nutrition'
+  | 'referral'
   | 'trainers'
   | 'packages'
   | 'news'
@@ -19,6 +21,8 @@ export type AppDrawerRoute = MemberDrawerRoute | TrainerDrawerRoute;
 export const MEMBER_ROUTE_TITLES: Record<MemberDrawerRoute, string> = {
   home: 'Ana Sayfa & Stüdyo Özeti',
   schedule: 'Seans Takvimi & Rezervasyon',
+  nutrition: '🥗 AI Beslenme & Toparlanma',
+  referral: '🎁 Arkadaşını Getir (+1 Ders)',
   trainers: 'Eğitmen Kadromuz',
   packages: 'Paket Yenileme & Üyelik',
   news: 'Stüdyo Rehberi & Duyurular',

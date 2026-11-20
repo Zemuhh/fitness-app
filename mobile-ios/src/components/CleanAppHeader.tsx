@@ -20,6 +20,8 @@ export interface CleanAppHeaderProps {
 const CONCISE_MEMBER_ROUTE_TITLES: Record<MemberDrawerRoute, string> = {
   home: 'Ana Sayfa',
   schedule: 'Ders Programı',
+  nutrition: 'AI Beslenme & Toparlanma',
+  referral: 'Arkadaşını Getir (+1 Ders)',
   trainers: 'Eğitmenler',
   packages: 'Paketler',
   news: 'Duyurular',
@@ -38,6 +40,8 @@ const CONCISE_TRAINER_ROUTE_TITLES: Record<TrainerDrawerRoute, string> = {
 const LEGACY_TITLE_TO_CONCISE: Record<string, string> = {
   'Ana Sayfa & Stüdyo Özeti': 'Ana Sayfa',
   'Seans Takvimi & Rezervasyon': 'Ders Programı',
+  '🥗 AI Beslenme & Toparlanma': 'AI Beslenme & Toparlanma',
+  '🎁 Arkadaşını Getir (+1 Ders)': 'Arkadaşını Getir (+1 Ders)',
   'Eğitmen Kadromuz': 'Eğitmenler',
   'Paket Yenileme & Üyelik': 'Paketler',
   'Stüdyo Rehberi & Duyurular': 'Duyurular',

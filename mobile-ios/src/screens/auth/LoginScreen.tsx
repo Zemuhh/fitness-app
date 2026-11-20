@@ -17,14 +17,20 @@ import {
   ArrowRight,
   Eye,
   EyeOff,
+  Gift,
   Lock,
+  Mail,
+  Phone,
   ShieldCheck,
   Sparkles,
   User,
+  UserPlus,
 } from 'lucide-react-native';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
+import { apiRequest } from '@/config/api';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { FONTS } from '@/theme/colors';
+import { AuthSessionOut } from '@/types/authAdmin';
 
 function GoogleColorIcon({ size = 19 }: { size?: number }) {
   return (
@@ -59,6 +65,9 @@ const DARK = {
   goldBright: '#E2BE68',
   goldSoft: 'rgba(201, 164, 82, 0.14)',
   goldBorder: 'rgba(201, 164, 82, 0.34)',
+  emeraldSoft: 'rgba(16, 185, 129, 0.14)',
+  emeraldBorder: 'rgba(16, 185, 129, 0.36)',
+  emeraldText: '#6EE7B7',
   textPrimary: '#F8FAFC',
   textSecondary: '#94A3B8',
   textMuted: '#64748B',
@@ -69,19 +78,52 @@ const DARK = {
   googleBtnBorder: '#293852',
 };
 
-export function LoginScreen() {
-  const { loginWithPassword, loginWithGoogle, panelConfig } = useAuthDemo();
+type AuthMode = 'login' | 'register';
+type FocusField =
+  | 'identifier'
+  | 'password'
+  | 'regName'
+  | 'regEmail'
+  | 'regPhone'
+  | 'regPassword'
+  | 'referralCode'
+  | null;
 
+export function LoginScreen() {
+  const {
+    loginWithPassword,
+    loginWithGoogle,
+    completeTokenLogin,
+    panelConfig,
+  } = useAuthDemo();
+
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+
+  // Giriş Alanları
   const [identifier, setIdentifier] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [focusedField, setFocusedField] = useState<'identifier' | 'password' | null>(null);
 
+  // Kayıt Ol Alanları
+  const [regFullName, setRegFullName] = useState<string>('');
+  const [regEmail, setRegEmail] = useState<string>('');
+  const [regPhone, setRegPhone] = useState<string>('');
+  const [regPassword, setRegPassword] = useState<string>('');
+  const [referralCode, setReferralCode] = useState<string>('');
+  const [showRegPassword, setShowRegPassword] = useState<boolean>(false);
+
+  const [focusedField, setFocusedField] = useState<FocusField>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [googleBusy, setGoogleBusy] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const allowGoogle = panelConfig?.allow_google_login !== false;
+
+  const switchAuthMode = useCallback((nextMode: AuthMode) => {
+    setAuthMode(nextMode);
+    setErrorMessage(null);
+    setFocusedField(null);
+  }, []);
 
   const handleSubmitLogin = useCallback(async () => {
     const cleanId = identifier.trim();
@@ -104,6 +146,53 @@ export function LoginScreen() {
       setSubmitting(false);
     }
   }, [identifier, password, loginWithPassword]);
+
+  const handleSubmitRegister = useCallback(async () => {
+    const cleanName = regFullName.trim();
+    const cleanEmail = regEmail.trim().toLowerCase();
+    const cleanPhone = regPhone.trim();
+    const cleanReferral = referralCode.trim().toUpperCase();
+
+    if (!cleanName) {
+      setErrorMessage('Lütfen adınızı ve soyadınızı girin.');
+      return;
+    }
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      setErrorMessage('Lütfen geçerli bir e-posta adresi girin.');
+      return;
+    }
+    if (!regPassword || regPassword.length < 4) {
+      setErrorMessage('Lütfen en az 4 karakterli bir şifre belirleyin.');
+      return;
+    }
+
+    setSubmitting(true);
+    setErrorMessage(null);
+    try {
+      const payload: Record<string, string> = {
+        full_name: cleanName,
+        email: cleanEmail,
+        password: regPassword,
+        phone: cleanPhone || '0500 000 00 00',
+      };
+      if (cleanReferral.length > 0) {
+        payload.referral_code = cleanReferral;
+      }
+
+      const session = await apiRequest<AuthSessionOut>('/auth/register', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+
+      await completeTokenLogin(session.token);
+    } catch (err: any) {
+      setErrorMessage(
+        err?.message || 'Kayıt işlemi tamamlanamadı. Lütfen bilgilerinizi kontrol edin.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [regFullName, regEmail, regPhone, regPassword, referralCode, completeTokenLogin]);
 
   const handleGoogleSignIn = useCallback(async () => {
     setGoogleBusy(true);
@@ -140,10 +229,13 @@ export function LoginScreen() {
                 <Sparkles size={12} color={DARK.goldBright} />
                 <Text style={styles.studioPillText}>GÜVENLİ STÜDYO OTURUMU</Text>
               </View>
-              <Text style={styles.heroTitle}>Hoş Geldiniz</Text>
+              <Text style={styles.heroTitle}>
+                {authMode === 'login' ? 'Hoş Geldiniz' : 'Yeni Üye Kaydı'}
+              </Text>
               <Text style={styles.heroSubtitle}>
-                Devam etmek için e-posta adresiniz, kullanıcı adınız veya Google hesabınız ile
-                giriş yapın.
+                {authMode === 'login'
+                  ? 'Devam etmek için e-posta adresiniz, kullanıcı adınız veya Google hesabınız ile giriş yapın.'
+                  : 'Dakikalar içinde stüdyo hesabınızı oluşturun; davet kodunuz varsa +1 hediye ders kazanın.'}
               </Text>
             </View>
 
@@ -160,133 +252,413 @@ export function LoginScreen() {
               </View>
             ) : null}
 
-            {/* Ana Giriş Kartı */}
+            {/* Ana Giriş / Kayıt Kartı */}
             <View style={styles.loginCard}>
-              {/* E-posta / Kullanıcı Adı */}
-              <Text style={styles.fieldLabel}>E-posta veya Kullanıcı Adı</Text>
-              <View
-                style={[
-                  styles.inputRow,
-                  focusedField === 'identifier' && styles.inputRowFocused,
-                ]}
-              >
-                <User
-                  size={18}
-                  color={focusedField === 'identifier' ? DARK.gold : DARK.textMuted}
-                />
-                <TextInput
-                  value={identifier}
-                  onChangeText={(val) => {
-                    setIdentifier(val);
-                    if (errorMessage) setErrorMessage(null);
-                  }}
-                  onFocus={() => setFocusedField('identifier')}
-                  onBlur={() => setFocusedField(null)}
-                  placeholder="ornek@eposta.com veya kullanıcı adı"
-                  placeholderTextColor={DARK.textMuted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="email-address"
-                  returnKeyType="next"
-                  style={styles.textInput}
-                />
-              </View>
-
-              {/* Şifre */}
-              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Şifre</Text>
-              <View
-                style={[
-                  styles.inputRow,
-                  focusedField === 'password' && styles.inputRowFocused,
-                ]}
-              >
-                <Lock
-                  size={18}
-                  color={focusedField === 'password' ? DARK.gold : DARK.textMuted}
-                />
-                <TextInput
-                  value={password}
-                  onChangeText={(val) => {
-                    setPassword(val);
-                    if (errorMessage) setErrorMessage(null);
-                  }}
-                  onFocus={() => setFocusedField('password')}
-                  onBlur={() => setFocusedField(null)}
-                  placeholder="Şifrenizi girin"
-                  placeholderTextColor={DARK.textMuted}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="go"
-                  onSubmitEditing={handleSubmitLogin}
-                  style={styles.textInput}
-                />
+              {/* Giriş Yap / Kayıt Ol Sekme Seçici */}
+              <View style={styles.modeSwitchTrack}>
                 <TouchableOpacity
-                  onPress={() => setShowPassword((prev) => !prev)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  accessibilityRole="button"
-                  accessibilityLabel={showPassword ? 'Şifreyi gizle' : 'Şifreyi göster'}
+                  style={[
+                    styles.modeSwitchTab,
+                    authMode === 'login' && styles.modeSwitchTabActive,
+                  ]}
+                  onPress={() => switchAuthMode('login')}
+                  activeOpacity={0.85}
                 >
-                  {showPassword ? (
-                    <EyeOff size={18} color={DARK.textSecondary} />
-                  ) : (
-                    <Eye size={18} color={DARK.textSecondary} />
-                  )}
+                  <Text
+                    style={[
+                      styles.modeSwitchTabText,
+                      authMode === 'login' && styles.modeSwitchTabTextActive,
+                    ]}
+                  >
+                    Giriş Yap
+                  </Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={[
+                    styles.modeSwitchTab,
+                    authMode === 'register' && styles.modeSwitchTabActive,
+                  ]}
+                  onPress={() => switchAuthMode('register')}
+                  activeOpacity={0.85}
+                >
+                  <UserPlus
+                    size={14}
+                    color={authMode === 'register' ? '#090D16' : DARK.textSecondary}
+                  />
+                  <Text
+                    style={[
+                      styles.modeSwitchTabText,
+                      authMode === 'register' && styles.modeSwitchTabTextActive,
+                    ]}
+                  >
+                    Kayıt Ol
+                  </Text>
                 </TouchableOpacity>
               </View>
 
-              {/* Hata Kutusu */}
-              {errorMessage ? (
-                <View style={styles.errorBanner}>
-                  <AlertCircle size={16} color={DARK.danger} />
-                  <Text style={styles.errorText}>{errorMessage}</Text>
-                </View>
-              ) : null}
-
-              {/* Ana Giriş Yap Butonu */}
-              <TouchableOpacity
-                style={[styles.primaryLoginBtn, submitting && styles.btnDisabled]}
-                onPress={handleSubmitLogin}
-                disabled={submitting || googleBusy}
-                activeOpacity={0.86}
-                accessibilityRole="button"
-                accessibilityLabel="Giriş Yap"
-              >
-                {submitting ? (
-                  <ActivityIndicator size="small" color="#090D16" />
-                ) : (
-                  <>
-                    <Text style={styles.primaryLoginBtnText}>Giriş Yap</Text>
-                    <ArrowRight size={18} color="#090D16" strokeWidth={2.4} />
-                  </>
-                )}
-              </TouchableOpacity>
-
-              {/* Google ile Giriş Yap */}
-              {allowGoogle && (
+              {authMode === 'login' ? (
                 <>
-                  <View style={styles.dividerRow}>
-                    <View style={styles.dividerLine} />
-                    <Text style={styles.dividerText}>veya</Text>
-                    <View style={styles.dividerLine} />
+                  {/* E-posta / Kullanıcı Adı */}
+                  <Text style={styles.fieldLabel}>E-posta veya Kullanıcı Adı</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'identifier' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <User
+                      size={18}
+                      color={focusedField === 'identifier' ? DARK.gold : DARK.textMuted}
+                    />
+                    <TextInput
+                      value={identifier}
+                      onChangeText={(val) => {
+                        setIdentifier(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('identifier')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="ornek@eposta.com veya kullanıcı adı"
+                      placeholderTextColor={DARK.textMuted}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="email-address"
+                      returnKeyType="next"
+                      style={styles.textInput}
+                    />
+                  </View>
+
+                  {/* Şifre */}
+                  <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Şifre</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'password' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <Lock
+                      size={18}
+                      color={focusedField === 'password' ? DARK.gold : DARK.textMuted}
+                    />
+                    <TextInput
+                      value={password}
+                      onChangeText={(val) => {
+                        setPassword(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('password')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="Şifrenizi girin"
+                      placeholderTextColor={DARK.textMuted}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="go"
+                      onSubmitEditing={handleSubmitLogin}
+                      style={styles.textInput}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowPassword((prev) => !prev)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel={showPassword ? 'Şifreyi gizle' : 'Şifreyi göster'}
+                    >
+                      {showPassword ? (
+                        <EyeOff size={18} color={DARK.textSecondary} />
+                      ) : (
+                        <Eye size={18} color={DARK.textSecondary} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Hata Kutusu */}
+                  {errorMessage ? (
+                    <View style={styles.errorBanner}>
+                      <AlertCircle size={16} color={DARK.danger} />
+                      <Text style={styles.errorText}>{errorMessage}</Text>
+                    </View>
+                  ) : null}
+
+                  {/* Ana Giriş Yap Butonu */}
+                  <TouchableOpacity
+                    style={[styles.primaryLoginBtn, submitting && styles.btnDisabled]}
+                    onPress={handleSubmitLogin}
+                    disabled={submitting || googleBusy}
+                    activeOpacity={0.86}
+                    accessibilityRole="button"
+                    accessibilityLabel="Giriş Yap"
+                  >
+                    {submitting ? (
+                      <ActivityIndicator size="small" color="#090D16" />
+                    ) : (
+                      <>
+                        <Text style={styles.primaryLoginBtnText}>Giriş Yap</Text>
+                        <ArrowRight size={18} color="#090D16" strokeWidth={2.4} />
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Google ile Giriş Yap */}
+                  {allowGoogle && (
+                    <>
+                      <View style={styles.dividerRow}>
+                        <View style={styles.dividerLine} />
+                        <Text style={styles.dividerText}>veya</Text>
+                        <View style={styles.dividerLine} />
+                      </View>
+
+                      <TouchableOpacity
+                        style={[styles.googleBtn, googleBusy && styles.btnDisabled]}
+                        onPress={handleGoogleSignIn}
+                        disabled={submitting || googleBusy}
+                        activeOpacity={0.85}
+                        accessibilityRole="button"
+                        accessibilityLabel="Google ile Giriş Yap"
+                      >
+                        {googleBusy ? (
+                          <ActivityIndicator size="small" color={DARK.textPrimary} />
+                        ) : (
+                          <>
+                            <GoogleColorIcon size={19} />
+                            <Text style={styles.googleBtnText}>Google ile Giriş Yap</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
+                    </>
+                  )}
+
+                  {/* Hızlı Kayıt Ol Davet Yönlendirmesi */}
+                  <TouchableOpacity
+                    style={styles.switchHintBtn}
+                    onPress={() => switchAuthMode('register')}
+                    activeOpacity={0.8}
+                  >
+                    <Gift size={14} color={DARK.goldBright} />
+                    <Text style={styles.switchHintText}>
+                      Hesabınız yok mu?{' '}
+                      <Text style={styles.switchHintHighlight}>
+                        Davet Kodu ile Kayıt Olun (+1 Hediye Ders)
+                      </Text>
+                    </Text>
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  {/* Ad Soyad */}
+                  <Text style={styles.fieldLabel}>Ad Soyad</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'regName' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <User
+                      size={18}
+                      color={focusedField === 'regName' ? DARK.gold : DARK.textMuted}
+                    />
+                    <TextInput
+                      value={regFullName}
+                      onChangeText={(val) => {
+                        setRegFullName(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('regName')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="Adınız ve Soyadınız"
+                      placeholderTextColor={DARK.textMuted}
+                      autoCapitalize="words"
+                      returnKeyType="next"
+                      style={styles.textInput}
+                    />
+                  </View>
+
+                  {/* E-posta Adresi */}
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>E-posta Adresi</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'regEmail' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <Mail
+                      size={18}
+                      color={focusedField === 'regEmail' ? DARK.gold : DARK.textMuted}
+                    />
+                    <TextInput
+                      value={regEmail}
+                      onChangeText={(val) => {
+                        setRegEmail(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('regEmail')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="ornek@eposta.com"
+                      placeholderTextColor={DARK.textMuted}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="email-address"
+                      returnKeyType="next"
+                      style={styles.textInput}
+                    />
+                  </View>
+
+                  {/* Telefon Numarası */}
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
+                    Telefon Numarası (Opsiyonel)
+                  </Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'regPhone' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <Phone
+                      size={18}
+                      color={focusedField === 'regPhone' ? DARK.gold : DARK.textMuted}
+                    />
+                    <TextInput
+                      value={regPhone}
+                      onChangeText={(val) => {
+                        setRegPhone(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('regPhone')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="05XX XXX XX XX"
+                      placeholderTextColor={DARK.textMuted}
+                      keyboardType="phone-pad"
+                      returnKeyType="next"
+                      style={styles.textInput}
+                    />
+                  </View>
+
+                  {/* Şifre */}
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>Şifre</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'regPassword' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <Lock
+                      size={18}
+                      color={focusedField === 'regPassword' ? DARK.gold : DARK.textMuted}
+                    />
+                    <TextInput
+                      value={regPassword}
+                      onChangeText={(val) => {
+                        setRegPassword(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('regPassword')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="Şifrenizi belirleyin"
+                      placeholderTextColor={DARK.textMuted}
+                      secureTextEntry={!showRegPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="next"
+                      style={styles.textInput}
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowRegPassword((prev) => !prev)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    >
+                      {showRegPassword ? (
+                        <EyeOff size={18} color={DARK.textSecondary} />
+                      ) : (
+                        <Eye size={18} color={DARK.textSecondary} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  {/* Opsiyonel Davet Kodu Alanı */}
+                  <Text style={[styles.fieldLabel, { marginTop: 14 }]}>
+                    Davet Kodu (Opsiyonel - Örn: AHMET10)
+                  </Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      styles.referralInputRow,
+                      focusedField === 'referralCode' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <Gift
+                      size={18}
+                      color={
+                        focusedField === 'referralCode' || referralCode.trim().length > 0
+                          ? DARK.emeraldText
+                          : DARK.goldBright
+                      }
+                    />
+                    <TextInput
+                      value={referralCode}
+                      onChangeText={(val) => {
+                        setReferralCode(val.toUpperCase());
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('referralCode')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="Davet Kodu (Opsiyonel - Örn: AHMET10)"
+                      placeholderTextColor={DARK.textMuted}
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      returnKeyType="done"
+                      onSubmitEditing={handleSubmitRegister}
+                      style={styles.textInput}
+                    />
+                  </View>
+
+                  {/* Hata Kutusu */}
+                  {errorMessage ? (
+                    <View style={styles.errorBanner}>
+                      <AlertCircle size={16} color={DARK.danger} />
+                      <Text style={styles.errorText}>{errorMessage}</Text>
+                    </View>
+                  ) : null}
+
+                  {/* Kayıt Ol Butonu */}
+                  <TouchableOpacity
+                    style={[styles.primaryLoginBtn, submitting && styles.btnDisabled]}
+                    onPress={handleSubmitRegister}
+                    disabled={submitting || googleBusy}
+                    activeOpacity={0.86}
+                    accessibilityRole="button"
+                    accessibilityLabel="Kayıt Ol"
+                  >
+                    {submitting ? (
+                      <ActivityIndicator size="small" color="#090D16" />
+                    ) : (
+                      <>
+                        <Text style={styles.primaryLoginBtnText}>
+                          Hesap Oluştur & Başla
+                        </Text>
+                        <ArrowRight size={18} color="#090D16" strokeWidth={2.4} />
+                      </>
+                    )}
+                  </TouchableOpacity>
+
+                  {/* Form Altı +1 Hediye Ders Bilgilendirme Kutusu */}
+                  <View style={styles.referralBonusInfoBox}>
+                    <Gift size={16} color={DARK.emeraldText} />
+                    <Text style={styles.referralBonusInfoText}>
+                      🎁 Arkadaşınızın davet kodunu girerek kayıt olduğunuzda hem size hem
+                      arkadaşınıza anında{' '}
+                      <Text style={styles.referralBonusBold}>+1 Hediye Ders</Text> kredisi
+                      tanımlanır!
+                    </Text>
                   </View>
 
                   <TouchableOpacity
-                    style={[styles.googleBtn, googleBusy && styles.btnDisabled]}
-                    onPress={handleGoogleSignIn}
-                    disabled={submitting || googleBusy}
-                    activeOpacity={0.85}
-                    accessibilityRole="button"
-                    accessibilityLabel="Google ile Giriş Yap"
+                    style={styles.switchHintBtn}
+                    onPress={() => switchAuthMode('login')}
+                    activeOpacity={0.8}
                   >
-                    {googleBusy ? (
-                      <ActivityIndicator size="small" color={DARK.textPrimary} />
-                    ) : (
-                      <>
-                        <GoogleColorIcon size={19} />
-                        <Text style={styles.googleBtnText}>Google ile Giriş Yap</Text>
-                      </>
-                    )}
+                    <Text style={styles.switchHintText}>
+                      Zaten üye misiniz?{' '}
+                      <Text style={styles.switchHintHighlight}>Giriş Yapın</Text>
+                    </Text>
                   </TouchableOpacity>
                 </>
               )}
@@ -417,6 +789,37 @@ const styles = StyleSheet.create({
     shadowRadius: 28,
     elevation: 8,
   },
+  modeSwitchTrack: {
+    flexDirection: 'row',
+    backgroundColor: DARK.inputBg,
+    borderRadius: 14,
+    padding: 4,
+    borderWidth: 1,
+    borderColor: DARK.border,
+    marginBottom: 18,
+    gap: 6,
+  },
+  modeSwitchTab: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    paddingVertical: 10,
+    borderRadius: 10,
+  },
+  modeSwitchTabActive: {
+    backgroundColor: DARK.gold,
+  },
+  modeSwitchTabText: {
+    fontFamily: FONTS.sans,
+    color: DARK.textSecondary,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  modeSwitchTabTextActive: {
+    color: '#090D16',
+  },
   fieldLabel: {
     fontFamily: FONTS.sans,
     color: DARK.textSecondary,
@@ -434,6 +837,9 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     paddingHorizontal: 14,
     minHeight: 50,
+  },
+  referralInputRow: {
+    borderColor: DARK.goldBorder,
   },
   inputRowFocused: {
     borderColor: DARK.borderFocus,
@@ -486,6 +892,49 @@ const styles = StyleSheet.create({
   },
   btnDisabled: {
     opacity: 0.65,
+  },
+  referralBonusInfoBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    marginTop: 14,
+    backgroundColor: DARK.emeraldSoft,
+    borderWidth: 1,
+    borderColor: DARK.emeraldBorder,
+    borderRadius: 13,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+  },
+  referralBonusInfoText: {
+    flex: 1,
+    fontFamily: FONTS.sans,
+    color: '#D1FAE5',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '600',
+  },
+  referralBonusBold: {
+    color: DARK.emeraldText,
+    fontWeight: '800',
+  },
+  switchHintBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 16,
+    paddingVertical: 4,
+  },
+  switchHintText: {
+    fontFamily: FONTS.sans,
+    color: DARK.textSecondary,
+    fontSize: 12.5,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  switchHintHighlight: {
+    color: DARK.goldBright,
+    fontWeight: '800',
   },
   dividerRow: {
     flexDirection: 'row',

@@ -1,10 +1,11 @@
+import json
 import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session, joinedload
 
@@ -17,16 +18,31 @@ from auth_admin_router import (
     ensure_portal_initialized,
     portal_router,
 )
-from database import Base, SessionLocal, engine, get_db
+from database import Base, SessionLocal, engine, get_db as _raw_get_db
 from instagram_service import normalize_handle, process_instagram_dm
 from models import (
+    CALORIES_GOAL,
+    CARBS_GOAL_G,
+    FAT_GOAL_G,
+    PROTEIN_GOAL_G,
+    STANDARD_BODY_ZONES,
+    VALID_ZONE_STATUSES,
+    WATER_GOAL_ML,
     Announcement,
     BodyMetrics,
     Booking,
     ClassSession,
+    DailyWellness,
     MemberPackage,
     User,
     Waitlist,
+    compute_wellness_pcts,
+    generate_unique_referral_code,
+    get_user_body_zones_dict,
+    grant_bonus_credit_to_member,
+    infer_default_body_zones,
+    normalize_body_zones_payload,
+    normalize_referral_code_input,
 )
 from payment_router import ensure_payment_catalog_seeded, router as payment_router
 from schemas import (
@@ -36,11 +52,18 @@ from schemas import (
     AvailableSessionOut,
     BodyMetricCreateRequest,
     BodyMetricOut,
+    BodyZonesOut,
+    BodyZonesUpdateOut,
+    BodyZonesUpdateRequest,
     BookingActionResponse,
     BookingCancelRequest,
     BookingCreateRequest,
     CheckInLogOut,
     ClubHomeOut,
+    ClubLiveStatusOut,
+    DailyWellnessOut,
+    HealthOut,
+    HourlyForecastItemOut,
     InstagramWebhookRequest,
     InstagramWebhookResponse,
     MemberBookingItemOut,
@@ -49,9 +72,14 @@ from schemas import (
     MemberNotesUpdateRequest,
     MemberProfileUpdateRequest,
     MemberWaitlistItemOut,
+    NutritionAnalyzeOut,
+    NutritionAnalyzeRequest,
     PackageOut,
     PackageRenewRequest,
     PackageRenewResponse,
+    ReferralInfoOut,
+    ReferralRedeemOut,
+    ReferralRedeemRequest,
     TrainerCardOut,
     TrainerDetailOut,
     TrainerMemberCrmOut,
@@ -63,22 +91,110 @@ from schemas import (
     WaitlistCancelRequest,
     WaitlistCreateRequest,
     WaitlistEntryOut,
+    WellnessEnergyRequest,
+    WellnessWaterRequest,
 )
 from seed import seed_initial_data
 
 load_dotenv()
 
+_APP_BOOTSTRAPPED = False
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
+
+def ensure_wellness_and_referrals_initialized(db: Session) -> None:
+    """
+    Ensures every User has a unique referral_code, initialized referral_count,
+    and valid 7-zone body_zones JSON, plus seeds initial demo wellness records once.
+    """
+    dirty = False
+    all_users = db.query(User).order_by(User.id.asc()).all()
+    ahmet_marked = False
+
+    for u in all_users:
+        if not u.referral_code:
+            u.referral_code = generate_unique_referral_code(db, u.full_name, exclude_user_id=u.id)
+            db.flush()
+            dirty = True
+        if u.referral_count is None:
+            u.referral_count = 0
+            dirty = True
+
+        name_low = (u.full_name or "").replace("İ", "i").replace("I", "ı").lower()
+        if not u.body_zones:
+            if "ahmet" in name_low and not ahmet_marked:
+                zones = {z: "healthy" for z in STANDARD_BODY_ZONES}
+                zones["Diz/Eklem"] = "warning"
+                ahmet_marked = True
+            else:
+                zones = infer_default_body_zones(u.full_name, u.notes)
+            u.body_zones = json.dumps(zones, ensure_ascii=False)
+            dirty = True
+
+    today_str = date.today().strftime("%Y-%m-%d")
+    if db.query(DailyWellness).count() == 0 and all_users:
+        by_name = {u.full_name: u for u in all_users}
+        zeynep = by_name.get("Zeynep Kaya")
+        elif_u = by_name.get("Elif Şahin")
+        if zeynep:
+            db.add(
+                DailyWellness(
+                    member_id=zeynep.id,
+                    date=today_str,
+                    water_ml=1750,
+                    sleep_hours=7.5,
+                    energy_status="normal",
+                    calories_intake=1120,
+                    protein_g=76,
+                    carbs_g=115,
+                    fat_g=34,
+                )
+            )
+            dirty = True
+        if elif_u:
+            db.add(
+                DailyWellness(
+                    member_id=elif_u.id,
+                    date=today_str,
+                    water_ml=1000,
+                    sleep_hours=5.5,
+                    energy_status="low",
+                    calories_intake=840,
+                    protein_g=46,
+                    carbs_g=92,
+                    fat_g=26,
+                )
+            )
+            dirty = True
+
+    if dirty:
+        db.commit()
+
+
+def bootstrap_database_once() -> None:
+    global _APP_BOOTSTRAPPED
+    if _APP_BOOTSTRAPPED:
+        return
     run_sqlite_schema_migrations(engine)
     db = SessionLocal()
     try:
         seed_initial_data(db)
         ensure_portal_initialized(db)
         ensure_payment_catalog_seeded(db)
+        ensure_wellness_and_referrals_initialized(db)
+        _APP_BOOTSTRAPPED = True
     finally:
         db.close()
+
+
+def get_db():
+    if not _APP_BOOTSTRAPPED:
+        bootstrap_database_once()
+    yield from _raw_get_db()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    bootstrap_database_once()
     yield
 
 
@@ -171,9 +287,257 @@ def _clean_trainer_bio(bio: Optional[str]) -> Optional[str]:
 
 def _to_user_out(user: User) -> UserOut:
     out = UserOut.model_validate(user)
+    out.body_zones = get_user_body_zones_dict(user)
     if user.role == "trainer" and user.bio:
         out.bio = _clean_trainer_bio(user.bio)
     return out
+
+
+def _to_daily_wellness_out(row: DailyWellness) -> DailyWellnessOut:
+    e_status: Literal["high", "normal", "low"] = (
+        row.energy_status if row.energy_status in ("high", "normal", "low") else "normal"  # type: ignore[assignment]
+    )
+    return DailyWellnessOut(
+        id=row.id,
+        member_id=row.member_id,
+        date=row.date,
+        water_ml=row.water_ml or 0,
+        water_goal_ml=WATER_GOAL_ML,
+        sleep_hours=float(row.sleep_hours if row.sleep_hours is not None else 7.5),
+        energy_status=e_status,
+        calories_intake=row.calories_intake or 0,
+        calories_goal=CALORIES_GOAL,
+        protein_g=row.protein_g or 0,
+        protein_goal_g=PROTEIN_GOAL_G,
+        carbs_g=row.carbs_g or 0,
+        carbs_goal_g=CARBS_GOAL_G,
+        fat_g=row.fat_g or 0,
+        fat_goal_g=FAT_GOAL_G,
+    )
+
+
+def _get_or_create_today_wellness(db: Session, member_id: int) -> DailyWellness:
+    user = db.query(User).filter(User.id == member_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Üye bulunamadı.")
+
+    today_str = _today_iso()
+    row = (
+        db.query(DailyWellness)
+        .filter(DailyWellness.member_id == member_id, DailyWellness.date == today_str)
+        .first()
+    )
+    if not row:
+        row = DailyWellness(
+            member_id=member_id,
+            date=today_str,
+            water_ml=0,
+            sleep_hours=7.5,
+            energy_status="normal",
+            calories_intake=0,
+            protein_g=0,
+            carbs_g=0,
+            fat_g=0,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+    return row
+
+
+def _load_today_wellness_map(db: Session) -> Dict[int, DailyWellness]:
+    today_str = _today_iso()
+    rows = db.query(DailyWellness).filter(DailyWellness.date == today_str).all()
+    return {r.member_id: r for r in rows}
+
+
+def _extract_member_wellness_fields(
+    user: User,
+    wellness_row: Optional[DailyWellness],
+) -> Dict[str, object]:
+    zones = get_user_body_zones_dict(user)
+    w_ml = wellness_row.water_ml if (wellness_row and wellness_row.water_ml is not None) else 0
+    p_g = wellness_row.protein_g if (wellness_row and wellness_row.protein_g is not None) else 0
+    e_raw = wellness_row.energy_status if wellness_row else "normal"
+    e_status: Literal["high", "normal", "low"] = (
+        e_raw if e_raw in ("high", "normal", "low") else "normal"  # type: ignore[assignment]
+    )
+    w_pct, p_pct = compute_wellness_pcts(w_ml, p_g)
+    return {
+        "body_zones": zones,
+        "today_energy_status": e_status,
+        "today_water_ml": w_ml,
+        "water_goal_ml": WATER_GOAL_ML,
+        "today_protein_g": p_g,
+        "protein_goal_g": PROTEIN_GOAL_G,
+        "water_pct": w_pct,
+        "protein_pct": p_pct,
+    }
+
+
+# Besin Sözlüğü: (keywords, per_100g=(kcal, protein_g, carbs_g, fat_g), default_unit_grams)
+TURKISH_NUTRITION_DICTIONARY: List[Tuple[List[str], Tuple[float, float, float, float], float]] = [
+    (["yumurtalı menemen", "yumurtali menemen", "menemen"], (115.0, 6.8, 3.8, 8.0), 220.0),
+    (["omlet"], (154.0, 10.6, 1.2, 11.8), 140.0),
+    (["yumurta beyazı", "yumurta beyazi"], (52.0, 10.9, 0.7, 0.2), 35.0),
+    (["haşlanmış yumurta", "haslanmis yumurta", "yumurta"], (155.0, 12.6, 1.1, 10.6), 55.0),
+    (["beyaz peynir"], (265.0, 17.0, 2.0, 21.0), 60.0),
+    (["lor peyniri", "lor peynir", "lor"], (98.0, 11.0, 3.4, 4.3), 80.0),
+    (["kaşar peyniri", "kasar peyniri", "kaşar", "kasar"], (350.0, 25.0, 2.0, 27.0), 30.0),
+    (["süzme peynir", "suzme peynir", "peynir"], (250.0, 16.0, 2.5, 20.0), 50.0),
+    (["tam buğday ekmeği", "tam bugday ekmegi", "çavdar ekmeği", "cavdar ekmegi", "kepekli ekmek", "ekmek"], (247.0, 9.5, 43.0, 3.4), 30.0),
+    (["simit"], (275.0, 9.6, 57.0, 3.5), 100.0),
+    (["ızgara tavuk göğsü", "izgara tavuk gogsu", "tavuk göğsü", "tavuk gogsu", "haşlama tavuk", "tavuk"], (165.0, 31.0, 0.0, 3.6), 160.0),
+    (["hindi göğsü", "hindi füme", "hindi"], (145.0, 29.0, 1.0, 2.5), 150.0),
+    (["ızgara köfte", "izgara kofte", "köfte", "kofte"], (240.0, 20.0, 5.0, 15.5), 150.0),
+    (["dana bonfile", "antrikot", "kırmızı et", "kirmizi et", "dana eti", "biftek"], (235.0, 26.0, 0.0, 14.0), 180.0),
+    (["ızgara somon", "izgara somon", "fırın somon", "somon"], (208.0, 21.6, 0.0, 13.0), 180.0),
+    (["ton balığı", "ton baligi"], (132.0, 28.0, 0.0, 1.5), 120.0),
+    (["levrek", "çipura", "cipura", "balık", "balik"], (140.0, 22.0, 0.0, 5.5), 180.0),
+    (["pirinç pilavı", "pirinc pilavi", "pilav"], (145.0, 3.0, 28.0, 2.3), 180.0),
+    (["bulgur pilavı", "bulgur pilavi", "bulgur"], (125.0, 4.2, 24.0, 1.8), 180.0),
+    (["karabuğday", "karabugday", "kinoa"], (120.0, 4.4, 21.3, 1.9), 160.0),
+    (["kepekli makarna", "tam buğday makarna", "makarna"], (155.0, 5.8, 30.5, 1.1), 180.0),
+    (["yulaf ezmesi", "yulaf lapası", "yulaf"], (380.0, 13.5, 66.0, 7.0), 50.0),
+    (["whey protein", "ölçek protein", "olcek protein", "protein tozu", "protein"], (400.0, 80.0, 10.0, 5.0), 30.0),
+    (["muz"], (89.0, 1.1, 22.8, 0.3), 120.0),
+    (["elma", "armut", "portakal", "şeftali", "seftali"], (52.0, 0.3, 14.0, 0.2), 150.0),
+    (["avokado"], (160.0, 2.0, 8.5, 14.7), 100.0),
+    (["fıstık ezmesi", "fistik ezmesi", "badem ezmesi"], (588.0, 25.0, 20.0, 50.0), 20.0),
+    (["çiğ badem", "badem", "ceviz", "fındık", "findik", "kaju"], (590.0, 20.0, 18.0, 52.0), 30.0),
+    (["süzme yoğurt", "suzme yogurt", "yoğurt", "yogurt"], (75.0, 6.5, 4.5, 3.5), 180.0),
+    (["ayran", "kefir"], (45.0, 3.0, 3.8, 1.8), 220.0),
+    (["süt", "sut"], (60.0, 3.2, 4.8, 3.2), 200.0),
+    (["mercimek çorbası", "mercimek corbasi", "ezogelin", "çorba", "corba"], (65.0, 4.0, 9.5, 1.8), 250.0),
+    (["haşlanmış patates", "fırın patates", "patates"], (93.0, 2.5, 21.0, 0.2), 160.0),
+    (["yeşillikli salata", "mevsim salata", "çoban salata", "salata", "yeşillik", "yesillik"], (48.0, 1.3, 4.0, 3.0), 200.0),
+    (["brokoli", "kabak", "ıspanak", "ispanak", "ızgara sebze", "sebze"], (45.0, 2.8, 6.5, 1.2), 180.0),
+    (["zeytin"], (145.0, 1.0, 3.8, 15.0), 30.0),
+    (["tost"], (290.0, 14.0, 28.0, 13.0), 130.0),
+]
+
+
+def _analyze_turkish_meal(meal_text: str) -> Tuple[int, int, int, int, str]:
+    cleaned = (meal_text or "").strip()
+    if not cleaned:
+        raise HTTPException(status_code=400, detail="Lütfen analiz edilecek öğünü yazın.")
+
+    lowered = cleaned.replace("İ", "i").replace("I", "ı").lower()
+    clauses = [
+        seg.strip()
+        for seg in re.split(r"[,;+\n&]|\bve\b|\bile\b", lowered)
+        if seg and seg.strip()
+    ]
+    if not clauses:
+        clauses = [lowered]
+
+    total_cal = 0.0
+    total_prot = 0.0
+    total_carb = 0.0
+    total_fat = 0.0
+    matched_any = False
+
+    for clause in clauses:
+        matched_entry = None
+        matched_kw = ""
+        for keywords, macros_100g, unit_g in TURKISH_NUTRITION_DICTIONARY:
+            for kw in keywords:
+                if kw in clause:
+                    matched_entry = (macros_100g, unit_g)
+                    matched_kw = kw
+                    break
+            if matched_entry:
+                break
+
+        if not matched_entry:
+            continue
+
+        matched_any = True
+        (kcal_100, prot_100, carb_100, fat_100), default_unit_g = matched_entry
+
+        gram_match = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:gr|gram|g|ml)\b", clause)
+        if gram_match:
+            grams = float(gram_match.group(1).replace(",", "."))
+        elif "menemen" in matched_kw:
+            egg_count_match = re.search(r"(\d+)\s*yumurta", clause)
+            grams = default_unit_g
+            if egg_count_match:
+                eggs = int(egg_count_match.group(1))
+                if eggs > 2:
+                    grams += (eggs - 2) * 55.0
+                elif eggs == 1:
+                    grams = max(160.0, default_unit_g - 45.0)
+        else:
+            count_mult = 1.0
+            if "yarım" in clause or "yarim" in clause:
+                count_mult = 0.5
+            elif "çeyrek" in clause or "ceyrek" in clause:
+                count_mult = 0.25
+            elif "duble" in clause or "büyük" in clause or "buyuk" in clause:
+                count_mult = 1.4
+            else:
+                num_match = re.search(
+                    r"(\d+(?:[.,]\d+)?)\s*(?:adet|tane|dilim|tabak|kase|porsiyon|ölçek|olcek|kaşık|kasik|bardak|avuç|avuc)?",
+                    clause,
+                )
+                if num_match:
+                    parsed_num = float(num_match.group(1).replace(",", "."))
+                    if parsed_num > 30:
+                        # Örn. "150 tavuk" gibi birim yazılmamış gramaj ifadesi
+                        grams = parsed_num
+                        count_mult = -1.0
+                    elif parsed_num > 0:
+                        count_mult = parsed_num
+            if count_mult > 0:
+                grams = count_mult * default_unit_g
+
+        factor = grams / 100.0
+        total_cal += kcal_100 * factor
+        total_prot += prot_100 * factor
+        total_carb += carb_100 * factor
+        total_fat += fat_100 * factor
+
+    if not matched_any:
+        gram_fallback = re.search(r"(\d+(?:[.,]\d+)?)\s*(?:gr|gram|g|ml)\b", lowered)
+        scale = (float(gram_fallback.group(1).replace(",", ".")) / 220.0) if gram_fallback else 1.0
+        scale = max(0.5, min(2.5, scale))
+        total_cal = 340.0 * scale
+        total_prot = 18.0 * scale
+        total_carb = 36.0 * scale
+        total_fat = 13.0 * scale
+
+    cal_i = max(25, int(round(total_cal)))
+    prot_i = max(1, int(round(total_prot)))
+    carb_i = max(0, int(round(total_carb)))
+    fat_i = max(0, int(round(total_fat)))
+
+    if prot_i >= 30 and carb_i >= 20:
+        coach_note = (
+            "💡 AI Koç Notu: Harika bir protein kaynağı! Antrenman öncesi ve sonrası için "
+            "karbonhidrat-protein dengesi oldukça ideal."
+        )
+    elif prot_i >= 28 and carb_i < 20:
+        coach_note = (
+            "💡 AI Koç Notu: Kas onarımı ve sıkılaşma için çok temiz, yüksek proteinli bir seçim! "
+            "Bol su ile sindirimi destekleyebilirsin."
+        )
+    elif carb_i >= 55 and prot_i < 20:
+        coach_note = (
+            "💡 AI Koç Notu: Enerji veren karbonhidrat ağırlıklı bir öğün. Bir sonraki öğününde "
+            "yumurta, ızgara tavuk veya süzme yoğurt ekleyerek protein dengesini tamamlayabilirsin."
+        )
+    elif fat_i >= 28:
+        coach_note = (
+            "💡 AI Koç Notu: Doyuruculuğu ve sağlıklı yağ oranı yüksek bir tabak! "
+            "Metabolik denge için gün içinde +500 ml ekstra su içmeyi unutma."
+        )
+    else:
+        coach_note = (
+            "💡 AI Koç Notu: Dengeli ve hafif bir öğün! Günlük protein ve su hedefine "
+            "istikrarlı şekilde yaklaşıyorsun."
+        )
+
+    return cal_i, prot_i, carb_i, fat_i, coach_note
 
 
 def _compute_checkin_time(start_time: str) -> str:
@@ -525,9 +889,272 @@ def create_booking_internal(db: Session, member_id: int, session_id: int) -> Boo
 # ============================================================================
 
 
-@app.get("/health")
+@app.get("/health", response_model=HealthOut)
 def health_check():
-    return {"status": "ok", "service": "FitnessSystem Backend", "version": "2.0.0"}
+    return HealthOut(status="ok")
+
+
+@app.get("/club/live-status", response_model=ClubLiveStatusOut)
+def get_club_live_status(db: Session = Depends(get_db)):
+    capacity = 40
+    today_str = _today_iso()
+    now_dt = datetime.now()
+    now_hour = now_dt.hour
+
+    today_sessions = db.query(ClassSession).filter(ClassSession.date == today_str).all()
+
+    base_curve = {
+        7: 22,
+        8: 28,
+        9: 35,
+        10: 42,
+        11: 38,
+        12: 34,
+        13: 40,
+        14: 32,
+        15: 30,
+        16: 36,
+        17: 45,
+        18: 75,
+        19: 90,
+        20: 55,
+        21: 30,
+        22: 20,
+    }
+
+    enrolled_by_hour: Dict[int, int] = {}
+    for s in today_sessions:
+        try:
+            sh = int((s.start_time or "00:00").split(":")[0])
+            enrolled_by_hour[sh] = enrolled_by_hour.get(sh, 0) + max(0, s.current_enrolled or 0)
+        except Exception:
+            continue
+
+    nearby_enrolled = (
+        enrolled_by_hour.get(now_hour, 0)
+        + int(round(enrolled_by_hour.get(now_hour - 1, 0) * 0.5))
+    )
+    baseline_pct = base_curve.get(now_hour, 36)
+    baseline_members = int(round((capacity * baseline_pct) / 100.0))
+
+    if nearby_enrolled > 0:
+        active_members_count = min(capacity, max(baseline_members, nearby_enrolled + 8))
+    else:
+        active_members_count = max(6, min(capacity, baseline_members))
+
+    occupancy_pct = min(100, max(10, int(round((active_members_count * 100.0) / capacity))))
+
+    if occupancy_pct < 55:
+        status_level: Literal["low", "moderate", "high"] = "low"
+        status_badge = "🟢 Salon Şu An Ferah - Antrenman İçin Harika Saat"
+    elif occupancy_pct < 80:
+        status_level = "moderate"
+        status_badge = "🟡 Salon Dengeli Yoğunlukta - Tempolu Atmosfer"
+    else:
+        status_level = "high"
+        status_badge = "🔴 Salon Yoğun Saatte - Ekipman Sırası Olabilir"
+
+    forecast_hours = [16, 17, 18, 19, 20, 21]
+    hourly_forecast: List[HourlyForecastItemOut] = []
+    for fh in forecast_hours:
+        fh_base = base_curve.get(fh, 40)
+        fh_enrolled = enrolled_by_hour.get(fh, 0)
+        fh_pct = min(98, fh_base + (fh_enrolled * 2)) if fh_enrolled > 0 else fh_base
+        hourly_forecast.append(HourlyForecastItemOut(hour=f"{fh:02d}:00", pct=int(fh_pct)))
+
+    return ClubLiveStatusOut(
+        occupancy_pct=occupancy_pct,
+        active_members_count=active_members_count,
+        active_members_label=f"{active_members_count} Kişi",
+        capacity=capacity,
+        status_level=status_level,
+        status_badge=status_badge,
+        hourly_forecast=hourly_forecast,
+    )
+
+
+@app.get("/users/{user_id}/body-zones", response_model=BodyZonesOut)
+def get_user_body_zones(user_id: int, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+
+    zones = get_user_body_zones_dict(user)
+    if not user.body_zones:
+        user.body_zones = json.dumps(zones, ensure_ascii=False)
+        db.commit()
+    return BodyZonesOut(user_id=user.id, zones=zones)
+
+
+@app.put("/users/{user_id}/body-zones", response_model=BodyZonesUpdateOut)
+def update_user_body_zones(
+    user_id: int,
+    payload: BodyZonesUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+
+    for k, v in (payload.zones or {}).items():
+        if k in STANDARD_BODY_ZONES and (v or "").strip().lower() not in VALID_ZONE_STATUSES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Geçersiz bölge durumu: {v}. ('healthy', 'warning', 'injured' olmalıdır)",
+            )
+
+    current_zones = get_user_body_zones_dict(user)
+    updated_zones = normalize_body_zones_payload(payload.zones, base_zones=current_zones)
+    user.body_zones = json.dumps(updated_zones, ensure_ascii=False)
+    db.commit()
+    db.refresh(user)
+
+    return BodyZonesUpdateOut(
+        user_id=user.id,
+        zones=updated_zones,
+        message="Vücut haritası güncellendi.",
+    )
+
+
+@app.get("/wellness/{member_id}/today", response_model=DailyWellnessOut)
+def get_member_today_wellness(member_id: int, db: Session = Depends(get_db)):
+    row = _get_or_create_today_wellness(db, member_id)
+    return _to_daily_wellness_out(row)
+
+
+@app.post("/wellness/{member_id}/water", response_model=DailyWellnessOut)
+def add_member_water(
+    member_id: int,
+    payload: Optional[WellnessWaterRequest] = Body(default=None),
+    db: Session = Depends(get_db),
+):
+    row = _get_or_create_today_wellness(db, member_id)
+    amount = payload.amount_ml if (payload is not None and payload.amount_ml is not None) else 250
+    row.water_ml = max(0, (row.water_ml or 0) + int(amount))
+    db.commit()
+    db.refresh(row)
+    return _to_daily_wellness_out(row)
+
+
+@app.post("/wellness/{member_id}/energy", response_model=DailyWellnessOut)
+def update_member_energy(
+    member_id: int,
+    payload: WellnessEnergyRequest,
+    db: Session = Depends(get_db),
+):
+    row = _get_or_create_today_wellness(db, member_id)
+    row.energy_status = payload.energy_status
+    if payload.sleep_hours is not None:
+        row.sleep_hours = round(max(0.0, min(24.0, float(payload.sleep_hours))), 1)
+    db.commit()
+    db.refresh(row)
+    return _to_daily_wellness_out(row)
+
+
+@app.post("/nutrition/analyze", response_model=NutritionAnalyzeOut)
+def analyze_nutrition_meal(
+    payload: NutritionAnalyzeRequest,
+    db: Session = Depends(get_db),
+):
+    row = _get_or_create_today_wellness(db, payload.member_id)
+    cal_i, prot_i, carb_i, fat_i, coach_note = _analyze_turkish_meal(payload.meal_text)
+
+    row.calories_intake = max(0, (row.calories_intake or 0) + cal_i)
+    row.protein_g = max(0, (row.protein_g or 0) + prot_i)
+    row.carbs_g = max(0, (row.carbs_g or 0) + carb_i)
+    row.fat_g = max(0, (row.fat_g or 0) + fat_i)
+    db.commit()
+    db.refresh(row)
+
+    return NutritionAnalyzeOut(
+        meal_text=payload.meal_text.strip(),
+        added_calories=cal_i,
+        added_protein_g=prot_i,
+        added_carbs_g=carb_i,
+        added_fat_g=fat_i,
+        coach_note=coach_note,
+        wellness=_to_daily_wellness_out(row),
+    )
+
+
+@app.get("/referral/{member_id}", response_model=ReferralInfoOut)
+def get_member_referral_info(member_id: int, db: Session = Depends(get_db)):
+    member = db.query(User).filter(User.id == member_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Üye bulunamadı.")
+
+    if not member.referral_code:
+        member.referral_code = generate_unique_referral_code(
+            db, member.full_name, exclude_user_id=member.id
+        )
+        if member.referral_count is None:
+            member.referral_count = 0
+        db.commit()
+        db.refresh(member)
+
+    active_pkg = get_active_package_for_member(db, member.id)
+    rem_credits = active_pkg.remaining_credits if active_pkg else 0
+    ref_count = member.referral_count or 0
+
+    return ReferralInfoOut(
+        member_id=member.id,
+        member_name=member.full_name,
+        referral_code=member.referral_code,
+        referral_count=ref_count,
+        earned_free_credits=ref_count,
+        remaining_credits=rem_credits,
+    )
+
+
+@app.post("/referral/redeem", response_model=ReferralRedeemOut)
+def redeem_referral_code(
+    payload: ReferralRedeemRequest,
+    db: Session = Depends(get_db),
+):
+    clean_code = normalize_referral_code_input(payload.referral_code)
+    if not clean_code:
+        raise HTTPException(status_code=400, detail="Davet kodu boş bırakılamaz.")
+
+    inviter = db.query(User).filter(User.referral_code == clean_code).first()
+    if not inviter:
+        raise HTTPException(status_code=404, detail="Geçersiz davet kodu.")
+
+    is_sim = bool(payload.is_demo_simulation) or (payload.new_member_id is None)
+    if not is_sim and payload.new_member_id == inviter.id:
+        raise HTTPException(status_code=400, detail="Kendi davet kodunuzu kendiniz için kullanamazsınız.")
+
+    inviter.referral_count = (inviter.referral_count or 0) + 1
+    inviter_pkg = grant_bonus_credit_to_member(
+        db,
+        inviter.id,
+        credits_to_add=1,
+        fallback_package_name="Arkadaş Daveti Hediye Paketi",
+    )
+
+    if payload.new_member_id is not None and payload.new_member_id != inviter.id:
+        new_member = db.query(User).filter(User.id == payload.new_member_id).first()
+        if new_member:
+            grant_bonus_credit_to_member(
+                db,
+                new_member.id,
+                credits_to_add=1,
+                fallback_package_name="Hoş Geldin Hediye Ders Paketi",
+            )
+
+    db.commit()
+    db.refresh(inviter)
+    db.refresh(inviter_pkg)
+
+    return ReferralRedeemOut(
+        success=True,
+        referral_code=inviter.referral_code,
+        inviter_id=inviter.id,
+        inviter_name=inviter.full_name,
+        referral_count=inviter.referral_count or 0,
+        remaining_credits=inviter_pkg.remaining_credits,
+        bonus_credits_added=1,
+        message="🎉 Tebrikler! Arkadaşınız katıldığı için paketinize +1 Hediye Ders eklendi!",
+    )
 
 
 @app.get("/users", response_model=List[UserOut])
@@ -869,6 +1496,9 @@ def get_member_metrics(member_id: int, db: Session = Depends(get_db)):
     )
     completed_sessions = [_build_member_booking_item(b) for b in attended_sorted]
 
+    wellness_map = _load_today_wellness_map(db)
+    w_fields = _extract_member_wellness_fields(member, wellness_map.get(member.id))
+
     return MemberMetricsSummaryOut(
         member_id=member.id,
         member_name=member.full_name,
@@ -881,6 +1511,7 @@ def get_member_metrics(member_id: int, db: Session = Depends(get_db)):
         latest_trainer_comment=latest_comment,
         completed_sessions_count=len(completed_sessions),
         completed_sessions=completed_sessions,
+        **w_fields,  # type: ignore[arg-type]
     )
 
 
@@ -1227,11 +1858,13 @@ def list_trainer_crm_members(db: Session = Depends(get_db)):
     for (m_id,) in attended_rows:
         attended_count_by_member[m_id] = attended_count_by_member.get(m_id, 0) + 1
 
+    wellness_map = _load_today_wellness_map(db)
     crm_list: List[TrainerMemberCrmOut] = []
     for u in members:
         pkg = get_active_package_for_member(db, u.id)
         rem = pkg.remaining_credits if pkg else 0
         tot = pkg.total_credits if pkg else 0
+        w_fields = _extract_member_wellness_fields(u, wellness_map.get(u.id))
         crm_list.append(
             TrainerMemberCrmOut(
                 id=u.id,
@@ -1249,9 +1882,53 @@ def list_trainer_crm_members(db: Session = Depends(get_db)):
                 low_credit_warning=(rem <= 2),
                 attended_sessions_count=attended_count_by_member.get(u.id, 0),
                 latest_metric=latest_metric_by_member.get(u.id),
+                **w_fields,  # type: ignore[arg-type]
             )
         )
     return crm_list
+
+
+@app.get("/trainer/members/{member_id}", response_model=TrainerMemberCrmOut)
+def get_trainer_crm_member_detail(member_id: int, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.id == member_id, User.role == "member").first()
+    if not u:
+        raise HTTPException(status_code=404, detail="Öğrenci bulunamadı.")
+
+    latest_m = (
+        db.query(BodyMetrics)
+        .filter(BodyMetrics.member_id == u.id)
+        .order_by(BodyMetrics.date.desc(), BodyMetrics.id.desc())
+        .first()
+    )
+    attended_cnt = (
+        db.query(Booking)
+        .filter(Booking.member_id == u.id, Booking.status == "attended")
+        .count()
+    )
+    pkg = get_active_package_for_member(db, u.id)
+    rem = pkg.remaining_credits if pkg else 0
+    tot = pkg.total_credits if pkg else 0
+    wellness_map = _load_today_wellness_map(db)
+    w_fields = _extract_member_wellness_fields(u, wellness_map.get(u.id))
+
+    return TrainerMemberCrmOut(
+        id=u.id,
+        full_name=u.full_name,
+        phone=u.phone,
+        instagram_handle=u.instagram_handle,
+        avatar_url=u.avatar_url,
+        streak_days=u.streak_days or 0,
+        notes=u.notes or "",
+        package_id=pkg.id if pkg else None,
+        package_name=pkg.package_name if pkg else None,
+        remaining_credits=rem,
+        total_credits=tot,
+        expiry_date=pkg.expiry_date if pkg else None,
+        low_credit_warning=(rem <= 2),
+        attended_sessions_count=attended_cnt,
+        latest_metric=BodyMetricOut.model_validate(latest_m) if latest_m else None,
+        **w_fields,  # type: ignore[arg-type]
+    )
 
 
 @app.post("/trainer/sessions/create", response_model=TrainerSessionOut)
@@ -1417,6 +2094,7 @@ def get_trainer_schedule(
         else all_trainer_sessions
     )
 
+    wellness_map = _load_today_wellness_map(db)
     session_items: List[TrainerSessionOut] = []
     for s in filtered_sessions:
         attendees: List[AttendeeOut] = []
@@ -1428,6 +2106,7 @@ def get_trainer_schedule(
             pkg = get_active_package_for_member(db, b.member_id) or b.package
             rem = pkg.remaining_credits if pkg else 0
             tot = pkg.total_credits if pkg else 0
+            w_fields = _extract_member_wellness_fields(m, wellness_map.get(m.id))
             attendees.append(
                 AttendeeOut(
                     booking_id=b.id,
@@ -1442,6 +2121,7 @@ def get_trainer_schedule(
                     total_credits=tot,
                     low_credit_warning=(rem <= 2),
                     status=b.status,
+                    **w_fields,  # type: ignore[arg-type]
                 )
             )
 
