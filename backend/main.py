@@ -1,12 +1,17 @@
 import json
+import mimetypes
+import os
 import re
 from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.orm import Session, joinedload
 
 import auth_admin_models  # noqa: F401
@@ -199,6 +204,7 @@ async def lifespan(app: FastAPI):
 
 
 CORS_ALLOWED_ORIGINS = [
+    "https://fitness-appp.onrender.com",
     "https://fitness-app-mobile-ios.vercel.app",
     "*",
 ]
@@ -2381,6 +2387,96 @@ def instagram_webhook(
 ):
     result = process_instagram_dm(db, payload.instagram_handle, payload.message)
     return InstagramWebhookResponse(**result)
+
+
+# ============================================================================
+# STATİK PWA & SPA YÖNLENDİRME YAPILANDIRMASI (EXPO WEB DIST -> STATIC)
+# ============================================================================
+
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("application/javascript", ".js")
+mimetypes.add_type("application/javascript", ".mjs")
+mimetypes.add_type("image/x-icon", ".ico")
+mimetypes.add_type("image/svg+xml", ".svg")
+mimetypes.add_type("image/webp", ".webp")
+mimetypes.add_type("font/woff2", ".woff2")
+mimetypes.add_type("font/ttf", ".ttf")
+
+_ENV_STATIC_DIR = os.getenv("ERYA_STATIC_DIR", "").strip()
+STATIC_DIR = (
+    Path(_ENV_STATIC_DIR).resolve()
+    if _ENV_STATIC_DIR and Path(_ENV_STATIC_DIR).is_dir()
+    else Path(__file__).resolve().parent / "static"
+)
+_FALLBACK_MONOREPO_STATIC_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "backend" / "static"
+)
+if (
+    not (STATIC_DIR / "index.html").is_file()
+    and (_FALLBACK_MONOREPO_STATIC_DIR / "index.html").is_file()
+):
+    STATIC_DIR = _FALLBACK_MONOREPO_STATIC_DIR.resolve()
+
+(STATIC_DIR / "_expo").mkdir(parents=True, exist_ok=True)
+(STATIC_DIR / "assets").mkdir(parents=True, exist_ok=True)
+
+
+def _resolve_active_static_dir() -> Path:
+    if (STATIC_DIR / "index.html").is_file():
+        return STATIC_DIR
+    if (_FALLBACK_MONOREPO_STATIC_DIR / "index.html").is_file():
+        return _FALLBACK_MONOREPO_STATIC_DIR.resolve()
+    return STATIC_DIR
+
+
+app.mount("/_expo", StaticFiles(directory=str(STATIC_DIR / "_expo")), name="expo_static")
+app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets_static")
+
+
+@app.get("/", include_in_schema=False)
+def serve_spa_root():
+    active_static = _resolve_active_static_dir()
+    index_file = active_static / "index.html"
+    if index_file.is_file():
+        return FileResponse(str(index_file))
+    return JSONResponse(
+        {
+            "status": "ok",
+            "service": "Fitness Randevu & Kulüp Yönetim API",
+            "spa_ready": False,
+        }
+    )
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+def serve_spa_catch_all(full_path: str):
+    normalized = full_path.strip("/")
+    is_reserved_api_or_doc = normalized in (
+        "docs",
+        "docs/oauth2-redirect",
+        "redoc",
+        "openapi.json",
+        "health",
+    ) or normalized.startswith("api/")
+
+    active_static = _resolve_active_static_dir().resolve()
+    if normalized and not is_reserved_api_or_doc:
+        try:
+            candidate = (active_static / normalized).resolve()
+            candidate.relative_to(active_static)
+            if candidate.is_file():
+                return FileResponse(str(candidate))
+        except (ValueError, OSError):
+            pass
+
+    if is_reserved_api_or_doc:
+        raise HTTPException(status_code=404, detail="Not Found")
+
+    index_file = active_static / "index.html"
+    if index_file.is_file():
+        return FileResponse(str(index_file))
+    raise HTTPException(status_code=404, detail="Not Found")
 
 
 if __name__ == "__main__":

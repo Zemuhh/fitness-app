@@ -1,7 +1,7 @@
 /**
  * Canlı Bulut Backend API Yapılandırması (HTTPS - Render Production)
  */
-export const API_BASE_URL = 'https://fitness-app-kii6.onrender.com';
+export const API_BASE_URL = 'https://fitness-appp.onrender.com';
 
 export async function apiRequest<T>(
   endpoint: string,

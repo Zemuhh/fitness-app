@@ -45,3 +45,7 @@ cloudflared.exe
 *.mobileprovision
 .DS_Store
 Thumbs.db
+
+# FastAPI Statik PWA / SPA Dosyaları
+!backend/static/
+!backend/static/**
