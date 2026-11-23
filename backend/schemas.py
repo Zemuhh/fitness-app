@@ -42,6 +42,26 @@ class UserOut(BaseModel):
     body_zones: Dict[str, str] = Field(default_factory=_default_zones_dict)
     referral_code: Optional[str] = None
     referral_count: int = 0
+    policy_accepted: bool = False
+    policy_accepted_at: Optional[str] = None
+    policy_version: str = "v1.0"
+    last_login_at: Optional[str] = None
+    login_count: int = 0
+
+    @field_validator("policy_accepted", mode="before")
+    @classmethod
+    def _parse_policy_accepted(cls, val: Any) -> bool:
+        return bool(val) if val is not None else False
+
+    @field_validator("policy_version", mode="before")
+    @classmethod
+    def _parse_policy_version(cls, val: Any) -> str:
+        return str(val) if val else "v1.0"
+
+    @field_validator("login_count", mode="before")
+    @classmethod
+    def _parse_login_count(cls, val: Any) -> int:
+        return int(val) if val is not None else 0
 
     @field_validator("body_zones", mode="before")
     @classmethod
@@ -317,6 +337,71 @@ class NutritionAnalyzeOut(BaseModel):
     wellness: DailyWellnessOut
 
 
+class DetectedFoodItemOut(BaseModel):
+    name: str
+    portion: str
+    calories: int
+    protein_g: int
+    carbs_g: int
+    fat_g: int
+    confidence_pct: int = 92
+
+
+class NutritionPhotoAnalyzeRequest(BaseModel):
+    member_id: int
+    image_base64: str = ""
+    filename: Optional[str] = None
+    meal_type: Optional[str] = "Öğle"
+    portion_size: Literal["Küçük", "Normal", "Büyük"] = "Normal"
+    notes: Optional[str] = None
+    auto_log: bool = True
+
+
+class NutritionPhotoAnalyzeOut(BaseModel):
+    log_id: int
+    meal_type: str
+    portion_size: str
+    meal_title: str
+    total_calories: int
+    protein_g: int
+    carbs_g: int
+    fat_g: int
+    fiber_g: int
+    sugar_g: int
+    health_score: int
+    glycemic_load: str
+    burn_equivalent: str
+    analysis_engine: str
+    detected_items: List[DetectedFoodItemOut] = Field(default_factory=list)
+    coach_note: str
+    suggestions: List[str] = Field(default_factory=list)
+    wellness: DailyWellnessOut
+
+
+class NutritionMealLogOut(BaseModel):
+    id: int
+    member_id: int
+    date: str
+    created_at: str
+    source: str
+    meal_type: str
+    portion_size: str
+    meal_description: str
+    photo_thumbnail: Optional[str] = None
+    calories: int
+    protein_g: int
+    carbs_g: int
+    fat_g: int
+    fiber_g: int
+    sugar_g: int
+    health_score: int
+    glycemic_load: str
+    burn_equivalent: str
+    detected_items: List[DetectedFoodItemOut] = Field(default_factory=list)
+    coach_note: str
+    is_today: bool = False
+
+
 class ReferralInfoOut(BaseModel):
     member_id: int
     member_name: str
@@ -541,6 +626,81 @@ class MemberProfileUpdateRequest(BaseModel):
 class AttendanceUpdateRequest(BaseModel):
     booking_id: int
     status: Literal["booked", "attended", "no_show"]
+
+
+class LiveParticipantOut(BaseModel):
+    booking_id: int
+    member_id: int
+    member_name: str
+    member_phone: str
+    status: str
+    checked_in_at: Optional[str] = None
+    body_zones: Dict[str, str] = Field(default_factory=_default_zones_dict)
+    today_energy_status: Literal["high", "normal", "low"] = "normal"
+    notes: str = ""
+    remaining_credits: int = 0
+
+
+class LiveAttendanceSessionOut(BaseModel):
+    id: int
+    session_id: int
+    trainer_id: int
+    trainer_name: str
+    title: str
+    category: str = "Fonksiyonel"
+    room: str = "Ana Stüdyo"
+    date: str
+    start_time: str
+    end_time: str
+    capacity: int
+    current_enrolled: int
+    time_state: Literal["live_now", "upcoming_soon", "upcoming", "completed"]
+    session_status: str = "scheduled"
+    started_at: Optional[str] = None
+    ended_at: Optional[str] = None
+    actual_duration_minutes: Optional[int] = None
+    minutes_to_start: int = 0
+    attended_count: int = 0
+    no_show_count: int = 0
+    pending_count: int = 0
+    participants: List[LiveParticipantOut] = Field(default_factory=list)
+
+
+class TrainerLiveAttendanceOut(BaseModel):
+    trainer_id: int
+    trainer_name: str
+    server_time_iso: str
+    server_date: str
+    server_hhmm: str
+    current_active_session: Optional[LiveAttendanceSessionOut] = None
+    today_sessions: List[LiveAttendanceSessionOut] = Field(default_factory=list)
+    upcoming_sessions: List[LiveAttendanceSessionOut] = Field(default_factory=list)
+
+
+class CompleteClassResponseOut(BaseModel):
+    session_id: int
+    title: str
+    session_status: str = "completed"
+    started_at: Optional[str] = None
+    ended_at: str
+    actual_duration_minutes: int
+    attended_count: int
+    no_show_count: int
+    pending_count: int
+    message: str
+    session: LiveAttendanceSessionOut
+
+
+class AttendanceMarkOut(BaseModel):
+    booking_id: int
+    session_id: int
+    member_id: int
+    status: str
+    checked_in_at: Optional[str] = None
+    attended_count: int
+    no_show_count: int
+    pending_count: int
+    message: str
 
 
 class MemberNotesUpdateRequest(BaseModel):

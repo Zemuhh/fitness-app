@@ -7,11 +7,12 @@ import os
 import re
 import secrets
 from datetime import date, datetime, timedelta
-from typing import Dict, List, Literal, Optional
+from pathlib import Path
+from typing import Dict, List, Literal, Optional, Tuple
 from urllib.parse import parse_qs, urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session, joinedload
@@ -46,6 +47,10 @@ from schemas import AnnouncementOut, UserOut
 portal_router = APIRouter(prefix="/portal", tags=["Portal Legacy & Data Intake"])
 auth_router = APIRouter(prefix="/auth", tags=["Authentication & Google OAuth"])
 admin_router = APIRouter(prefix="/admin", tags=["Zero-Profile System Administration"])
+policy_router = APIRouter(prefix="/policy", tags=["Company Policy & KVKK Agreement"])
+
+SIGNED_POLICIES_DIR = Path(__file__).resolve().parent / "signed_policies"
+POLICY_VERSION = "v1.0"
 
 # Backward-compatible export alias
 router = portal_router
@@ -190,7 +195,185 @@ class AuthSessionOut(BaseModel):
     package_name: Optional[str] = None
     remaining_credits: Optional[int] = None
     total_credits: Optional[int] = None
+    policy_accepted: bool = False
+    policy_accepted_at: Optional[str] = None
+    policy_version: str = "v1.0"
+    last_login_at: Optional[str] = None
+    login_count: int = 0
     message: str = "Giriş başarılı."
+
+
+class CodeLoginRequest(BaseModel):
+    access_code: str = Field(..., description="Admin tarafından atanan kişisel erişim kodu (örn. ERYA-1004)")
+
+
+class AdminAccessCodeItemOut(BaseModel):
+    user_id: int
+    full_name: str
+    role: str
+    phone: str
+    access_code: str
+    is_active: bool = True
+    last_login_at: Optional[str] = None
+    login_count: int = 0
+    policy_accepted: bool = False
+    policy_accepted_at: Optional[str] = None
+    remaining_credits: int = 0
+
+
+class AdminCreateUserWithCodeRequest(BaseModel):
+    full_name: str
+    phone: Optional[str] = None
+    role: Literal["member", "trainer"] = "member"
+    custom_code: Optional[str] = None
+    initial_credits: Optional[int] = 0
+    notes: Optional[str] = ""
+    specialty: Optional[str] = None
+
+
+class AdminCreateUserWithCodeOut(BaseModel):
+    user_id: int
+    full_name: str
+    role: str
+    phone: str
+    access_code: str
+    is_active: bool = True
+    remaining_credits: int = 0
+    policy_accepted: bool = False
+    policy_accepted_at: Optional[str] = None
+    specialty: Optional[str] = None
+    notes: str = ""
+    message: str = "Kullanıcı ve kişisel erişim kodu başarıyla oluşturuldu."
+
+
+class AdminRegenerateCodeRequest(BaseModel):
+    custom_code: Optional[str] = None
+
+
+class AdminRegenerateCodeOut(BaseModel):
+    user_id: int
+    full_name: str
+    role: str
+    previous_code: Optional[str] = None
+    access_code: str
+    message: str = "Erişim kodu başarıyla yenilendi."
+
+
+class PolicySectionOut(BaseModel):
+    heading: str
+    body: str
+
+
+class PolicyCurrentOut(BaseModel):
+    version: str = "v1.0"
+    title: str
+    company_name: str
+    effective_date: str
+    sections: List[PolicySectionOut]
+    full_text: str
+    policy_accepted: bool = False
+    policy_accepted_at: Optional[str] = None
+
+
+class PolicyAcceptRequest(BaseModel):
+    user_id: Optional[int] = None
+    signer_name: str
+    accepted: bool
+
+
+class PolicyAcceptOut(BaseModel):
+    accepted: bool = True
+    already_accepted: bool = False
+    user_id: int
+    policy_version: str = "v1.0"
+    accepted_at: str
+    file_name: str
+    sha256: str
+    message: str = "Şirket politika sözleşmesi başarıyla onaylandı ve arşivlendi."
+
+
+class AdminPolicyRecordOut(BaseModel):
+    user_id: int
+    full_name: str
+    role: str
+    access_code: str
+    policy_accepted: bool
+    policy_accepted_at: Optional[str] = None
+    policy_version: str = "v1.0"
+    file_name: Optional[str] = None
+    file_exists: bool = False
+    file_size_bytes: int = 0
+
+
+class AdminPoliciesOverviewOut(BaseModel):
+    signed_count: int
+    pending_count: int
+    storage_folder: str
+    records: List[AdminPolicyRecordOut]
+
+
+class AdminPolicyDocumentOut(BaseModel):
+    user_id: int
+    full_name: str
+    file_name: str
+    accepted_at: Optional[str] = None
+    content: str
+
+
+class AdminMonthlySummaryOut(BaseModel):
+    month: str
+    month_label: str
+    total_trainer_hours: float
+    total_sessions_scheduled: int
+    total_sessions_entered: int
+    total_registered_members: int
+    logged_in_members_count: int
+    active_members_count: int
+    passive_members_count: int
+    worked_with_members_count: int
+    total_member_hours: float
+    policy_signed_count: int
+    policy_pending_count: int
+
+
+class AdminMonthlyTrainerStatOut(BaseModel):
+    trainer_id: int
+    full_name: str
+    specialty: Optional[str] = None
+    access_code: str
+    sessions_scheduled: int
+    sessions_entered: int
+    sessions_completed: int
+    total_hours_taught: float
+    total_attended_students: int
+    total_no_show_students: int
+    attendance_rate_pct: float
+    unique_members_trained: int
+
+
+class AdminMonthlyMemberStatOut(BaseModel):
+    member_id: int
+    full_name: str
+    phone: str
+    access_code: str
+    status: Literal["active", "passive"]
+    has_logged_in: bool
+    last_login_at: Optional[str] = None
+    login_count: int
+    attended_sessions: int
+    no_show_sessions: int
+    total_hours_attended: float
+    remaining_credits: int
+    policy_accepted: bool
+    policy_accepted_at: Optional[str] = None
+
+
+class AdminMonthlyAnalyticsOut(BaseModel):
+    month: str
+    month_label: str
+    summary: AdminMonthlySummaryOut
+    trainers: List[AdminMonthlyTrainerStatOut]
+    members: List[AdminMonthlyMemberStatOut]
 
 
 class PanelConfigOut(BaseModel):
@@ -806,20 +989,56 @@ def _to_package_summary(pkg: Optional[MemberPackage]) -> Optional[PortalPackageS
     )
 
 
-def _generate_unique_access_code(db: Session, user_id: int) -> str:
+def _normalize_access_code(raw_code: Optional[str]) -> str:
+    cleaned = re.sub(r"\s+", "", (raw_code or "").strip()).upper()
+    if not cleaned:
+        return ""
+    m = re.match(r"^(ERYA|FIT)(\d+)$", cleaned)
+    if m:
+        return f"{m.group(1)}-{m.group(2)}"
+    return cleaned
+
+
+def _compact_code_key(raw_code: Optional[str]) -> str:
+    return re.sub(r"[\s\-_]+", "", (raw_code or "").strip()).upper()
+
+
+def _generate_unique_access_code(
+    db: Session,
+    user_id: int,
+    prefix: str = "ERYA",
+    randomized: bool = False,
+    exclude_code: Optional[str] = None,
+) -> str:
+    existing_keys = {
+        _compact_code_key(c.access_code)
+        for c in db.query(UserAccessCredential).all()
+        if c.access_code
+    }
+    excl_key = _compact_code_key(exclude_code) if exclude_code else ""
+
+    if randomized:
+        for _ in range(200):
+            num = 1000 + secrets.randbelow(9000)
+            candidate = f"{prefix}-{num}"
+            ckey = _compact_code_key(candidate)
+            if ckey not in existing_keys and ckey != excl_key:
+                return candidate
+
     base_num = 1000 + user_id
-    candidate = f"FIT-{base_num}"
-    while db.query(UserAccessCredential).filter(UserAccessCredential.access_code == candidate).first():
+    while True:
+        candidate = f"{prefix}-{base_num}"
+        ckey = _compact_code_key(candidate)
+        if ckey not in existing_keys and ckey != excl_key:
+            return candidate
         base_num += 1
-        candidate = f"FIT-{base_num}"
-    return candidate
 
 
 def _ensure_user_credential(db: Session, user: User, pin_code: str = "1234") -> UserAccessCredential:
     cred = db.query(UserAccessCredential).filter(UserAccessCredential.user_id == user.id).first()
     if cred:
         return cred
-    code = _generate_unique_access_code(db, user.id)
+    code = _generate_unique_access_code(db, user.id, prefix="ERYA")
     cred = UserAccessCredential(
         user_id=user.id,
         access_code=code,
@@ -967,20 +1186,20 @@ def ensure_portal_initialized(db: Session) -> None:
         db.delete(su)
         dirty = True
 
-    # 1. Mevcut tüm kullanıcılara benzersiz FIT-XXXX kodu ve UserAuthAccount ata
+    # 1. Mevcut tüm kullanıcılara benzersiz ERYA-XXXX kodu ve UserAuthAccount ata
     all_users = db.query(User).order_by(User.id.asc()).all()
     existing_creds = {c.user_id: c for c in db.query(UserAccessCredential).all()}
-    used_codes = {c.access_code for c in existing_creds.values()}
+    used_codes = {_compact_code_key(c.access_code) for c in existing_creds.values()}
     existing_auth = {a.user_id: a for a in db.query(UserAuthAccount).all()}
     default_pw_hash = _hash_password("Erya2026!")
 
     for u in all_users:
         if u.id not in existing_creds:
             base_num = 1000 + u.id
-            candidate = f"FIT-{base_num}"
-            while candidate in used_codes:
+            candidate = f"ERYA-{base_num}"
+            while _compact_code_key(candidate) in used_codes:
                 base_num += 1
-                candidate = f"FIT-{base_num}"
+                candidate = f"ERYA-{base_num}"
             cred = UserAccessCredential(
                 user_id=u.id,
                 access_code=candidate,
@@ -989,7 +1208,17 @@ def ensure_portal_initialized(db: Session) -> None:
             )
             db.add(cred)
             existing_creds[u.id] = cred
-            used_codes.add(candidate)
+            used_codes.add(_compact_code_key(candidate))
+            dirty = True
+
+        if not getattr(u, "policy_version", None):
+            u.policy_version = POLICY_VERSION
+            dirty = True
+        if getattr(u, "policy_accepted", None) is None:
+            u.policy_accepted = False
+            dirty = True
+        if getattr(u, "login_count", None) is None:
+            u.login_count = 0
             dirty = True
 
         if u.id not in existing_auth:
@@ -1185,6 +1414,11 @@ def _build_admin_session_out(admin_acc: AdminAccount, sess: AuthSession, message
         package_name=None,
         remaining_credits=None,
         total_credits=None,
+        policy_accepted=True,
+        policy_accepted_at=None,
+        policy_version=POLICY_VERSION,
+        last_login_at=_now_str(),
+        login_count=1,
         message=message,
     )
 
@@ -1222,6 +1456,11 @@ def _build_user_session_out(db: Session, user: User, sess: AuthSession, message:
         package_name=pkg.package_name if pkg else None,
         remaining_credits=pkg.remaining_credits if pkg else (0 if user.role == "member" else None),
         total_credits=pkg.total_credits if pkg else (0 if user.role == "member" else None),
+        policy_accepted=bool(getattr(user, "policy_accepted", False)),
+        policy_accepted_at=getattr(user, "policy_accepted_at", None),
+        policy_version=getattr(user, "policy_version", None) or POLICY_VERSION,
+        last_login_at=getattr(user, "last_login_at", None),
+        login_count=int(getattr(user, "login_count", 0) or 0),
         message=message,
     )
 
@@ -1420,11 +1659,83 @@ def auth_login(payload: AuthLoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=401, detail="E-posta/kullanıcı adı veya şifre hatalı.")
 
     role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    user.last_login_at = _now_str()
+    user.login_count = int(user.login_count or 0) + 1
+    db.flush()
     sess = _issue_session(
         db,
         account_type="user",
         role=role_lit,
         auth_provider="password",
+        user_id=user.id,
+    )
+    return _build_user_session_out(db, user, sess, message=f"Hoş geldiniz, {user.full_name}!")
+
+
+def _resolve_user_by_access_code(db: Session, raw_code: str) -> Optional[User]:
+    """
+    Büyük/küçük harf, boşluk ve tire duyarsız olarak UserAccessCredential.access_code
+    (veya FIT-{1000+user.id} / ERYA-{1000+user.id} eşleşmesi) üzerinden üye/eğitmen bulur.
+    """
+    cleaned = (raw_code or "").strip()
+    if not cleaned:
+        return None
+
+    target_compact = _compact_code_key(cleaned)
+    if not target_compact:
+        return None
+
+    # 1. Doğrudan UserAccessCredential tablosundan (case/space/dash duyarsız) eşleştir
+    all_creds = db.query(UserAccessCredential).all()
+    for cred in all_creds:
+        if cred.access_code and _compact_code_key(cred.access_code) == target_compact:
+            user_obj = db.query(User).filter(User.id == cred.user_id).first()
+            if user_obj:
+                return user_obj
+
+    # 2. FIT-{1000+user.id} veya ERYA-{1000+user.id} uyumluluk eşleşmesi
+    m = re.match(r"^(?:FIT|ERYA)(\d+)$", target_compact)
+    if m:
+        num = int(m.group(1))
+        if num >= 1000:
+            candidate_uid = num - 1000
+            user_obj = db.query(User).filter(User.id == candidate_uid).first()
+            if user_obj:
+                return user_obj
+
+    return None
+
+
+@auth_router.post("/code-login", response_model=AuthSessionOut)
+def auth_code_login(payload: CodeLoginRequest, db: Session = Depends(get_db)):
+    """
+    Yalnızca Admin tarafından üretilen kişiye özel erişim kodu ile giriş (kayıt olma yok).
+    """
+    ensure_portal_initialized(db)
+    raw_code = (payload.access_code or "").strip()
+    if not raw_code:
+        raise HTTPException(
+            status_code=400,
+            detail="Lütfen stüdyo yöneticinizden aldığınız kişisel erişim kodunu girin.",
+        )
+
+    user = _resolve_user_by_access_code(db, raw_code)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Geçersiz erişim kodu. Lütfen size özel tanımlanan kodu kontrol edin veya stüdyo yönetimi ile iletişime geçin.",
+        )
+
+    user.last_login_at = _now_str()
+    user.login_count = int(user.login_count or 0) + 1
+    db.flush()
+
+    role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    sess = _issue_session(
+        db,
+        account_type="user",
+        role=role_lit,
+        auth_provider="access_code",
         user_id=user.id,
     )
     return _build_user_session_out(db, user, sess, message=f"Hoş geldiniz, {user.full_name}!")
@@ -1846,6 +2157,9 @@ def _complete_google_authorize_html(
         avatar_url=None,
     )
     role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    user.last_login_at = _now_str()
+    user.login_count = int(user.login_count or 0) + 1
+    db.flush()
     sess = _issue_session(
         db,
         account_type="user",
@@ -2031,6 +2345,9 @@ def google_real_oauth_callback(
         verified_google_token=True,
     )
     role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    user.last_login_at = _now_str()
+    user.login_count = int(user.login_count or 0) + 1
+    db.flush()
     sess = _issue_session(db, account_type="user", role=role_lit, auth_provider="google", user_id=user.id)
 
     exchange_code = f"erya_gcode_{secrets.token_urlsafe(24)}"
@@ -2147,6 +2464,9 @@ def auth_google_exchange(payload: GoogleAuthRequest, db: Session = Depends(get_d
         avatar_url=verified_pic,
     )
     role_lit: Literal["trainer", "member"] = "trainer" if user.role == "trainer" else "member"
+    user.last_login_at = _now_str()
+    user.login_count = int(user.login_count or 0) + 1
+    db.flush()
     sess = _issue_session(
         db,
         account_type="user",
@@ -3923,3 +4243,828 @@ def list_intake_logs(
 
     logs = query.order_by(DataIntakeLog.id.desc()).limit(limit).all()
     return [DataIntakeLogOut.model_validate(item) for item in logs]
+
+
+# ============================================================================
+# RESMİ ŞİRKET POLİTİKA SÖZLEŞMESİ, KVKK & GERÇEK KLASÖR ARŞİVİ (/policy/*)
+# ============================================================================
+
+COMPANY_POLICY_COMPANY_NAME = "ERYA Pilates & Reformer Stüdyo"
+COMPANY_POLICY_TITLE = "ERYA Pilates & Reformer Üyelik, Stüdyo Kuralları ve KVKK Aydınlatma Sözleşmesi"
+COMPANY_POLICY_EFFECTIVE_DATE = "2026-01-01"
+
+COMPANY_POLICY_SECTIONS: List[Dict[str, str]] = [
+    {
+        "heading": "1. Taraflar ve Hizmet Kapsamı",
+        "body": (
+            "İşbu sözleşme, ERYA Pilates & Reformer Stüdyo ('Stüdyo') ile stüdyo tarafından "
+            "kişiye özel dijital erişim kodu tanımlanan üye/eğitmen ('Kullanıcı') arasında "
+            "Reformer Pilates, Cadillac Tower, fonksiyonel antrenman, birebir PT seansları, "
+            "dijital randevu, yoklama ve wellness takip hizmetlerinin kullanım koşullarını düzenler."
+        ),
+    },
+    {
+        "heading": "2. Rezervasyon, Ders İptali ve Kredi Kullanım Kuralları",
+        "body": (
+            "Üye, aktif paketindeki ders kredileri karşılığında mobil/web panel üzerinden seans "
+            "rezervasyonu oluşturur; her rezervasyonda 1 ders kredisi bakiyeden anında düşülür. "
+            "Planlanan seans başlangıcından en az 6 saat önce yapılan iptallerde 1 ders kredisi "
+            "üye paketine otomatik iade edilir. Zamanında iptal edilmeyen veya katılım sağlanmayan "
+            "('Gelmedi / No-Show') seanslarda ders kredisi kullanılmış sayılır."
+        ),
+    },
+    {
+        "heading": "3. Sağlık Beyanı ve Sakatlık Bildirimi",
+        "body": (
+            "Kullanıcı, egzersiz yapmasına engel oluşturabilecek kalp-damar, tansiyon, bel/boyun "
+            "fıtığı, eklem/menisküs hassasiyeti, yakın dönem ameliyat veya gebelik gibi durumları "
+            "seans öncesinde eğitmenine ve sistemdeki Vücut Haritası / Sağlık Notları bölümüne "
+            "eksiksiz bildirmeyi taahhüt eder. Eğitmenler, bildirilen hassasiyetlere göre yay "
+            "direnci ve hareket modifikasyonu uygular."
+        ),
+    },
+    {
+        "heading": "4. Stüdyo Hijyen, Kıyafet ve Güvenlik Kuralları",
+        "body": (
+            "Tüm Reformer ve Cadillac seanslarında hijyen ve güvenlik amacıyla kaymaz tabanlı "
+            "pilates çorabı ile temiz spor kıyafeti kullanılması zorunludur. Üyeler seans saatinden "
+            "en az 10 dakika önce stüdyoda hazır bulunmalı, ekipman kullanımında eğitmenin talimatlarına "
+            "eksiksiz uymalıdır."
+        ),
+    },
+    {
+        "heading": "5. 6698 Sayılı KVKK Aydınlatma ve Açık Rıza Beyanı",
+        "body": (
+            "Ad-soyad, iletişim bilgileri, rezervasyon ve yoklama geçmişi, vücut ölçüm/postür notları "
+            "ile isteğe bağlı beslenme ve su tüketim kayıtları 6698 sayılı Kişisel Verilerin Korunması "
+            "Kanunu kapsamında yalnızca stüdyo hizmetlerinin yürütülmesi, antrenman güvenliği ve "
+            "kişiselleştirilmiş spor takibi amacıyla işlenir; üçüncü kişilerle ticari amaçla paylaşılmaz."
+        ),
+    },
+    {
+        "heading": "6. Kişiye Özel Erişim Kodu ve Dijital Onay Geçerliliği",
+        "body": (
+            "Stüdyo yönetimi tarafından üretilen kişiye özel erişim kodu (ERYA-XXXX) yalnızca ilgili "
+            "kullanıcıya aittir ve üçüncü kişilerle paylaşılamaz. İşbu sözleşmenin uygulama üzerinden "
+            "ad-soyad beyanı ile onaylanması; zaman damgası, IP bilgisi ve SHA-256 doğrulama özeti "
+            "ile birlikte stüdyo dijital arşiv klasöründe hukuki kanıt olarak tek seferlik saklanır."
+        ),
+    },
+]
+
+
+def _build_policy_full_text() -> str:
+    lines = [
+        f"{COMPANY_POLICY_COMPANY_NAME.upper()}",
+        f"{COMPANY_POLICY_TITLE}",
+        f"Sözleşme Versiyonu: {POLICY_VERSION} | Yürürlük Tarihi: {COMPANY_POLICY_EFFECTIVE_DATE}",
+        "=" * 78,
+        "",
+    ]
+    for sec in COMPANY_POLICY_SECTIONS:
+        lines.append(sec["heading"])
+        lines.append("-" * len(sec["heading"]))
+        lines.append(sec["body"])
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+def _resolve_optional_session_user(
+    db: Session,
+    authorization: Optional[str],
+    x_admin_token: Optional[str],
+    fallback_user_id: Optional[int] = None,
+) -> Tuple[Optional[AuthSession], Optional[User]]:
+    raw_token = _extract_bearer_token(authorization, x_admin_token, None)
+    sess: Optional[AuthSession] = None
+    if raw_token:
+        cand = db.query(AuthSession).filter(AuthSession.token == raw_token).first()
+        if cand and not cand.is_revoked and cand.expires_at >= _now_str():
+            sess = cand
+
+    if sess and sess.account_type == "user" and sess.user_id:
+        u = db.query(User).filter(User.id == sess.user_id).first()
+        if u:
+            return sess, u
+
+    if fallback_user_id is not None:
+        u = db.query(User).filter(User.id == fallback_user_id).first()
+        if u:
+            return sess, u
+
+    return sess, None
+
+
+@policy_router.get("/current", response_model=PolicyCurrentOut)
+def get_current_policy(
+    user_id: Optional[int] = Query(default=None),
+    authorization: Optional[str] = Header(default=None),
+    x_admin_token: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    sess, user = _resolve_optional_session_user(db, authorization, x_admin_token, user_id)
+
+    accepted = False
+    accepted_at: Optional[str] = None
+    if sess and sess.account_type == "admin" and user is None:
+        accepted = True
+    elif user is not None:
+        accepted = bool(getattr(user, "policy_accepted", False))
+        accepted_at = getattr(user, "policy_accepted_at", None)
+
+    return PolicyCurrentOut(
+        version=POLICY_VERSION,
+        title=COMPANY_POLICY_TITLE,
+        company_name=COMPANY_POLICY_COMPANY_NAME,
+        effective_date=COMPANY_POLICY_EFFECTIVE_DATE,
+        sections=[PolicySectionOut(heading=s["heading"], body=s["body"]) for s in COMPANY_POLICY_SECTIONS],
+        full_text=_build_policy_full_text(),
+        policy_accepted=accepted,
+        policy_accepted_at=accepted_at,
+    )
+
+
+@policy_router.post("/accept", response_model=PolicyAcceptOut)
+def accept_company_policy(
+    payload: PolicyAcceptRequest,
+    request: Request,
+    authorization: Optional[str] = Header(default=None),
+    x_admin_token: Optional[str] = Header(default=None),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    if not payload.accepted:
+        raise HTTPException(
+            status_code=400,
+            detail="Devam etmek için şirket politika sözleşmesini onaylamanız gerekmektedir.",
+        )
+
+    signer_name = (payload.signer_name or "").strip()
+    if len(signer_name) < 2:
+        raise HTTPException(
+            status_code=400,
+            detail="Onaylayan ad-soyad bilgisi zorunludur.",
+        )
+
+    _sess, user = _resolve_optional_session_user(db, authorization, x_admin_token, payload.user_id)
+    if not user:
+        raise HTTPException(
+            status_code=401,
+            detail="Sözleşme onayı için geçerli kullanıcı oturumu veya user_id gereklidir.",
+        )
+
+    SIGNED_POLICIES_DIR.mkdir(parents=True, exist_ok=True)
+    cred = _ensure_user_credential(db, user)
+
+    # Kullanıcı daha önce onayladıysa ve dosyası klasörde mevcutsa mevcut arşivi dön (tek seferlik garanti)
+    existing_file_name = getattr(user, "policy_file_path", None)
+    if user.policy_accepted and existing_file_name:
+        safe_existing = SIGNED_POLICIES_DIR / Path(existing_file_name).name
+        if safe_existing.is_file():
+            existing_text = safe_existing.read_text(encoding="utf-8")
+            sha_match = re.search(r"SHA-256 DOĞRULAMA ÖZETİ:\s*([a-fA-F0-9]{64})", existing_text)
+            existing_sha = (
+                sha_match.group(1)
+                if sha_match
+                else hashlib.sha256(existing_text.encode("utf-8")).hexdigest()
+            )
+            return PolicyAcceptOut(
+                accepted=True,
+                already_accepted=True,
+                user_id=user.id,
+                policy_version=user.policy_version or POLICY_VERSION,
+                accepted_at=user.policy_accepted_at or _now_str(),
+                file_name=safe_existing.name,
+                sha256=existing_sha,
+                message="Şirket politika sözleşmesi daha önce onaylanmış ve arşivlenmiştir.",
+            )
+
+    now_dt = datetime.now()
+    now_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    file_ts = now_dt.strftime("%Y%m%d_%H%M%S")
+    slug = _slugify_tr(user.full_name)[:32]
+    base_name = f"sozlesme_user_{user.id}_{slug}_{file_ts}"
+    txt_filename = f"{base_name}.txt"
+    json_filename = f"{base_name}.json"
+
+    forwarded_for = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    client_ip = forwarded_for or (request.client.host if request.client else "unknown")
+    user_agent = (request.headers.get("user-agent") or "unknown").strip()
+
+    full_policy_text = _build_policy_full_text()
+    signature_body = (
+        f"{full_policy_text}\n\n"
+        f"{'=' * 78}\n"
+        f"DİJİTAL ONAY VE ARŞİV KAYDI\n"
+        f"{'-' * 78}\n"
+        f"Onaylayan Ad Soyad : {signer_name}\n"
+        f"Kayıtlı Kullanıcı  : {user.full_name}\n"
+        f"Kullanıcı ID       : {user.id}\n"
+        f"Kullanıcı Rolü     : {user.role}\n"
+        f"Erişim Kodu        : {cred.access_code}\n"
+        f"Sözleşme Versiyonu : {POLICY_VERSION}\n"
+        f"Onay Tarih / Saat  : {now_str}\n"
+        f"İstemci IP         : {client_ip}\n"
+        f"User-Agent         : {user_agent}\n"
+    )
+    sha256_hex = hashlib.sha256(signature_body.encode("utf-8")).hexdigest()
+    final_txt_content = (
+        f"{signature_body}"
+        f"SHA-256 DOĞRULAMA ÖZETİ: {sha256_hex}\n"
+        f"{'=' * 78}\n"
+    )
+
+    json_payload = {
+        "policy_version": POLICY_VERSION,
+        "title": COMPANY_POLICY_TITLE,
+        "company_name": COMPANY_POLICY_COMPANY_NAME,
+        "effective_date": COMPANY_POLICY_EFFECTIVE_DATE,
+        "user_id": user.id,
+        "full_name": user.full_name,
+        "signer_name": signer_name,
+        "role": user.role,
+        "access_code": cred.access_code,
+        "accepted": True,
+        "accepted_at": now_str,
+        "client_ip": client_ip,
+        "user_agent": user_agent,
+        "sha256": sha256_hex,
+        "txt_file_name": txt_filename,
+        "sections": COMPANY_POLICY_SECTIONS,
+    }
+
+    txt_path = SIGNED_POLICIES_DIR / txt_filename
+    json_path = SIGNED_POLICIES_DIR / json_filename
+    txt_path.write_text(final_txt_content, encoding="utf-8")
+    json_path.write_text(json.dumps(json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    user.policy_accepted = True
+    user.policy_accepted_at = now_str
+    user.policy_version = POLICY_VERSION
+    user.policy_file_path = txt_filename
+    db.commit()
+    db.refresh(user)
+
+    return PolicyAcceptOut(
+        accepted=True,
+        already_accepted=False,
+        user_id=user.id,
+        policy_version=POLICY_VERSION,
+        accepted_at=now_str,
+        file_name=txt_filename,
+        sha256=sha256_hex,
+        message="Şirket politika sözleşmesi başarıyla onaylandı ve arşivlendi.",
+    )
+
+
+# ============================================================================
+# ADMIN ERİŞİM KODU YÖNETİMİ, SÖZLEŞME ARŞİVİ VE AYLIK ANALİTİK (/admin/*)
+# ============================================================================
+
+
+@admin_router.get("/access-codes", response_model=List[AdminAccessCodeItemOut])
+def admin_list_access_codes(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    users = db.query(User).order_by(User.id.desc()).all()
+    creds_by_uid = {c.user_id: c for c in db.query(UserAccessCredential).all()}
+    active_pkgs = db.query(MemberPackage).filter(MemberPackage.is_active == True).all()
+    pkg_by_member: Dict[int, MemberPackage] = {}
+    for p in active_pkgs:
+        if p.member_id not in pkg_by_member or p.id > pkg_by_member[p.member_id].id:
+            pkg_by_member[p.member_id] = p
+
+    items: List[AdminAccessCodeItemOut] = []
+    dirty = False
+    for u in users:
+        cred = creds_by_uid.get(u.id)
+        if not cred:
+            cred = _ensure_user_credential(db, u)
+            creds_by_uid[u.id] = cred
+            dirty = True
+        pkg = pkg_by_member.get(u.id) if u.role == "member" else None
+        items.append(
+            AdminAccessCodeItemOut(
+                user_id=u.id,
+                full_name=u.full_name,
+                role=u.role,
+                phone=u.phone or "",
+                access_code=cred.access_code,
+                is_active=True,
+                last_login_at=getattr(u, "last_login_at", None),
+                login_count=int(getattr(u, "login_count", 0) or 0),
+                policy_accepted=bool(getattr(u, "policy_accepted", False)),
+                policy_accepted_at=getattr(u, "policy_accepted_at", None),
+                remaining_credits=int(pkg.remaining_credits) if pkg else 0,
+            )
+        )
+    if dirty:
+        db.commit()
+    return items
+
+
+@admin_router.post("/members/create-with-code", response_model=AdminCreateUserWithCodeOut)
+def admin_create_user_with_code(
+    payload: AdminCreateUserWithCodeRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    full_name = (payload.full_name or "").strip()
+    if not full_name:
+        raise HTTPException(status_code=400, detail="Ad Soyad alanı zorunludur.")
+
+    role = payload.role if payload.role in ("member", "trainer") else "member"
+    phone = (payload.phone or "").strip() or "0500 000 00 00"
+    notes = (payload.notes or "").strip()
+    specialty = (payload.specialty or "").strip() or (
+        "Reformer & Fonksiyonel Pilates" if role == "trainer" else None
+    )
+
+    desired_code: Optional[str] = None
+    if payload.custom_code and payload.custom_code.strip():
+        desired_code = _normalize_access_code(payload.custom_code)
+        if len(desired_code) < 3:
+            raise HTTPException(status_code=400, detail="Özel erişim kodu en az 3 karakter olmalıdır.")
+        target_key = _compact_code_key(desired_code)
+        for c in db.query(UserAccessCredential).all():
+            if _compact_code_key(c.access_code) == target_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"'{desired_code}' erişim kodu zaten başka bir kullanıcıya atanmış.",
+                )
+
+    new_user = User(
+        full_name=full_name,
+        phone=phone,
+        role=role,
+        notes=notes,
+        specialty=specialty,
+        streak_days=0,
+        body_zones=json.dumps(infer_default_body_zones(full_name, notes), ensure_ascii=False),
+        referral_count=0,
+        policy_accepted=False,
+        policy_version=POLICY_VERSION,
+        login_count=0,
+    )
+    db.add(new_user)
+    db.flush()
+
+    new_user.referral_code = generate_unique_referral_code(db, full_name, exclude_user_id=new_user.id)
+    db.flush()
+
+    final_code = desired_code or _generate_unique_access_code(db, new_user.id, prefix="ERYA")
+    cred = UserAccessCredential(
+        user_id=new_user.id,
+        access_code=final_code,
+        pin_code="1234",
+        created_at=_now_str(),
+    )
+    db.add(cred)
+    db.flush()
+
+    _ensure_user_auth_account(db, new_user)
+
+    init_credits = max(0, int(payload.initial_credits or 0))
+    if role == "member" and init_credits > 0:
+        db.add(
+            MemberPackage(
+                member_id=new_user.id,
+                package_name=f"{init_credits} Seans Stüdyo Paketi",
+                total_credits=init_credits,
+                remaining_credits=init_credits,
+                expiry_date=(date.today() + timedelta(days=45)).strftime("%Y-%m-%d"),
+                is_active=True,
+            )
+        )
+
+    db.commit()
+    db.refresh(new_user)
+
+    return AdminCreateUserWithCodeOut(
+        user_id=new_user.id,
+        full_name=new_user.full_name,
+        role=new_user.role,
+        phone=new_user.phone or "",
+        access_code=final_code,
+        is_active=True,
+        remaining_credits=init_credits if role == "member" else 0,
+        policy_accepted=False,
+        policy_accepted_at=None,
+        specialty=new_user.specialty,
+        notes=new_user.notes or "",
+        message=f"{new_user.full_name} için {final_code} kişisel erişim kodu oluşturuldu.",
+    )
+
+
+@admin_router.post("/users/{user_id}/regenerate-code", response_model=AdminRegenerateCodeOut)
+def admin_regenerate_user_code(
+    user_id: int,
+    payload: Optional[AdminRegenerateCodeRequest] = Body(default=None),
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+
+    cred = db.query(UserAccessCredential).filter(UserAccessCredential.user_id == user.id).first()
+    previous_code = cred.access_code if cred else None
+
+    custom_raw = (payload.custom_code or "").strip() if payload and payload.custom_code else ""
+    if custom_raw:
+        new_code = _normalize_access_code(custom_raw)
+        if len(new_code) < 3:
+            raise HTTPException(status_code=400, detail="Özel erişim kodu en az 3 karakter olmalıdır.")
+        target_key = _compact_code_key(new_code)
+        for existing in db.query(UserAccessCredential).filter(UserAccessCredential.user_id != user.id).all():
+            if _compact_code_key(existing.access_code) == target_key:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"'{new_code}' erişim kodu zaten başka bir kullanıcı tarafından kullanılıyor.",
+                )
+    else:
+        new_code = _generate_unique_access_code(
+            db,
+            user.id,
+            prefix="ERYA",
+            randomized=True,
+            exclude_code=previous_code,
+        )
+
+    if cred:
+        cred.access_code = new_code
+    else:
+        cred = UserAccessCredential(
+            user_id=user.id,
+            access_code=new_code,
+            pin_code="1234",
+            created_at=_now_str(),
+        )
+        db.add(cred)
+
+    db.commit()
+    return AdminRegenerateCodeOut(
+        user_id=user.id,
+        full_name=user.full_name,
+        role=user.role,
+        previous_code=previous_code,
+        access_code=new_code,
+        message=f"{user.full_name} için yeni erişim kodu: {new_code}",
+    )
+
+
+@admin_router.get("/policies", response_model=AdminPoliciesOverviewOut)
+def admin_list_policies(
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    SIGNED_POLICIES_DIR.mkdir(parents=True, exist_ok=True)
+
+    users = db.query(User).order_by(User.id.asc()).all()
+    creds_by_uid = {c.user_id: c for c in db.query(UserAccessCredential).all()}
+
+    records: List[AdminPolicyRecordOut] = []
+    signed_count = 0
+    pending_count = 0
+
+    for u in users:
+        cred = creds_by_uid.get(u.id) or _ensure_user_credential(db, u)
+        accepted = bool(getattr(u, "policy_accepted", False))
+        fname = getattr(u, "policy_file_path", None)
+        file_exists = False
+        file_size = 0
+
+        if fname:
+            candidate = SIGNED_POLICIES_DIR / Path(fname).name
+            if candidate.is_file():
+                file_exists = True
+                file_size = candidate.stat().st_size
+                fname = candidate.name
+
+        if accepted:
+            signed_count += 1
+        else:
+            pending_count += 1
+
+        records.append(
+            AdminPolicyRecordOut(
+                user_id=u.id,
+                full_name=u.full_name,
+                role=u.role,
+                access_code=cred.access_code,
+                policy_accepted=accepted,
+                policy_accepted_at=getattr(u, "policy_accepted_at", None),
+                policy_version=getattr(u, "policy_version", None) or POLICY_VERSION,
+                file_name=fname,
+                file_exists=file_exists,
+                file_size_bytes=file_size,
+            )
+        )
+
+    records.sort(
+        key=lambda r: (
+            0 if r.policy_accepted else 1,
+            r.policy_accepted_at or "",
+            r.user_id,
+        )
+    )
+    db.commit()
+
+    return AdminPoliciesOverviewOut(
+        signed_count=signed_count,
+        pending_count=pending_count,
+        storage_folder=str(SIGNED_POLICIES_DIR),
+        records=records,
+    )
+
+
+@admin_router.get("/policies/{user_id}/document", response_model=AdminPolicyDocumentOut)
+def admin_get_policy_document(
+    user_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="Kullanıcı bulunamadı.")
+
+    target_path: Optional[Path] = None
+    if user.policy_file_path:
+        cand = SIGNED_POLICIES_DIR / Path(user.policy_file_path).name
+        if cand.is_file():
+            target_path = cand
+
+    if target_path is None and SIGNED_POLICIES_DIR.is_dir():
+        matches = sorted(SIGNED_POLICIES_DIR.glob(f"sozlesme_user_{user.id}_*.txt"), reverse=True)
+        if matches:
+            target_path = matches[0]
+
+    if target_path is None or not target_path.is_file():
+        raise HTTPException(
+            status_code=404,
+            detail="Bu kullanıcıya ait imzalanmış sözleşme dosyası arşivde bulunamadı.",
+        )
+
+    content = target_path.read_text(encoding="utf-8")
+    return AdminPolicyDocumentOut(
+        user_id=user.id,
+        full_name=user.full_name,
+        file_name=target_path.name,
+        accepted_at=getattr(user, "policy_accepted_at", None),
+        content=content,
+    )
+
+
+_TR_MONTH_NAMES = {
+    1: "Ocak",
+    2: "Şubat",
+    3: "Mart",
+    4: "Nisan",
+    5: "Mayıs",
+    6: "Haziran",
+    7: "Temmuz",
+    8: "Ağustos",
+    9: "Eylül",
+    10: "Ekim",
+    11: "Kasım",
+    12: "Aralık",
+}
+
+
+def _session_duration_hours(session: ClassSession) -> float:
+    actual_min = getattr(session, "actual_duration_minutes", None)
+    if actual_min is not None and actual_min > 0:
+        return round(actual_min / 60.0, 4)
+    try:
+        st = datetime.strptime((session.start_time or "").strip(), "%H:%M")
+        en = datetime.strptime((session.end_time or "").strip(), "%H:%M")
+        diff_min = (en - st).total_seconds() / 60.0
+        if diff_min > 0:
+            return round(diff_min / 60.0, 4)
+    except Exception:
+        pass
+    return round(50.0 / 60.0, 4)
+
+
+@admin_router.get("/analytics/monthly", response_model=AdminMonthlyAnalyticsOut)
+def admin_monthly_analytics(
+    month: Optional[str] = Query(default=None, description="YYYY-MM formatında ay (boşsa mevcut ay)"),
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    ensure_portal_initialized(db)
+    today = date.today()
+    today_iso = today.strftime("%Y-%m-%d")
+
+    target_month = (month or "").strip() or today.strftime("%Y-%m")
+    if not re.match(r"^\d{4}-\d{2}$", target_month):
+        raise HTTPException(status_code=400, detail="month parametresi YYYY-MM formatında olmalıdır.")
+
+    yr_int, mo_int = int(target_month[:4]), int(target_month[5:7])
+    if not (1 <= mo_int <= 12):
+        raise HTTPException(status_code=400, detail="Geçersiz ay değeri.")
+    month_label = f"{_TR_MONTH_NAMES.get(mo_int, str(mo_int))} {yr_int}"
+
+    trainers = db.query(User).filter(User.role == "trainer").order_by(User.id.asc()).all()
+    members = db.query(User).filter(User.role == "member").order_by(User.id.asc()).all()
+    creds_by_uid = {c.user_id: c for c in db.query(UserAccessCredential).all()}
+
+    active_pkgs = db.query(MemberPackage).filter(MemberPackage.is_active == True).all()
+    pkg_by_member: Dict[int, MemberPackage] = {}
+    for p in active_pkgs:
+        if p.member_id not in pkg_by_member or p.id > pkg_by_member[p.member_id].id:
+            pkg_by_member[p.member_id] = p
+
+    auth_session_user_ids = {
+        row[0]
+        for row in db.query(AuthSession.user_id)
+        .filter(AuthSession.user_id.isnot(None))
+        .distinct()
+        .all()
+    }
+
+    month_sessions = (
+        db.query(ClassSession)
+        .options(joinedload(ClassSession.bookings))
+        .filter(ClassSession.date.like(f"{target_month}-%"))
+        .order_by(ClassSession.date.asc(), ClassSession.start_time.asc())
+        .all()
+    )
+
+    sessions_by_trainer: Dict[int, List[ClassSession]] = {}
+    for s in month_sessions:
+        sessions_by_trainer.setdefault(s.trainer_id, []).append(s)
+
+    # Üye bazlı o ayki katılım istatistikleri
+    member_attended_count: Dict[int, int] = {}
+    member_no_show_count: Dict[int, int] = {}
+    member_hours_attended: Dict[int, float] = {}
+    member_has_month_booking: set = set()
+
+    for s in month_sessions:
+        dur_h = _session_duration_hours(s)
+        for b in s.bookings:
+            if b.status != "cancelled":
+                member_has_month_booking.add(b.member_id)
+            if b.status == "attended":
+                member_attended_count[b.member_id] = member_attended_count.get(b.member_id, 0) + 1
+                member_hours_attended[b.member_id] = member_hours_attended.get(b.member_id, 0.0) + dur_h
+            elif b.status == "no_show":
+                member_no_show_count[b.member_id] = member_no_show_count.get(b.member_id, 0) + 1
+
+    trainer_stats: List[AdminMonthlyTrainerStatOut] = []
+    total_trainer_hours = 0.0
+    total_sessions_scheduled = 0
+    total_sessions_entered = 0
+
+    for t in trainers:
+        cred = creds_by_uid.get(t.id) or _ensure_user_credential(db, t)
+        t_sessions = sessions_by_trainer.get(t.id, [])
+        sched_cnt = len(t_sessions)
+        entered_cnt = 0
+        completed_cnt = 0
+        hours_taught = 0.0
+        attended_students = 0
+        no_show_students = 0
+        unique_trained: set = set()
+
+        for s in t_sessions:
+            s_status = getattr(s, "session_status", None) or "scheduled"
+            s_bookings = [b for b in s.bookings if b.status != "cancelled"]
+            s_attended = [b for b in s_bookings if b.status == "attended"]
+            s_no_show = [b for b in s_bookings if b.status == "no_show"]
+
+            has_attendance_activity = (len(s_attended) + len(s_no_show)) > 0
+            is_entered = (
+                s_status in ("in_progress", "completed")
+                or bool(getattr(s, "started_at", None))
+                or has_attendance_activity
+            )
+            is_completed = (s_status == "completed") or (s.date < today_iso and has_attendance_activity)
+
+            if is_entered:
+                entered_cnt += 1
+                hours_taught += _session_duration_hours(s)
+            if is_completed:
+                completed_cnt += 1
+
+            attended_students += len(s_attended)
+            no_show_students += len(s_no_show)
+            for b in s_attended:
+                unique_trained.add(b.member_id)
+
+        denom = attended_students + no_show_students
+        att_rate = round((attended_students / denom) * 100.0, 1) if denom > 0 else 0.0
+        hours_taught_r = round(hours_taught, 2)
+
+        total_trainer_hours += hours_taught
+        total_sessions_scheduled += sched_cnt
+        total_sessions_entered += entered_cnt
+
+        trainer_stats.append(
+            AdminMonthlyTrainerStatOut(
+                trainer_id=t.id,
+                full_name=t.full_name,
+                specialty=t.specialty,
+                access_code=cred.access_code,
+                sessions_scheduled=sched_cnt,
+                sessions_entered=entered_cnt,
+                sessions_completed=completed_cnt,
+                total_hours_taught=hours_taught_r,
+                total_attended_students=attended_students,
+                total_no_show_students=no_show_students,
+                attendance_rate_pct=att_rate,
+                unique_members_trained=len(unique_trained),
+            )
+        )
+
+    member_stats: List[AdminMonthlyMemberStatOut] = []
+    logged_in_members_count = 0
+    active_members_count = 0
+    passive_members_count = 0
+    worked_with_members_count = 0
+    total_member_hours = 0.0
+    policy_signed_count = 0
+    policy_pending_count = 0
+
+    for m in members:
+        cred = creds_by_uid.get(m.id) or _ensure_user_credential(db, m)
+        pkg = pkg_by_member.get(m.id)
+        rem_credits = int(pkg.remaining_credits) if pkg else 0
+        login_cnt = int(getattr(m, "login_count", 0) or 0)
+        last_login = getattr(m, "last_login_at", None)
+        has_logged_in = (login_cnt > 0) or bool(last_login) or (m.id in auth_session_user_ids)
+        att_cnt = member_attended_count.get(m.id, 0)
+        ns_cnt = member_no_show_count.get(m.id, 0)
+        hrs_att = round(member_hours_attended.get(m.id, 0.0), 2)
+        pol_acc = bool(getattr(m, "policy_accepted", False))
+        pol_at = getattr(m, "policy_accepted_at", None)
+
+        is_active_member = (att_cnt > 0) or has_logged_in or (m.id in member_has_month_booking)
+        m_status: Literal["active", "passive"] = "active" if is_active_member else "passive"
+
+        if has_logged_in:
+            logged_in_members_count += 1
+        if is_active_member:
+            active_members_count += 1
+        else:
+            passive_members_count += 1
+        if att_cnt > 0:
+            worked_with_members_count += 1
+        total_member_hours += member_hours_attended.get(m.id, 0.0)
+        if pol_acc:
+            policy_signed_count += 1
+        else:
+            policy_pending_count += 1
+
+        member_stats.append(
+            AdminMonthlyMemberStatOut(
+                member_id=m.id,
+                full_name=m.full_name,
+                phone=m.phone or "",
+                access_code=cred.access_code,
+                status=m_status,
+                has_logged_in=has_logged_in,
+                last_login_at=last_login,
+                login_count=login_cnt,
+                attended_sessions=att_cnt,
+                no_show_sessions=ns_cnt,
+                total_hours_attended=hrs_att,
+                remaining_credits=rem_credits,
+                policy_accepted=pol_acc,
+                policy_accepted_at=pol_at,
+            )
+        )
+
+    db.commit()
+
+    summary = AdminMonthlySummaryOut(
+        month=target_month,
+        month_label=month_label,
+        total_trainer_hours=round(total_trainer_hours, 2),
+        total_sessions_scheduled=total_sessions_scheduled,
+        total_sessions_entered=total_sessions_entered,
+        total_registered_members=len(members),
+        logged_in_members_count=logged_in_members_count,
+        active_members_count=active_members_count,
+        passive_members_count=passive_members_count,
+        worked_with_members_count=worked_with_members_count,
+        total_member_hours=round(total_member_hours, 2),
+        policy_signed_count=policy_signed_count,
+        policy_pending_count=policy_pending_count,
+    )
+
+    return AdminMonthlyAnalyticsOut(
+        month=target_month,
+        month_label=month_label,
+        summary=summary,
+        trainers=trainer_stats,
+        members=member_stats,
+    )

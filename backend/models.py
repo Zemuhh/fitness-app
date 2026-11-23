@@ -207,6 +207,14 @@ class User(Base):
     referral_code = Column(String(40), nullable=True, index=True)
     referral_count = Column(Integer, nullable=False, default=0)
 
+    # Şirket Politika Sözleşmesi & Giriş Takip Alanları
+    policy_accepted = Column(Boolean, nullable=False, default=False)
+    policy_accepted_at = Column(String(40), nullable=True)
+    policy_version = Column(String(20), nullable=False, default="v1.0")
+    policy_file_path = Column(String(260), nullable=True)
+    last_login_at = Column(String(40), nullable=True)
+    login_count = Column(Integer, nullable=False, default=0)
+
     packages = relationship(
         "MemberPackage",
         back_populates="member",
@@ -234,6 +242,11 @@ class User(Base):
     )
     wellness_logs = relationship(
         "DailyWellness",
+        back_populates="member",
+        cascade="all, delete-orphan",
+    )
+    meal_logs = relationship(
+        "NutritionMealLog",
         back_populates="member",
         cascade="all, delete-orphan",
     )
@@ -283,6 +296,10 @@ class ClassSession(Base):
     end_time = Column(String(10), nullable=False)  # HH:MM
     capacity = Column(Integer, nullable=False)
     current_enrolled = Column(Integer, default=0, nullable=False)
+    started_at = Column(String(40), nullable=True)
+    ended_at = Column(String(40), nullable=True)
+    actual_duration_minutes = Column(Integer, nullable=True)
+    session_status = Column(String(30), nullable=False, default="scheduled")  # 'scheduled' | 'in_progress' | 'completed'
 
     trainer = relationship("User", back_populates="trained_sessions")
     bookings = relationship(
@@ -305,6 +322,7 @@ class Booking(Base):
     member_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     package_id = Column(Integer, ForeignKey("member_packages.id"), nullable=False)
     status = Column(String(20), default="booked", nullable=False)  # 'booked' | 'attended' | 'cancelled' | 'no_show'
+    checked_in_at = Column(String(40), nullable=True)
 
     session = relationship("ClassSession", back_populates="bookings")
     member = relationship("User", back_populates="bookings")
@@ -363,3 +381,30 @@ class DailyWellness(Base):
     fat_g = Column(Integer, nullable=False, default=0)
 
     member = relationship("User", back_populates="wellness_logs")
+
+
+class NutritionMealLog(Base):
+    __tablename__ = "nutrition_meal_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    member_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
+    date = Column(String(20), nullable=False, index=True)  # YYYY-MM-DD
+    created_at = Column(String(40), nullable=False)  # YYYY-MM-DD HH:MM:SS
+    source = Column(String(20), nullable=False, default="photo")  # 'photo' | 'text'
+    meal_type = Column(String(40), nullable=False, default="Öğle")
+    portion_size = Column(String(30), nullable=False, default="Normal")
+    meal_description = Column(Text, nullable=False, default="")
+    photo_thumbnail = Column(Text, nullable=True)
+    calories = Column(Integer, nullable=False, default=0)
+    protein_g = Column(Integer, nullable=False, default=0)
+    carbs_g = Column(Integer, nullable=False, default=0)
+    fat_g = Column(Integer, nullable=False, default=0)
+    fiber_g = Column(Integer, nullable=False, default=0)
+    sugar_g = Column(Integer, nullable=False, default=0)
+    health_score = Column(Integer, nullable=False, default=75)
+    glycemic_load = Column(String(30), nullable=False, default="Orta")
+    burn_equivalent = Column(String(180), nullable=False, default="")
+    detected_items_json = Column(Text, nullable=False, default="[]")
+    coach_note = Column(Text, nullable=False, default="")
+
+    member = relationship("User", back_populates="meal_logs")

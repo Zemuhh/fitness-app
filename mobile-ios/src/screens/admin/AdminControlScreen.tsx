@@ -16,12 +16,14 @@ import {
   AlertTriangle,
   ArrowRight,
   Award,
+  BarChart3,
   Calendar,
   CalendarPlus,
   CheckCircle2,
   CreditCard,
   Edit3,
   Eye,
+  KeyRound,
   Layers,
   LogOut,
   Megaphone,
@@ -51,6 +53,10 @@ import {
   AdminTrainerItem,
 } from '@/types/authAdmin';
 import { addMinutesToHhMm, getTodayIso, getUpcomingIsoDates } from '@/utils/dateHelpers';
+import {
+  AdminCodesPoliciesView,
+  AdminMonthlyAnalyticsView,
+} from './AdminAnalyticsCodesSection';
 
 export interface AdminControlScreenProps {
   onClose?: () => void;
@@ -59,7 +65,13 @@ export interface AdminControlScreenProps {
   onDataChanged?: () => void;
 }
 
-type AdminPrimaryTab = 'paneller' | 'haberler' | 'ogretmenler' | 'sistem';
+type AdminPrimaryTab =
+  | 'paneller'
+  | 'haberler'
+  | 'ogretmenler'
+  | 'sistem'
+  | 'analitik'
+  | 'kodlar';
 type SystemSubTab = 'musteriler' | 'dersler' | 'odemeler';
 
 const UI = {
@@ -2022,7 +2034,7 @@ export function AdminControlScreen({
         </View>
       </View>
 
-      {/* Ana 4 Sekme Navigasyonu */}
+      {/* Ana Sekme Navigasyonu (Yatay Kaydırılabilir) */}
       <View style={styles.primaryTabsWrap}>
         <ScrollView
           horizontal
@@ -2034,6 +2046,8 @@ export function AdminControlScreen({
             { key: 'haberler' as const, label: 'Yeni Haber Yayınla', Icon: Megaphone },
             { key: 'ogretmenler' as const, label: 'Yeni Öğretmen Ekle', Icon: Award },
             { key: 'sistem' as const, label: 'Müşteriler & Sistem', Icon: Users },
+            { key: 'analitik' as const, label: 'Raporlar', Icon: BarChart3 },
+            { key: 'kodlar' as const, label: 'Kodlar & Politika', Icon: KeyRound },
           ].map((tab) => {
             const active = activeTab === tab.key;
             const TabIcon = tab.Icon;
@@ -2089,6 +2103,15 @@ export function AdminControlScreen({
         {activeTab === 'haberler' && renderNewsTab()}
         {activeTab === 'ogretmenler' && renderTrainersTab()}
         {activeTab === 'sistem' && renderSystemTab()}
+        {activeTab === 'analitik' && <AdminMonthlyAnalyticsView />}
+        {activeTab === 'kodlar' && (
+          <AdminCodesPoliciesView
+            onDataChanged={() => {
+              loadAllAdminData(true);
+              notifySystemUpdated();
+            }}
+          />
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );

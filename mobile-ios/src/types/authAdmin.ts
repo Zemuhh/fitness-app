@@ -38,6 +38,9 @@ export interface AuthSessionOut {
   package_name: string | null;
   remaining_credits: number | null;
   total_credits: number | null;
+  policy_accepted?: boolean;
+  policy_accepted_at?: string | null;
+  policy_version?: string;
   message: string;
 }
 
@@ -59,6 +62,35 @@ export interface AuthSessionUser {
   is_admin: boolean;
   available_panels: ActivePanelMode[];
   default_panel: ActivePanelMode;
+  policy_accepted?: boolean;
+  policy_accepted_at?: string | null;
+  policy_version?: string;
+}
+
+export interface PolicySection {
+  heading: string;
+  body: string;
+}
+
+export interface CurrentPolicyResponse {
+  version: string;
+  title: string;
+  company_name: string;
+  effective_date: string;
+  sections: PolicySection[];
+  full_text: string;
+  policy_accepted?: boolean;
+}
+
+export interface PolicyAcceptResponse {
+  accepted: boolean;
+  already_accepted: boolean;
+  user_id: number;
+  policy_version: string;
+  accepted_at: string;
+  file_name: string;
+  sha256: string;
+  message: string;
 }
 
 export interface AuthLoginPayload {

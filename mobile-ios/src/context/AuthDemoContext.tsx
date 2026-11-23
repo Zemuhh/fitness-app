@@ -76,6 +76,9 @@ function mapSessionToAuthUser(session: AuthSessionOut): AuthSessionUser {
     default_panel: isAdmin
       ? 'admin'
       : session.default_panel || (session.role === 'trainer' ? 'trainer' : 'member'),
+    policy_accepted: isAdmin ? true : Boolean(session.policy_accepted),
+    policy_accepted_at: isAdmin ? null : session.policy_accepted_at ?? null,
+    policy_version: session.policy_version,
   };
 }
 
@@ -139,6 +142,8 @@ export interface AuthDemoContextValue {
   reloadPanelConfig: () => Promise<void>;
   switchPanel: (panel: ActivePanelMode, targetUser?: AppUser) => void;
   returnToAdminPanel: () => void;
+  loginWithAccessCode: (accessCode: string) => Promise<void>;
+  markPolicyAccepted: (acceptedAt?: string) => void;
   loginWithPassword: (identifier: string, password: string) => Promise<AuthSessionOut>;
   loginWithGoogle: () => Promise<void>;
   completeTokenLogin: (token: string) => Promise<AuthSessionOut>;
@@ -280,6 +285,33 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
     },
     [applyAuthenticatedSession]
   );
+
+  const loginWithAccessCode = useCallback(
+    async (accessCode: string): Promise<void> => {
+      const normalizedCode = accessCode.trim().toUpperCase();
+      if (!normalizedCode) {
+        throw new Error('Lütfen erişim kodunuzu girin.');
+      }
+      const session = await apiRequest<AuthSessionOut>('/auth/code-login', {
+        method: 'POST',
+        body: JSON.stringify({ access_code: normalizedCode }),
+      });
+      await applyAuthenticatedSession(session);
+    },
+    [applyAuthenticatedSession]
+  );
+
+  const markPolicyAccepted = useCallback((acceptedAt?: string): void => {
+    setAuthUser((prev) =>
+      prev
+        ? {
+            ...prev,
+            policy_accepted: true,
+            policy_accepted_at: acceptedAt ?? new Date().toISOString(),
+          }
+        : prev
+    );
+  }, []);
 
   const loginWithPassword = useCallback(
     async (identifier: string, password: string): Promise<AuthSessionOut> => {
@@ -563,6 +595,8 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
       reloadPanelConfig,
       switchPanel,
       returnToAdminPanel,
+      loginWithAccessCode,
+      markPolicyAccepted,
       loginWithPassword,
       loginWithGoogle,
       completeTokenLogin,
@@ -589,6 +623,8 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
       reloadPanelConfig,
       switchPanel,
       returnToAdminPanel,
+      loginWithAccessCode,
+      markPolicyAccepted,
       loginWithPassword,
       loginWithGoogle,
       completeTokenLogin,

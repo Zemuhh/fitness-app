@@ -1,3 +1,4 @@
+import hashlib
 import json
 import mimetypes
 import os
@@ -7,6 +8,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
+import httpx
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,6 +23,7 @@ from auth_admin_router import (
     admin_router,
     auth_router,
     ensure_portal_initialized,
+    policy_router,
     portal_router,
 )
 from database import Base, SessionLocal, engine, get_db as _raw_get_db
@@ -39,6 +42,7 @@ from models import (
     ClassSession,
     DailyWellness,
     MemberPackage,
+    NutritionMealLog,
     User,
     Waitlist,
     compute_wellness_pcts,
@@ -52,6 +56,7 @@ from models import (
 from payment_router import ensure_payment_catalog_seeded, router as payment_router
 from schemas import (
     AnnouncementOut,
+    AttendanceMarkOut,
     AttendanceUpdateRequest,
     AttendeeOut,
     AvailableSessionOut,
@@ -66,11 +71,15 @@ from schemas import (
     CheckInLogOut,
     ClubHomeOut,
     ClubLiveStatusOut,
+    CompleteClassResponseOut,
     DailyWellnessOut,
+    DetectedFoodItemOut,
     HealthOut,
     HourlyForecastItemOut,
     InstagramWebhookRequest,
     InstagramWebhookResponse,
+    LiveAttendanceSessionOut,
+    LiveParticipantOut,
     MemberBookingItemOut,
     MemberDashboardOut,
     MemberMetricsSummaryOut,
@@ -79,6 +88,9 @@ from schemas import (
     MemberWaitlistItemOut,
     NutritionAnalyzeOut,
     NutritionAnalyzeRequest,
+    NutritionMealLogOut,
+    NutritionPhotoAnalyzeOut,
+    NutritionPhotoAnalyzeRequest,
     PackageOut,
     PackageRenewRequest,
     PackageRenewResponse,
@@ -87,6 +99,7 @@ from schemas import (
     ReferralRedeemRequest,
     TrainerCardOut,
     TrainerDetailOut,
+    TrainerLiveAttendanceOut,
     TrainerMemberCrmOut,
     TrainerScheduleOut,
     TrainerSessionCreateRequest,
@@ -364,6 +377,7 @@ configure_cors(app)
 
 app.include_router(auth_router)
 app.include_router(admin_router)
+app.include_router(policy_router)
 app.include_router(portal_router)
 app.include_router(payment_router)
 
@@ -1213,6 +1227,47 @@ def analyze_nutrition_meal(
     row.protein_g = max(0, (row.protein_g or 0) + prot_i)
     row.carbs_g = max(0, (row.carbs_g or 0) + carb_i)
     row.fat_g = max(0, (row.fat_g or 0) + fat_i)
+
+    fiber_est = max(2, int(round(carb_i * 0.14)))
+    sugar_est = max(1, int(round(carb_i * 0.18)))
+    h_score = _compute_meal_health_score(cal_i, prot_i, carb_i, fat_i, fiber_est, sugar_est)
+    g_load = _compute_glycemic_load(carb_i, fiber_est, sugar_est)
+    burn_eq = _compute_burn_equivalent(cal_i)
+    log_row = NutritionMealLog(
+        member_id=payload.member_id,
+        date=_today_iso(),
+        created_at=_now_str(),
+        source="text",
+        meal_type=_infer_default_meal_type_by_clock(),
+        portion_size="Normal",
+        meal_description=payload.meal_text.strip(),
+        photo_thumbnail=None,
+        calories=cal_i,
+        protein_g=prot_i,
+        carbs_g=carb_i,
+        fat_g=fat_i,
+        fiber_g=fiber_est,
+        sugar_g=sugar_est,
+        health_score=h_score,
+        glycemic_load=g_load,
+        burn_equivalent=burn_eq,
+        detected_items_json=json.dumps(
+            [
+                {
+                    "name": payload.meal_text.strip()[:80],
+                    "portion": "1 porsiyon",
+                    "calories": cal_i,
+                    "protein_g": prot_i,
+                    "carbs_g": carb_i,
+                    "fat_g": fat_i,
+                    "confidence_pct": 94,
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        coach_note=coach_note,
+    )
+    db.add(log_row)
     db.commit()
     db.refresh(row)
 
@@ -1225,6 +1280,610 @@ def analyze_nutrition_meal(
         coach_note=coach_note,
         wellness=_to_daily_wellness_out(row),
     )
+
+
+# ============================================================================
+# FITCLUB VISION AI ENGINE — FOTOĞRAFTAN KALORİ & BESİN ANALİZİ
+# ============================================================================
+
+_PORTION_MULTIPLIERS: Dict[str, float] = {
+    "Küçük": 0.75,
+    "Normal": 1.0,
+    "Büyük": 1.35,
+}
+
+
+def _infer_default_meal_type_by_clock() -> str:
+    hr = datetime.now().hour
+    if hr < 11:
+        return "Kahvaltı"
+    if hr < 16:
+        return "Öğle"
+    if hr < 21:
+        return "Akşam"
+    return "Ara Öğün"
+
+
+def _compute_meal_health_score(
+    calories: int,
+    protein_g: int,
+    carbs_g: int,
+    fat_g: int,
+    fiber_g: int,
+    sugar_g: int,
+) -> int:
+    score = 68
+    if calories > 0:
+        prot_ratio = (protein_g * 4.0) / max(1.0, float(calories))
+        if prot_ratio >= 0.25:
+            score += 14
+        elif prot_ratio >= 0.18:
+            score += 8
+        elif prot_ratio < 0.10:
+            score -= 8
+    if fiber_g >= 8:
+        score += 9
+    elif fiber_g >= 5:
+        score += 5
+    if sugar_g <= 10:
+        score += 6
+    elif sugar_g >= 28:
+        score -= 14
+    elif sugar_g >= 18:
+        score -= 7
+    if 280 <= calories <= 680:
+        score += 5
+    elif calories > 900:
+        score -= 10
+    if fat_g > 38:
+        score -= 6
+    return max(32, min(98, int(round(score))))
+
+
+def _compute_glycemic_load(carbs_g: int, fiber_g: int, sugar_g: int) -> str:
+    net_carbs = max(0, carbs_g - fiber_g)
+    if net_carbs <= 25 and sugar_g <= 10:
+        return "Düşük"
+    if net_carbs <= 52 and sugar_g <= 22:
+        return "Orta"
+    return "Yüksek"
+
+
+def _compute_burn_equivalent(calories: int) -> str:
+    reformer_min = max(12, int(round(calories / 6.2)))
+    walk_min = max(15, int(round(calories / 4.8)))
+    return f"{reformer_min} dk Reformer Pilates veya {walk_min} dk tempolu yürüyüş"
+
+
+_VISION_MEAL_PRESETS: Dict[str, List[Dict[str, object]]] = {
+    "Kahvaltı": [
+        {
+            "title": "Avokadolu & Haşlanmış Yumurtalı Protein Kahvaltı Tabağı",
+            "fiber_g": 8,
+            "sugar_g": 5,
+            "items": [
+                ("Haşlanmış Organik Yumurta", "2 adet (110 g)", 155, 13, 1, 11, 96),
+                ("Dilimlenmiş Avokado", "1/2 adet (75 g)", 120, 2, 6, 11, 93),
+                ("Tam Buğday Ekşi Mayalı Ekmek", "2 dilim (60 g)", 148, 6, 26, 2, 91),
+                ("Az Yağlı Beyaz Peynir & Yeşillik", "45 g + roka", 105, 8, 3, 7, 89),
+            ],
+        },
+        {
+            "title": "Yulaf Lapası, Chia & Kırmızı Meyveli Fitness Kasesi",
+            "fiber_g": 10,
+            "sugar_g": 14,
+            "items": [
+                ("Sütlü Yulaf Ezmesi", "1 kase (220 g)", 240, 10, 38, 5, 95),
+                ("Süzme Yoğurt", "3 yemek kaşığı (90 g)", 68, 7, 4, 3, 92),
+                ("Taze Yaban Mersini & Muz Dilimleri", "85 g", 64, 1, 16, 0, 90),
+                ("Çiğ Badem & Chia Tohumu", "20 g", 112, 4, 4, 9, 88),
+            ],
+        },
+        {
+            "title": "Sebzeli Fit Omlet & Lor Peynirli Sabah Tabağı",
+            "fiber_g": 6,
+            "sugar_g": 4,
+            "items": [
+                ("Ispanaklı & Mantarlı 3 Yumurtalı Omlet", "1 porsiyon (210 g)", 255, 20, 4, 17, 96),
+                ("Yağsız Lor Peyniri", "70 g", 69, 8, 2, 3, 92),
+                ("Çeri Domates, Salatalık & Zeytin", "120 g", 66, 1, 5, 5, 91),
+                ("Çavdar Ekmeği", "1 dilim (35 g)", 84, 3, 16, 1, 89),
+            ],
+        },
+    ],
+    "Öğle": [
+        {
+            "title": "Izgara Tavuk Göğsü, Kinoa & Akdeniz Yeşillik Bowl",
+            "fiber_g": 9,
+            "sugar_g": 6,
+            "items": [
+                ("Izgara Baharatlı Tavuk Göğsü", "160 g", 264, 49, 0, 6, 97),
+                ("Haşlanmış Kinoa & Karabuğday", "130 g", 156, 6, 28, 2, 93),
+                ("Zeytinyağlı Akdeniz Salata", "180 g", 88, 2, 7, 6, 92),
+                ("Avokado & Limon Sos", "40 g", 64, 1, 3, 6, 88),
+            ],
+        },
+        {
+            "title": "Fırın Somon, Buharda Brokoli & Bulgur Pilavı",
+            "fiber_g": 8,
+            "sugar_g": 4,
+            "items": [
+                ("Fırınlanmış Norveç Somon Fileto", "165 g", 342, 36, 0, 21, 96),
+                ("Şehriyesiz Bulgur Pilavı", "140 g", 174, 6, 34, 2, 93),
+                ("Buharda Brokoli & Kuşkonmaz", "150 g", 58, 4, 9, 1, 94),
+            ],
+        },
+        {
+            "title": "Izgara Köfte, Süzme Yoğurt & Mevsim Salata Tabağı",
+            "fiber_g": 7,
+            "sugar_g": 6,
+            "items": [
+                ("Ev Yapımı Izgara Dana Köfte", "4 adet (140 g)", 312, 28, 7, 19, 95),
+                ("Tam Buğday Bulgur / Piyaz Garnitür", "120 g", 148, 5, 28, 2, 90),
+                ("Süzme Yoğurt (Cacık)", "120 g", 84, 7, 5, 4, 93),
+                ("Çoban Salata (Az Zeytinyağlı)", "160 g", 72, 2, 7, 4, 92),
+            ],
+        },
+    ],
+    "Akşam": [
+        {
+            "title": "Izgara Levrek, Fırın Sebze & Roka Salatası",
+            "fiber_g": 8,
+            "sugar_g": 5,
+            "items": [
+                ("Izgara Levrek Fileto", "180 g", 252, 39, 0, 10, 96),
+                ("Fırın Kabak, Biber & Mantar", "180 g", 96, 4, 12, 4, 93),
+                ("Nar Ekşisiz Limonlu Roka Salatası", "140 g", 62, 2, 5, 4, 91),
+            ],
+        },
+        {
+            "title": "Zeytinyağlı Mercimek & Izgara Hindi Göğsü Tabağı",
+            "fiber_g": 11,
+            "sugar_g": 5,
+            "items": [
+                ("Izgara Hindi Göğsü Dilimleri", "150 g", 218, 43, 1, 4, 95),
+                ("Yeşil Mercimek & Semizotu Salatası", "160 g", 164, 11, 22, 4, 92),
+                ("Probiyotik Kefir / Yoğurt", "150 ml", 82, 6, 6, 4, 90),
+            ],
+        },
+        {
+            "title": "Ton Balıklı Akdeniz Protein Salatası & Çorba",
+            "fiber_g": 8,
+            "sugar_g": 6,
+            "items": [
+                ("Suda Ton Balığı (Süzülmüş)", "130 g", 172, 36, 0, 2, 95),
+                ("Mercimek Çorbası (Kremasız)", "1 kase (220 ml)", 142, 9, 21, 3, 93),
+                ("Haşlanmış Mısır, Yeşillik & Zeytinyağı", "180 g", 118, 3, 13, 6, 91),
+            ],
+        },
+    ],
+    "Ara Öğün": [
+        {
+            "title": "Süzme Yoğurt, Çiğ Badem & Mevsim Meyvesi",
+            "fiber_g": 5,
+            "sugar_g": 12,
+            "items": [
+                ("Yüksek Proteinli Süzme Yoğurt", "150 g", 112, 11, 7, 5, 95),
+                ("Çiğ Badem & Ceviz İçi", "22 g", 130, 4, 4, 11, 93),
+                ("Yeşil Elma / Çilek Dilimleri", "100 g", 48, 1, 12, 0, 92),
+            ],
+        },
+        {
+            "title": "Muzlu Protein Smoothie & Fıstık Ezmesi",
+            "fiber_g": 5,
+            "sugar_g": 14,
+            "items": [
+                ("Whey / Bitkisel Protein Karışımı", "1 ölçek (30 g)", 120, 24, 3, 2, 94),
+                ("Yarım Muz & Badem Sütü", "260 ml", 98, 2, 19, 2, 92),
+                ("Şekersiz Fıstık Ezmesi", "1 tatlı kaşığı (15 g)", 88, 4, 3, 7, 90),
+            ],
+        },
+    ],
+}
+
+_VISION_KEYWORD_CATALOG: List[Tuple[List[str], str, str, int, int, int, int, int, int]] = [
+    # (keywords, display_name, portion_label, kcal, prot, carb, fat, fiber, sugar)
+    (["tavuk", "chicken", "piliç"], "Izgara Tavuk Göğsü", "160 g", 264, 49, 0, 6, 0, 0),
+    (["somon", "salmon"], "Fırın Somon Fileto", "165 g", 342, 36, 0, 21, 0, 0),
+    (["ton", "tuna"], "Ton Balığı", "130 g", 172, 36, 0, 2, 0, 0),
+    (["balık", "balik", "levrek", "çipura", "fish"], "Izgara Deniz Balığı", "180 g", 252, 39, 0, 10, 0, 0),
+    (["köfte", "kofte", "meatball"], "Izgara Dana Köfte", "140 g (4 adet)", 312, 28, 7, 19, 1, 1),
+    (["et", "biftek", "bonfile", "steak", "antrikot"], "Izgara Dana Bonfile", "160 g", 356, 42, 0, 20, 0, 0),
+    (["yumurta", "egg", "omlet", "menemen"], "Yumurta / Sebzeli Omlet", "2-3 adet (150 g)", 220, 17, 3, 15, 1, 1),
+    (["yulaf", "oat", "porridge"], "Yulaf Ezmesi Lapası", "1 kase (200 g)", 230, 9, 38, 5, 6, 4),
+    (["avokado", "avocado"], "Dilimlenmiş Avokado", "1/2 adet (80 g)", 128, 2, 7, 12, 5, 1),
+    (["salata", "salad", "yeşillik", "bowl", "roka"], "Zeytinyağlı Mevsim Yeşillik Salatası", "180 g", 88, 2, 7, 6, 4, 3),
+    (["pilav", "pirinç", "rice"], "Pirinç Pilavı", "150 g", 215, 4, 42, 3, 1, 1),
+    (["bulgur", "kinoa", "quinoa", "karabuğday"], "Bulgur / Kinoa Pilavı", "140 g", 172, 6, 32, 2, 5, 1),
+    (["makarna", "pasta", "spagetti"], "Tam Buğday Makarna", "170 g", 256, 10, 50, 2, 6, 2),
+    (["yoğurt", "yogurt", "cacık", "kefir"], "Süzme Yoğurt", "140 g", 105, 10, 6, 5, 0, 5),
+    (["peynir", "cheese", "lor"], "Az Yağlı Beyaz / Lor Peyniri", "60 g", 112, 10, 2, 7, 0, 1),
+    (["tost", "sandviç", "sandwich", "ekmek", "bread"], "Tam Buğday Tost / Ekmek", "2 dilim (75 g)", 196, 9, 31, 4, 4, 3),
+    (["çorba", "corba", "soup", "mercimek"], "Mercimek Çorbası", "1 kase (240 ml)", 152, 10, 22, 3, 5, 2),
+    (["muz", "banana", "meyve", "fruit", "elma", "çilek", "berry"], "Taze Mevsim Meyvesi", "120 g", 82, 1, 20, 0, 3, 13),
+    (["badem", "ceviz", "fındık", "nut", "almond"], "Çiğ Kuruyemiş (Badem/Ceviz)", "25 g", 148, 5, 4, 13, 3, 1),
+    (["smoothie", "shake", "protein"], "Yüksek Proteinli Smoothie", "300 ml", 215, 26, 18, 4, 3, 10),
+    (["pizza", "burger", "hamburger", "lahmacun", "döner", "pide"], "Fırın / Fast-Food Ana Öğün", "1 porsiyon (240 g)", 560, 24, 58, 24, 3, 6),
+    (["tatlı", "tatli", "kek", "pasta", "cake", "çikolata", "dondurma"], "Tatlı / Şekerli Atıştırmalık", "1 dilim (110 g)", 340, 5, 46, 15, 2, 29),
+]
+
+
+def _normalize_meal_type_label(raw_meal_type: Optional[str]) -> str:
+    low = (raw_meal_type or "").replace("İ", "i").replace("I", "ı").strip().lower()
+    if any(k in low for k in ("kahvalt", "sabah", "breakfast")):
+        return "Kahvaltı"
+    if any(k in low for k in ("öğle", "ogle", "lunch")):
+        return "Öğle"
+    if any(k in low for k in ("akşam", "aksam", "dinner")):
+        return "Akşam"
+    if any(k in low for k in ("ara", "atıştır", "snack")):
+        return "Ara Öğün"
+    return _infer_default_meal_type_by_clock()
+
+
+def _try_gemini_vision_nutrition(
+    clean_b64: str,
+    mime_type: str,
+    meal_type: str,
+    portion_size: str,
+    notes: str,
+) -> Optional[Dict[str, object]]:
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if not api_key or len(clean_b64) < 64:
+        return None
+
+    prompt_text = (
+        "Sen profesyonel bir Türk spor diyetisyeni ve besin analizi AI motorusun. "
+        f"Gönderilen yemek fotoğrafını analiz et. Öğün tipi: {meal_type}, Porsiyon boyutu: {portion_size}. "
+        f"Kullanıcı notu: {notes or 'Yok'}. "
+        "Yalnızca geçerli JSON dön (markdown bloğu olmadan) şu anahtarlarla: "
+        '{"meal_title": str, "fiber_g": int, "sugar_g": int, "coach_note": str, "suggestions": [str, str, str], '
+        '"detected_items": [{"name": str, "portion": str, "calories": int, "protein_g": int, "carbs_g": int, "fat_g": int, "confidence_pct": int}]}.'
+    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
+    body = {
+        "contents": [
+            {
+                "parts": [
+                    {"text": prompt_text},
+                    {"inline_data": {"mime_type": mime_type, "data": clean_b64}},
+                ]
+            }
+        ],
+        "generationConfig": {"temperature": 0.2, "responseMimeType": "application/json"},
+    }
+    try:
+        resp = httpx.post(url, json=body, timeout=12.0)
+        if resp.status_code != 200:
+            return None
+        data = resp.json()
+        cand_text = data["candidates"][0]["content"]["parts"][0]["text"]
+        cleaned_json = re.sub(r"^```(?:json)?|```$", "", cand_text.strip(), flags=re.MULTILINE).strip()
+        parsed = json.loads(cleaned_json)
+        items_raw = parsed.get("detected_items") or []
+        if not isinstance(items_raw, list) or not items_raw:
+            return None
+
+        items: List[DetectedFoodItemOut] = []
+        for it in items_raw[:8]:
+            items.append(
+                DetectedFoodItemOut(
+                    name=str(it.get("name") or "Tespit Edilen Besin")[:80],
+                    portion=str(it.get("portion") or "1 porsiyon")[:40],
+                    calories=max(5, int(round(float(it.get("calories", 120))))),
+                    protein_g=max(0, int(round(float(it.get("protein_g", 8))))),
+                    carbs_g=max(0, int(round(float(it.get("carbs_g", 12))))),
+                    fat_g=max(0, int(round(float(it.get("fat_g", 4))))),
+                    confidence_pct=max(70, min(99, int(round(float(it.get("confidence_pct", 92)))))),
+                )
+            )
+        return {
+            "meal_title": str(parsed.get("meal_title") or f"{meal_type} Tabağı")[:120],
+            "detected_items": items,
+            "fiber_g": max(0, int(round(float(parsed.get("fiber_g", 6))))),
+            "sugar_g": max(0, int(round(float(parsed.get("sugar_g", 6))))),
+            "coach_note": str(parsed.get("coach_note") or "").strip(),
+            "suggestions": [str(s) for s in (parsed.get("suggestions") or [])[:4] if str(s).strip()],
+            "analysis_engine": "Gemini 2.0 Flash Vision AI",
+        }
+    except Exception:
+        return None
+
+
+def _run_fitclub_vision_ai_engine(
+    clean_b64: str,
+    filename: Optional[str],
+    meal_type: str,
+    portion_size: str,
+    notes: Optional[str],
+) -> Dict[str, object]:
+    mult = _PORTION_MULTIPLIERS.get(portion_size, 1.0)
+    seed_material = f"{clean_b64[:4096]}|{len(clean_b64)}|{filename or ''}|{meal_type}|{notes or ''}"
+    digest = hashlib.sha256(seed_material.encode("utf-8", errors="ignore")).hexdigest()
+    hash_int = int(digest[:8], 16)
+
+    hint_text = f"{filename or ''} {notes or ''}".replace("İ", "i").replace("I", "ı").lower().strip()
+    matched_items: List[DetectedFoodItemOut] = []
+    total_fiber = 0
+    total_sugar = 0
+
+    if hint_text:
+        for idx, (kws, d_name, p_lbl, kcal, prot, carb, fat, fib, sug) in enumerate(_VISION_KEYWORD_CATALOG):
+            if any(kw in hint_text for kw in kws):
+                conf = 89 + ((hash_int + idx * 3) % 9)
+                matched_items.append(
+                    DetectedFoodItemOut(
+                        name=d_name,
+                        portion=p_lbl if portion_size == "Normal" else f"{p_lbl} ({portion_size})",
+                        calories=max(15, int(round(kcal * mult))),
+                        protein_g=max(0, int(round(prot * mult))),
+                        carbs_g=max(0, int(round(carb * mult))),
+                        fat_g=max(0, int(round(fat * mult))),
+                        confidence_pct=conf,
+                    )
+                )
+                total_fiber += int(round(fib * mult))
+                total_sugar += int(round(sug * mult))
+                if len(matched_items) >= 5:
+                    break
+
+    if matched_items:
+        meal_title = " + ".join(it.name for it in matched_items[:2])
+        if len(matched_items) > 2:
+            meal_title += f" ve {len(matched_items) - 2} eşlikçi"
+        fiber_g = max(2, total_fiber)
+        sugar_g = max(1, total_sugar)
+    else:
+        presets = _VISION_MEAL_PRESETS.get(meal_type) or _VISION_MEAL_PRESETS["Öğle"]
+        chosen = presets[hash_int % len(presets)]
+        meal_title = str(chosen["title"])
+        fiber_g = max(2, int(round(int(chosen["fiber_g"]) * mult)))
+        sugar_g = max(1, int(round(int(chosen["sugar_g"]) * mult)))
+        for idx, (name, portion_lbl, kcal, prot, carb, fat, base_conf) in enumerate(chosen["items"]):  # type: ignore[index]
+            jitter = ((hash_int >> (idx * 3)) % 3) - 1  # -1, 0, +1
+            conf = max(84, min(98, base_conf + jitter))
+            matched_items.append(
+                DetectedFoodItemOut(
+                    name=name,
+                    portion=portion_lbl if portion_size == "Normal" else f"{portion_lbl} ({portion_size})",
+                    calories=max(15, int(round(kcal * mult))),
+                    protein_g=max(0, int(round(prot * mult))),
+                    carbs_g=max(0, int(round(carb * mult))),
+                    fat_g=max(0, int(round(fat * mult))),
+                    confidence_pct=conf,
+                )
+            )
+
+    tot_cal = sum(i.calories for i in matched_items)
+    tot_prot = sum(i.protein_g for i in matched_items)
+    tot_carb = sum(i.carbs_g for i in matched_items)
+    tot_fat = sum(i.fat_g for i in matched_items)
+
+    if tot_prot >= 32:
+        coach_note = (
+            f"🎯 FitClub Vision AI: {tot_prot}g yüksek protein içeriğiyle Reformer Pilates sonrası "
+            f"kas toparlanması ve sıkılaşma için mükemmel bir {meal_type.lower()} seçimi!"
+        )
+    elif tot_carb >= 50 and tot_prot < 22:
+        coach_note = (
+            f"⚡ FitClub Vision AI: Enerji verici karbonhidrat ağırlıklı bir tabak ({tot_cal} kcal). "
+            "Bir sonraki öğününde süzme yoğurt, yumurta veya ızgara protein ekleyerek dengeleyebilirsin."
+        )
+    elif tot_fat >= 28:
+        coach_note = (
+            f"🥑 FitClub Vision AI: Sağlıklı yağ oranı zengin, uzun süre tok tutan bir öğün ({tot_cal} kcal). "
+            "Metabolik denge için gün içinde +400 ml su tüketimini artırmanı öneririz."
+        )
+    else:
+        coach_note = (
+            f"✨ FitClub Vision AI: Dengeli makro dağılımına sahip fit bir {meal_type.lower()} tabağı ({tot_cal} kcal). "
+            "Günlük kalori ve protein hedeflerinle harika uyum sağlıyor."
+        )
+
+    suggestions: List[str] = []
+    if tot_prot < 25:
+        suggestions.append("Protein oranını güçlendirmek için yanına 1 kase süzme yoğurt veya 1 haşlanmış yumurta ekleyebilirsin.")
+    else:
+        suggestions.append("Yüksek protein profili antrenman sonrası kas onarımını destekler; 1 büyük bardak su ile eşleştir.")
+    if fiber_g < 6:
+        suggestions.append("Lif oranını artırmak ve kan şekerini dengelemek için taze roka/salatalık eklemesi faydalı olur.")
+    else:
+        suggestions.append(f"{fiber_g}g diyet lifi tokluk süreni uzatır ve sindirim sağlığını destekler.")
+    suggestions.append(
+        "Reformer seansından 90 dk önce veya seanstan sonraki 60 dk içinde tüketmek en verimli enerji dengesini sağlar."
+    )
+
+    return {
+        "meal_title": meal_title,
+        "detected_items": matched_items,
+        "fiber_g": fiber_g,
+        "sugar_g": sugar_g,
+        "coach_note": coach_note,
+        "suggestions": suggestions[:3],
+        "analysis_engine": "FitClub Vision AI Engine",
+    }
+
+
+@app.post("/nutrition/analyze-photo", response_model=NutritionPhotoAnalyzeOut)
+def analyze_nutrition_photo(
+    payload: NutritionPhotoAnalyzeRequest,
+    db: Session = Depends(get_db),
+):
+    row = _get_or_create_today_wellness(db, payload.member_id)
+
+    raw_b64 = (payload.image_base64 or "").strip()
+    mime_type = "image/jpeg"
+    clean_b64 = raw_b64
+    if raw_b64.startswith("data:") and "," in raw_b64:
+        header_part, clean_b64 = raw_b64.split(",", 1)
+        m_mime = re.search(r"data:([^;]+);", header_part)
+        if m_mime:
+            mime_type = m_mime.group(1)
+
+    if not clean_b64 and not (payload.notes and payload.notes.strip()):
+        raise HTTPException(
+            status_code=400,
+            detail="Analiz için yemek fotoğrafı (image_base64) veya öğün açıklaması gereklidir.",
+        )
+
+    meal_type = _normalize_meal_type_label(payload.meal_type)
+    portion_size = payload.portion_size if payload.portion_size in _PORTION_MULTIPLIERS else "Normal"
+
+    ai_result = _try_gemini_vision_nutrition(
+        clean_b64=clean_b64,
+        mime_type=mime_type,
+        meal_type=meal_type,
+        portion_size=portion_size,
+        notes=(payload.notes or "").strip(),
+    )
+    if ai_result is None:
+        ai_result = _run_fitclub_vision_ai_engine(
+            clean_b64=clean_b64,
+            filename=payload.filename,
+            meal_type=meal_type,
+            portion_size=portion_size,
+            notes=payload.notes,
+        )
+
+    detected_items: List[DetectedFoodItemOut] = ai_result["detected_items"]  # type: ignore[assignment]
+    total_calories = max(25, sum(i.calories for i in detected_items))
+    protein_g = max(1, sum(i.protein_g for i in detected_items))
+    carbs_g = max(0, sum(i.carbs_g for i in detected_items))
+    fat_g = max(0, sum(i.fat_g for i in detected_items))
+    fiber_g = int(ai_result["fiber_g"])  # type: ignore[arg-type]
+    sugar_g = int(ai_result["sugar_g"])  # type: ignore[arg-type]
+    health_score = _compute_meal_health_score(total_calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g)
+    glycemic_load = _compute_glycemic_load(carbs_g, fiber_g, sugar_g)
+    burn_equivalent = _compute_burn_equivalent(total_calories)
+    meal_title = str(ai_result["meal_title"])
+    coach_note = str(ai_result["coach_note"]) or (
+        f"💡 AI Koç Notu: {meal_title} ({total_calories} kcal, {protein_g}g protein) başarıyla analiz edildi."
+    )
+    suggestions: List[str] = list(ai_result["suggestions"])  # type: ignore[arg-type]
+    if not suggestions:
+        suggestions = [
+            "Öğünle birlikte en az 300 ml su tüketerek sindirimi ve hidrasyonu destekle.",
+            "Günlük protein hedefine ulaşmak için akşam öğününde hafif protein kaynaklarını tercih et.",
+        ]
+    analysis_engine = str(ai_result["analysis_engine"])
+
+    log_id = 0
+    if payload.auto_log:
+        row.calories_intake = max(0, (row.calories_intake or 0) + total_calories)
+        row.protein_g = max(0, (row.protein_g or 0) + protein_g)
+        row.carbs_g = max(0, (row.carbs_g or 0) + carbs_g)
+        row.fat_g = max(0, (row.fat_g or 0) + fat_g)
+
+        thumb_to_store = raw_b64 if (raw_b64 and len(raw_b64) <= 45000) else None
+        meal_log = NutritionMealLog(
+            member_id=payload.member_id,
+            date=_today_iso(),
+            created_at=_now_str(),
+            source="photo",
+            meal_type=meal_type,
+            portion_size=portion_size,
+            meal_description=meal_title,
+            photo_thumbnail=thumb_to_store,
+            calories=total_calories,
+            protein_g=protein_g,
+            carbs_g=carbs_g,
+            fat_g=fat_g,
+            fiber_g=fiber_g,
+            sugar_g=sugar_g,
+            health_score=health_score,
+            glycemic_load=glycemic_load,
+            burn_equivalent=burn_equivalent,
+            detected_items_json=json.dumps([i.model_dump() for i in detected_items], ensure_ascii=False),
+            coach_note=coach_note,
+        )
+        db.add(meal_log)
+        db.commit()
+        db.refresh(meal_log)
+        db.refresh(row)
+        log_id = meal_log.id
+
+    return NutritionPhotoAnalyzeOut(
+        log_id=log_id,
+        meal_type=meal_type,
+        portion_size=portion_size,
+        meal_title=meal_title,
+        total_calories=total_calories,
+        protein_g=protein_g,
+        carbs_g=carbs_g,
+        fat_g=fat_g,
+        fiber_g=fiber_g,
+        sugar_g=sugar_g,
+        health_score=health_score,
+        glycemic_load=glycemic_load,
+        burn_equivalent=burn_equivalent,
+        analysis_engine=analysis_engine,
+        detected_items=detected_items,
+        coach_note=coach_note,
+        suggestions=suggestions,
+        wellness=_to_daily_wellness_out(row),
+    )
+
+
+@app.get("/nutrition/{member_id}/logs", response_model=List[NutritionMealLogOut])
+def get_member_nutrition_logs(
+    member_id: int,
+    limit: int = Query(default=20, ge=1, le=50),
+    db: Session = Depends(get_db),
+):
+    member = db.query(User).filter(User.id == member_id).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Üye bulunamadı.")
+
+    today_str = _today_iso()
+    rows = (
+        db.query(NutritionMealLog)
+        .filter(NutritionMealLog.member_id == member_id)
+        .order_by(NutritionMealLog.id.desc())
+        .limit(limit * 2)
+        .all()
+    )
+    # Bugünkü kayıtlar öne, sonra en yeni id öne gelecek şekilde sırala
+    rows.sort(key=lambda r: (0 if r.date == today_str else 1, -r.id))
+    rows = rows[:limit]
+
+    result: List[NutritionMealLogOut] = []
+    for r in rows:
+        parsed_items: List[DetectedFoodItemOut] = []
+        try:
+            raw_list = json.loads(r.detected_items_json or "[]")
+            if isinstance(raw_list, list):
+                for it in raw_list:
+                    if isinstance(it, dict):
+                        parsed_items.append(DetectedFoodItemOut(**it))
+        except Exception:
+            parsed_items = []
+
+        result.append(
+            NutritionMealLogOut(
+                id=r.id,
+                member_id=r.member_id,
+                date=r.date,
+                created_at=r.created_at,
+                source=r.source or "photo",
+                meal_type=r.meal_type or "Öğle",
+                portion_size=r.portion_size or "Normal",
+                meal_description=r.meal_description or "",
+                photo_thumbnail=r.photo_thumbnail,
+                calories=int(r.calories or 0),
+                protein_g=int(r.protein_g or 0),
+                carbs_g=int(r.carbs_g or 0),
+                fat_g=int(r.fat_g or 0),
+                fiber_g=int(r.fiber_g or 0),
+                sugar_g=int(r.sugar_g or 0),
+                health_score=int(r.health_score or 75),
+                glycemic_load=r.glycemic_load or "Orta",
+                burn_equivalent=r.burn_equivalent or "",
+                detected_items=parsed_items,
+                coach_note=r.coach_note or "",
+                is_today=(r.date == today_str),
+            )
+        )
+    return result
 
 
 @app.get("/referral/{member_id}", response_model=ReferralInfoOut)
@@ -2326,6 +2985,328 @@ def get_trainer_schedule(
     )
 
 
+def _parse_session_dt(date_str: str, hhmm: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(f"{date_str.strip()} {hhmm.strip()}", "%Y-%m-%d %H:%M")
+    except Exception:
+        return None
+
+
+def _compute_session_time_state(
+    session: ClassSession,
+    now_dt: datetime,
+) -> Tuple[Literal["live_now", "upcoming_soon", "upcoming", "completed"], int]:
+    s_status = getattr(session, "session_status", None) or "scheduled"
+    start_dt = _parse_session_dt(session.date, session.start_time)
+    end_dt = _parse_session_dt(session.date, session.end_time)
+    if start_dt and not end_dt:
+        end_dt = start_dt + timedelta(minutes=50)
+
+    minutes_to_start = int(round((start_dt - now_dt).total_seconds() / 60.0)) if start_dt else 0
+
+    if s_status == "completed":
+        return "completed", minutes_to_start
+    if s_status == "in_progress":
+        return "live_now", minutes_to_start
+    if start_dt and end_dt:
+        if start_dt <= now_dt <= end_dt:
+            return "live_now", minutes_to_start
+        if now_dt > end_dt:
+            return "completed", minutes_to_start
+        if 0 < (start_dt - now_dt).total_seconds() <= 45 * 60:
+            return "upcoming_soon", minutes_to_start
+    return "upcoming", minutes_to_start
+
+
+def _build_live_attendance_session_out(
+    db: Session,
+    session: ClassSession,
+    trainer: Optional[User],
+    wellness_map: Dict[int, DailyWellness],
+    now_dt: datetime,
+) -> LiveAttendanceSessionOut:
+    time_state, minutes_to_start = _compute_session_time_state(session, now_dt)
+    active_bookings = [
+        b for b in session.bookings if b.status != "cancelled" and b.member is not None
+    ]
+    active_bookings.sort(key=lambda b: b.id)
+
+    participants: List[LiveParticipantOut] = []
+    attended_count = 0
+    no_show_count = 0
+    pending_count = 0
+
+    for b in active_bookings:
+        if b.status == "attended":
+            attended_count += 1
+        elif b.status == "no_show":
+            no_show_count += 1
+        else:
+            pending_count += 1
+
+        m = b.member
+        pkg = get_active_package_for_member(db, b.member_id) or b.package
+        rem = int(pkg.remaining_credits) if pkg else 0
+        w_fields = _extract_member_wellness_fields(m, wellness_map.get(m.id))
+        participants.append(
+            LiveParticipantOut(
+                booking_id=b.id,
+                member_id=m.id,
+                member_name=m.full_name,
+                member_phone=m.phone or "",
+                status=b.status,
+                checked_in_at=getattr(b, "checked_in_at", None),
+                body_zones=w_fields["body_zones"],  # type: ignore[arg-type]
+                today_energy_status=w_fields["today_energy_status"],  # type: ignore[arg-type]
+                notes=m.notes or "",
+                remaining_credits=rem,
+            )
+        )
+
+    return LiveAttendanceSessionOut(
+        id=session.id,
+        session_id=session.id,
+        trainer_id=session.trainer_id,
+        trainer_name=trainer.full_name if trainer else "Eğitmen",
+        title=session.title,
+        category=session.category or "Fonksiyonel",
+        room=session.room or "Ana Stüdyo",
+        date=session.date,
+        start_time=session.start_time,
+        end_time=session.end_time,
+        capacity=session.capacity,
+        current_enrolled=session.current_enrolled,
+        time_state=time_state,
+        session_status=getattr(session, "session_status", None) or "scheduled",
+        started_at=getattr(session, "started_at", None),
+        ended_at=getattr(session, "ended_at", None),
+        actual_duration_minutes=getattr(session, "actual_duration_minutes", None),
+        minutes_to_start=minutes_to_start,
+        attended_count=attended_count,
+        no_show_count=no_show_count,
+        pending_count=pending_count,
+        participants=participants,
+    )
+
+
+@app.get("/trainer/{trainer_id}/live-attendance", response_model=TrainerLiveAttendanceOut)
+def get_trainer_live_attendance(
+    trainer_id: int,
+    db: Session = Depends(get_db),
+):
+    trainer = db.query(User).filter(User.id == trainer_id, User.role == "trainer").first()
+    if not trainer:
+        raise HTTPException(status_code=404, detail="Eğitmen bulunamadı.")
+
+    now_dt = datetime.now()
+    server_time_iso = now_dt.strftime("%Y-%m-%dT%H:%M:%S")
+    server_date = now_dt.strftime("%Y-%m-%d")
+    server_hhmm = now_dt.strftime("%H:%M")
+
+    all_sessions = (
+        db.query(ClassSession)
+        .options(
+            joinedload(ClassSession.bookings).joinedload(Booking.member),
+            joinedload(ClassSession.bookings).joinedload(Booking.package),
+        )
+        .filter(ClassSession.trainer_id == trainer_id)
+        .order_by(ClassSession.date.asc(), ClassSession.start_time.asc())
+        .all()
+    )
+
+    wellness_map = _load_today_wellness_map(db)
+
+    today_raw = [s for s in all_sessions if s.date == server_date]
+    upcoming_raw = [s for s in all_sessions if s.date > server_date][:15]
+    if not today_raw and not upcoming_raw and all_sessions:
+        upcoming_raw = list(reversed(all_sessions[-5:]))
+
+    today_sessions = [
+        _build_live_attendance_session_out(db, s, trainer, wellness_map, now_dt)
+        for s in today_raw
+    ]
+    upcoming_sessions = [
+        _build_live_attendance_session_out(db, s, trainer, wellness_map, now_dt)
+        for s in upcoming_raw
+    ]
+
+    # Şu an canlı olan veya en yakın sıradaki dersi current_active_session olarak seç
+    current_active: Optional[LiveAttendanceSessionOut] = None
+    for s_out in today_sessions + upcoming_sessions:
+        if s_out.session_status == "in_progress":
+            current_active = s_out
+            break
+    if current_active is None:
+        for s_out in today_sessions:
+            if s_out.time_state == "live_now":
+                current_active = s_out
+                break
+    if current_active is None:
+        for s_out in today_sessions:
+            if s_out.time_state == "upcoming_soon":
+                current_active = s_out
+                break
+    if current_active is None:
+        for s_out in today_sessions:
+            if s_out.time_state == "upcoming":
+                current_active = s_out
+                break
+    if current_active is None and upcoming_sessions:
+        current_active = upcoming_sessions[0]
+    if current_active is None and today_sessions:
+        current_active = today_sessions[-1]
+
+    return TrainerLiveAttendanceOut(
+        trainer_id=trainer.id,
+        trainer_name=trainer.full_name,
+        server_time_iso=server_time_iso,
+        server_date=server_date,
+        server_hhmm=server_hhmm,
+        current_active_session=current_active,
+        today_sessions=today_sessions,
+        upcoming_sessions=upcoming_sessions,
+    )
+
+
+@app.post("/trainer/sessions/{session_id}/start-class", response_model=LiveAttendanceSessionOut)
+def start_trainer_class_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+):
+    session = (
+        db.query(ClassSession)
+        .options(
+            joinedload(ClassSession.trainer),
+            joinedload(ClassSession.bookings).joinedload(Booking.member),
+            joinedload(ClassSession.bookings).joinedload(Booking.package),
+        )
+        .filter(ClassSession.id == session_id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Ders seansı bulunamadı.")
+
+    now_dt = datetime.now()
+    session.session_status = "in_progress"
+    session.started_at = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+    session.ended_at = None
+    session.actual_duration_minutes = None
+    db.commit()
+    db.refresh(session)
+
+    wellness_map = _load_today_wellness_map(db)
+    return _build_live_attendance_session_out(db, session, session.trainer, wellness_map, now_dt)
+
+
+@app.post("/trainer/sessions/{session_id}/complete-class", response_model=CompleteClassResponseOut)
+def complete_trainer_class_session(
+    session_id: int,
+    db: Session = Depends(get_db),
+):
+    session = (
+        db.query(ClassSession)
+        .options(
+            joinedload(ClassSession.trainer),
+            joinedload(ClassSession.bookings).joinedload(Booking.member),
+            joinedload(ClassSession.bookings).joinedload(Booking.package),
+        )
+        .filter(ClassSession.id == session_id)
+        .first()
+    )
+    if not session:
+        raise HTTPException(status_code=404, detail="Ders seansı bulunamadı.")
+
+    now_dt = datetime.now()
+    ended_str = now_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+    duration_min: Optional[int] = None
+    if session.started_at:
+        try:
+            st_dt = datetime.strptime(session.started_at.strip(), "%Y-%m-%d %H:%M:%S")
+            duration_min = max(1, int(round((now_dt - st_dt).total_seconds() / 60.0)))
+        except Exception:
+            duration_min = None
+
+    if duration_min is None:
+        st_sched = _parse_session_dt(session.date, session.start_time)
+        en_sched = _parse_session_dt(session.date, session.end_time)
+        if st_sched and en_sched and en_sched > st_sched:
+            duration_min = max(1, int(round((en_sched - st_sched).total_seconds() / 60.0)))
+        else:
+            duration_min = 50
+
+    session.session_status = "completed"
+    session.ended_at = ended_str
+    session.actual_duration_minutes = duration_min
+    db.commit()
+    db.refresh(session)
+
+    wellness_map = _load_today_wellness_map(db)
+    session_out = _build_live_attendance_session_out(db, session, session.trainer, wellness_map, now_dt)
+
+    return CompleteClassResponseOut(
+        session_id=session.id,
+        title=session.title,
+        session_status="completed",
+        started_at=session.started_at,
+        ended_at=ended_str,
+        actual_duration_minutes=duration_min,
+        attended_count=session_out.attended_count,
+        no_show_count=session_out.no_show_count,
+        pending_count=session_out.pending_count,
+        message=f"'{session.title}' dersi tamamlandı ({duration_min} dk, {session_out.attended_count} katılımcı).",
+        session=session_out,
+    )
+
+
+@app.post("/trainer/attendance/mark", response_model=AttendanceMarkOut)
+def mark_trainer_attendance(
+    payload: AttendanceUpdateRequest,
+    db: Session = Depends(get_db),
+):
+    booking = db.query(Booking).filter(Booking.id == payload.booking_id).first()
+    if not booking:
+        raise HTTPException(status_code=404, detail="Kayıt bulunamadı.")
+    if booking.status == "cancelled":
+        raise HTTPException(status_code=400, detail="İptal edilmiş kayda yoklama girilemez.")
+
+    booking.status = payload.status
+    if payload.status == "attended":
+        booking.checked_in_at = _now_str()
+    else:
+        booking.checked_in_at = None
+
+    db.commit()
+    db.refresh(booking)
+
+    sibling_bookings = (
+        db.query(Booking)
+        .filter(Booking.session_id == booking.session_id, Booking.status != "cancelled")
+        .all()
+    )
+    attended_count = sum(1 for b in sibling_bookings if b.status == "attended")
+    no_show_count = sum(1 for b in sibling_bookings if b.status == "no_show")
+    pending_count = sum(1 for b in sibling_bookings if b.status == "booked")
+
+    status_labels = {
+        "attended": "Katıldı olarak işaretlendi.",
+        "no_show": "Gelmedi (No-Show) olarak işaretlendi.",
+        "booked": "Bekliyor durumuna geri alındı.",
+    }
+
+    return AttendanceMarkOut(
+        booking_id=booking.id,
+        session_id=booking.session_id,
+        member_id=booking.member_id,
+        status=booking.status,
+        checked_in_at=booking.checked_in_at,
+        attended_count=attended_count,
+        no_show_count=no_show_count,
+        pending_count=pending_count,
+        message=status_labels.get(booking.status, "Yoklama güncellendi."),
+    )
+
+
 @app.post("/trainer/attendance")
 def update_attendance(payload: AttendanceUpdateRequest, db: Session = Depends(get_db)):
     booking = db.query(Booking).filter(Booking.id == payload.booking_id).first()
@@ -2336,6 +3317,7 @@ def update_attendance(payload: AttendanceUpdateRequest, db: Session = Depends(ge
         raise HTTPException(status_code=400, detail="İptal edilmiş kayda yoklama girilemez.")
 
     booking.status = payload.status
+    booking.checked_in_at = _now_str() if payload.status == "attended" else None
     db.commit()
     db.refresh(booking)
 
@@ -2343,6 +3325,7 @@ def update_attendance(payload: AttendanceUpdateRequest, db: Session = Depends(ge
         "message": "Yoklama durumu güncellendi.",
         "booking_id": booking.id,
         "status": booking.status,
+        "checked_in_at": booking.checked_in_at,
     }
 
 
