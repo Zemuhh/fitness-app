@@ -25,6 +25,12 @@ from payment_models import (
 
 router = APIRouter(prefix="/payments", tags=["Payments & Package Purchases"])
 
+
+def _is_checkout_test_helpers_enabled() -> bool:
+    """Test kartı hızlı doldurma ve demo SMS önizleme araçlarını yalnızca açıkça etkinleştirildiğinde açar."""
+    return os.getenv("PAYMENT_ENABLE_TEST_HELPERS", "0").strip() == "1"
+
+
 PaymentMethodLiteral = Literal["credit_card", "apple_pay", "bank_transfer"]
 CheckoutSessionStatusLiteral = Literal[
     "pending", "requires_3ds", "succeeded", "failed", "cancelled"
@@ -268,73 +274,95 @@ DEFAULT_CATALOG_PLANS = [
     {
         "code": "ERYA-GRUP-8",
         "name": "8 Seans Grup Reformer Paketi",
-        "subtitle": "6-7 kişilik kemerli ayna stüdyoda postür, esneklik ve sıkılaşma",
+        "subtitle": "6-7 kişilik stüdyomuzda yüz yüze fiziksel Reformer Pilates, postür ve sıkılaşma seansları",
         "credits": 8,
         "duration_days": 35,
         "price_try": 3000.0,
         "popular_badge": "En Çok Tercih Edilen",
         "features": [
-            "8 Seans Butik Grup Reformer Pilates (6-7 Kişilik)",
-            "Postür Değerlendirmesi & Nefes Koordinasyonu",
-            "Uygulamadan Anında Rezervasyon & 4 Saate Kadar İptal",
-            "Kalan Seansları Yeni Pakete Devretme Garantisi",
+            "8 Seans Stüdyoda Yüz Yüze Grup Reformer Pilates (6-7 Kişilik)",
+            "Stüdyoda Yüz Yüze Postür Değerlendirmesi & Nefes Koordinasyonu",
+            "Stüdyo Seans Rezervasyonu & 4 Saate Kadar Ücretsiz İptal",
+            "Kalan Fiziksel Seansları Yeni Pakete Devretme Garantisi",
         ],
     },
     {
         "code": "ERYA-DUET-8",
         "name": "8 Seans Düet / Trio Reformer",
-        "subtitle": "Arkadaşınızla veya 2-3 kişilik özel grupla yüksek odaklı Reformer",
+        "subtitle": "Stüdyoda arkadaşınızla veya 2-3 kişilik özel grupla yüz yüze fiziksel Reformer dersi",
         "credits": 8,
         "duration_days": 40,
         "price_try": 4800.0,
         "popular_badge": "Zarif Uyum",
         "features": [
-            "8 Seans Düet veya Trio Reformer Pilates Erişimi",
-            "Kişisel Esneklik & Core Güçlendirme Takibi",
-            "Öncelikli Akşam Seansı Rezervasyon Avantajı",
-            "40 Gün Esnek Kullanım + Kredi Koruma",
+            "8 Seans Stüdyoda Yüz Yüze Düet veya Trio Reformer Pilates",
+            "Eğitmen Eşliğinde Yüz Yüze Esneklik & Core Antrenmanı",
+            "Öncelikli Akşam Stüdyo Seansı Rezervasyon Hakkı",
+            "40 Gün Esnek Kullanım + Kalan Seans Devir Garantisi",
         ],
     },
     {
         "code": "ERYA-PRIVATE-8",
         "name": "8 Seans Bireysel Reformer & Cadillac",
-        "subtitle": "Seher Hoca & uzman kadroyla 1'e 1 skolyoz, postür ve omurga programı",
+        "subtitle": "Stüdyoda Seher Hoca & uzman kadroyla 1'e 1 yüz yüze fiziksel Reformer & Cadillac PT programı",
         "credits": 8,
         "duration_days": 45,
         "price_try": 6800.0,
         "popular_badge": "Klinik & Özel İlgi",
         "features": [
-            "8 Seans VIP 1-1 Reformer & Cadillac Trapeze Tower",
-            "Skolyoz, Bel-Boyun Hassasiyeti & Duruş Biyomekaniği",
-            "Aylık Vücut Analizi & Eğitmen Gelişim Raporu",
-            "45 Gün Geçerlilik + Kredi Devir Garantisi",
+            "8 Seans Stüdyoda 1-1 Yüz Yüze Reformer & Cadillac PT Seansı",
+            "Yüz Yüze Skolyoz, Bel-Boyun Hassasiyeti & Postür Çalışması",
+            "Stüdyoda Aylık Fiziksel Ölçüm & Birebir Eğitmen Değerlendirmesi",
+            "45 Gün Geçerlilik + Kalan Seans Devir Garantisi",
         ],
     },
     {
         "code": "ERYA-VIP-16",
         "name": "16 Seans VIP Dönüşüm Paketi",
-        "subtitle": "Tam kapsamlı Reformer + Cadillac ile dik duruş ve sıkılaşma serisi",
+        "subtitle": "Stüdyoda yüz yüze tam kapsamlı fiziksel Reformer + Cadillac PT ve sıkılaşma paketi",
         "credits": 16,
         "duration_days": 75,
         "price_try": 12000.0,
         "popular_badge": "Maksimum Avantaj",
         "features": [
-            "16 Seans Tüm Reformer, Cadillac & Özel Seans Erişimi",
-            "Haftalık Postür Takibi & Kişisel Programlama",
-            "1 Ücretsiz Misafir Tanışma Seansı Hakkı",
-            "En Avantajlı Seans Birim Ücreti + 75 Gün Süre",
+            "16 Seans Stüdyoda Yüz Yüze Reformer, Cadillac & PT Seansı",
+            "Haftalık Yüz Yüze Postür Takibi & Kişisel Stüdyo Programı",
+            "1 Ücretsiz Misafir Stüdyo Tanışma Seansı Hakkı",
+            "En Avantajlı Fiziksel Seans Birim Ücreti + 75 Gün Süre",
         ],
     },
 ]
 
+_LEGACY_PLAN_SUBTITLES = {
+    "ERYA-GRUP-8": "6-7 kişilik kemerli ayna stüdyoda postür, esneklik ve sıkılaşma",
+    "ERYA-DUET-8": "Arkadaşınızla veya 2-3 kişilik özel grupla yüksek odaklı Reformer",
+    "ERYA-PRIVATE-8": "Seher Hoca & uzman kadroyla 1'e 1 skolyoz, postür ve omurga programı",
+    "ERYA-VIP-16": "Tam kapsamlı Reformer + Cadillac ile dik duruş ve sıkılaşma serisi",
+}
+
 
 def ensure_payment_catalog_seeded(db: Session) -> None:
-    """Ödeme ve checkout oturum tablolarını oluşturur; katalog boşsa 4 paketi ekler."""
+    """Ödeme ve checkout oturum tablolarını oluşturur; katalog boşsa 4 paketi ekler ve fiziksel hizmet metinlerini senkronlar."""
     bind = db.get_bind() or engine
     Base.metadata.create_all(bind=bind)
 
     existing_count = db.query(PackageCatalogPlan).count()
     if existing_count > 0:
+        default_by_code = {item["code"]: item for item in DEFAULT_CATALOG_PLANS}
+        dirty = False
+        for code, legacy_sub in _LEGACY_PLAN_SUBTITLES.items():
+            plan_row = (
+                db.query(PackageCatalogPlan)
+                .filter(PackageCatalogPlan.code == code)
+                .first()
+            )
+            if plan_row and (plan_row.subtitle or "").strip() == legacy_sub:
+                spec = default_by_code[code]
+                plan_row.subtitle = spec["subtitle"]
+                plan_row.features_json = json.dumps(spec["features"], ensure_ascii=False)
+                dirty = True
+        if dirty:
+            db.commit()
         return
 
     for item in DEFAULT_CATALOG_PLANS:
@@ -726,13 +754,13 @@ def _fulfill_package_purchase(
 
     if carried_credits > 0:
         msg = (
-            f"{plan.name} ödemeniz onaylandı! Önceki paketinizden {carried_credits} ders devredildi; "
-            f"yeni kullanılabilir bakiyeniz {new_remaining_credits} ders."
+            f"{plan.name} (stüdyoda yüz yüze ders paketi) ödemeniz onaylandı! Önceki paketinizden "
+            f"{carried_credits} ders devredildi; yeni kullanılabilir bakiyeniz {new_remaining_credits} ders."
         )
     else:
         msg = (
-            f"{plan.name} ödemeniz onaylandı! Kullanılabilir {new_remaining_credits} ders krediniz "
-            f"hesabınıza tanımlandı."
+            f"{plan.name} (stüdyoda yüz yüze ders paketi) ödemeniz onaylandı! Kullanılabilir "
+            f"{new_remaining_credits} fiziksel ders krediniz hesabınıza tanımlandı."
         )
 
     receipt = _build_digital_receipt(
@@ -940,7 +968,8 @@ async def _try_create_iyzico_checkout(
             {
                 "id": plan.code,
                 "name": plan.name,
-                "category1": "Pilates & Reformer",
+                "category1": "Stüdyoda Yüz Yüze Fiziksel Antrenman",
+                "category2": "Pilates & Reformer Ders Paketi",
                 "itemType": "VIRTUAL",
                 "price": price_str,
             }
@@ -1187,6 +1216,7 @@ def _render_hosted_checkout_html(
         },
     )
 
+    show_test_helpers = _is_checkout_test_helpers_enabled()
     boot_state = {
         "sessionId": checkout_session.session_id,
         "status": checkout_session.status,
@@ -1204,7 +1234,7 @@ def _render_hosted_checkout_html(
         "cardLast4": checkout_session.card_last4 or "",
         "cardBrand": checkout_session.card_brand or "VISA",
         "bankName": checkout_session.bank_name or "Garanti BBVA Bonus",
-        "demoSmsCode": checkout_session.sms_otp_code or "",
+        "demoSmsCode": (checkout_session.sms_otp_code or "") if show_test_helpers else "",
         "newRemainingCredits": checkout_session.new_remaining_credits
         or (existing_credits + plan.credits),
         "transactionCode": tx_code or "",
@@ -1217,6 +1247,39 @@ def _render_hosted_checkout_html(
     safe_json = json.dumps(boot_state, ensure_ascii=False).replace("</", "<\\/")
     escaped_plan = html.escape(plan.name)
     escaped_member = html.escape(member.full_name)
+
+    quick_test_cards_html = (
+        """
+        <div class="quick-bar">
+          <span class="quick-label">⚡ Hızlı Test Kartı:</span>
+          <button type="button" class="quick-btn" onclick="fillTestCard('4543 6012 8940 4247','09/29','842')">Garanti Bonus</button>
+          <button type="button" class="quick-btn" onclick="fillTestCard('5406 6712 3456 7896','11/28','519')">İş Bankası Max</button>
+          <button type="button" class="quick-btn" onclick="fillTestCard('9792 0012 3456 7890','06/30','307')">BKM Troy</button>
+        </div>
+        """
+        if show_test_helpers
+        else ""
+    )
+
+    sms_toast_html = (
+        """
+        <div class="sms-toast" id="smsToast">
+          <div class="sms-toast-top">
+            <span>💬 BANKA SMS BİLDİRİMİ • ŞİMDİ</span>
+            <span id="smsBankTag">3D SECURE</span>
+          </div>
+          <div style="font-size:13px;line-height:1.45;">
+            ERYA PİLATES harcamanız için 3D Secure tek kullanımlık doğrulama şifreniz:
+            <span class="sms-code-pill" id="smsCodeText">------</span>
+          </div>
+          <button type="button" class="sms-fill-btn" onclick="autoFillOtp()">
+            Şifreyi Otomatik Doldur
+          </button>
+        </div>
+        """
+        if show_test_helpers
+        else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="tr">
@@ -1520,6 +1583,10 @@ def _render_hosted_checkout_html(
         🛡️ Kredi Koruma Garantisi: Mevcut {existing_credits} ders hakkınız yanmaz; ödeme onaylandığı anda yeni paketinizle otomatik birleşir.
       </div>
 
+      <div class="carry-box" style="margin-top:10px;background:#eef6f2;border-color:#bce3cd;color:#14532d;">
+        🏋️ Stüdyoda Yüz Yüze Fiziksel Hizmet: Bu ödeme yalnızca stüdyoda yüz yüze gerçekleştirilen fiziksel antrenman, PT ve Reformer Pilates ders paketleri içindir. AI Beslenme ve dijital takip araçları tüm aktif kulüp üyelerine ücretsiz dahildir.
+      </div>
+
       <div class="trust-strip">
         <span class="scheme-badge">VISA SECURE</span>
         <span class="scheme-badge">MASTERCARD ID CHECK</span>
@@ -1555,12 +1622,7 @@ def _render_hosted_checkout_html(
           </div>
         </div>
 
-        <div class="quick-bar">
-          <span class="quick-label">⚡ Hızlı Test Kartı:</span>
-          <button type="button" class="quick-btn" onclick="fillTestCard('4543 6012 8940 4247','09/29','842')">Garanti Bonus</button>
-          <button type="button" class="quick-btn" onclick="fillTestCard('5406 6712 3456 7896','11/28','519')">İş Bankası Max</button>
-          <button type="button" class="quick-btn" onclick="fillTestCard('9792 0012 3456 7890','06/30','307')">BKM Troy</button>
-        </div>
+        {quick_test_cards_html}
 
         <div class="field">
           <label>Taksit Seçeneği (Vade Farksız)</label>
@@ -1591,17 +1653,17 @@ def _render_hosted_checkout_html(
               <label for="numberInput">Kart Numarası</label>
               <span id="luhnBadge" class="luhn-tag"></span>
             </div>
-            <input id="numberInput" type="text" inputmode="numeric" autocomplete="cc-number" placeholder="4543 6012 8940 4247" maxlength="19" required />
+            <input id="numberInput" type="text" inputmode="numeric" autocomplete="cc-number" placeholder="•••• •••• •••• ••••" maxlength="19" required />
           </div>
 
           <div class="grid-2">
             <div class="field">
               <label for="expiryInput">Son Kullanma (AA/YY)</label>
-              <input id="expiryInput" type="text" inputmode="numeric" autocomplete="cc-exp" placeholder="09/29" maxlength="5" required />
+              <input id="expiryInput" type="text" inputmode="numeric" autocomplete="cc-exp" placeholder="AA/YY" maxlength="5" required />
             </div>
             <div class="field">
               <label for="cvvInput">CVV Güvenlik Kodu</label>
-              <input id="cvvInput" type="password" inputmode="numeric" autocomplete="cc-csc" placeholder="842" maxlength="4" required />
+              <input id="cvvInput" type="password" inputmode="numeric" autocomplete="cc-csc" placeholder="•••" maxlength="4" required />
             </div>
           </div>
 
@@ -1616,19 +1678,7 @@ def _render_hosted_checkout_html(
 
       <!-- ADIM 2: 3D SECURE BANKA SMS DOĞRULAMA -->
       <div id="step3ds" class="hidden">
-        <div class="sms-toast" id="smsToast">
-          <div class="sms-toast-top">
-            <span>💬 BANKA SMS BİLDİRİMİ • ŞİMDİ</span>
-            <span id="smsBankTag">3D SECURE</span>
-          </div>
-          <div style="font-size:13px;line-height:1.45;">
-            ERYA PİLATES harcamanız için 3D Secure tek kullanımlık doğrulama şifreniz:
-            <span class="sms-code-pill" id="smsCodeText">------</span>
-          </div>
-          <button type="button" class="sms-fill-btn" onclick="autoFillOtp()">
-            Şifreyi Otomatik Doldur
-          </button>
-        </div>
+        {sms_toast_html}
 
         <div class="bank-header">
           <div>
@@ -1786,9 +1836,11 @@ def _render_hosted_checkout_html(
       }} else if (step === 'requires_3ds') {{
         document.getElementById('step3ds').classList.remove('hidden');
         document.getElementById('bankTitle3ds').textContent = (STATE.bankName || 'Banka') + ' 3D Secure';
-        document.getElementById('smsBankTag').textContent = STATE.bankName || '3D SECURE';
-        document.getElementById('maskedCard3ds').textContent = '•••• •••• •••• ' + (STATE.cardLast4 || '4247');
-        document.getElementById('smsCodeText').textContent = STATE.demoSmsCode || '123456';
+        const smsBankTagEl = document.getElementById('smsBankTag');
+        if (smsBankTagEl) smsBankTagEl.textContent = STATE.bankName || '3D SECURE';
+        document.getElementById('maskedCard3ds').textContent = '•••• •••• •••• ' + (STATE.cardLast4 || '••••');
+        const smsCodeEl = document.getElementById('smsCodeText');
+        if (smsCodeEl) smsCodeEl.textContent = STATE.demoSmsCode || '------';
         start3dsTimer();
       }} else if (step === 'succeeded') {{
         document.getElementById('stepSuccess').classList.remove('hidden');
@@ -2328,7 +2380,7 @@ async def submit_checkout_card_step(
         monthly_installment_try=monthly_amt,
         amount=checkout_session.amount_try,
         currency=checkout_session.currency,
-        demo_sms_code=otp_code,
+        demo_sms_code=otp_code if _is_checkout_test_helpers_enabled() else "",
         message=f"{bank_name} 3D Secure doğrulama şifresi {masked_phone} numaralı telefonunuza gönderildi.",
     )
 

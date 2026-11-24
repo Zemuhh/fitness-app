@@ -1,27 +1,54 @@
 @echo off
-setlocal EnableExtensions
+setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 title Fitness App - Backend API (Port 8000)
 cd /d "%~dp0"
 
-echo ============================================================
-echo   FITNESS APP - BACKEND API SUNUCUSU (FastAPI + SQLite)
-echo ============================================================
-echo.
+:: .env yoksa varsayilandan olustur
+if not exist ".env" (
+    if exist ".env.example" (
+        copy /y ".env.example" ".env" >nul
+        echo [BILGI] .env dosyasi varsayilan ayarlarla olusturuldu.
+    )
+)
 
-if exist ".env" goto :CHECK_VENV
-if not exist ".env.example" goto :CHECK_VENV
-copy /y ".env.example" ".env" >nul
-echo [BILGI] .env dosyasi varsayilan ayarlarla olusturuldu.
+:: Argumanlari ayristir
+set "INSTALL_ONLY=0"
+set "NO_PAUSE=0"
+set "UVICORN_FLAGS=--no-access-log"
+set "MODE_LABEL=Hizli Uretim Modu (Aninda Acilis)"
 
-:CHECK_VENV
-if not exist ".venv\Scripts\python.exe" goto :FIND_PYTHON
-".venv\Scripts\python.exe" -c "import sys" >nul 2>&1
-if not errorlevel 1 goto :CHECK_DEPS
-echo [UYARI] Mevcut .venv ortami gecersiz, yeniden olusturuluyor...
-rmdir /s /q ".venv" >nul 2>&1
+for %%A in (%*) do (
+    if /i "%%~A"=="--install-only" set "INSTALL_ONLY=1"
+    if /i "%%~A"=="--no-pause" set "NO_PAUSE=1"
+    if /i "%%~A"=="--dev" (
+        set "UVICORN_FLAGS=--reload --reload-include *.py"
+        set "MODE_LABEL=Gelistirici Modu (--reload aktif)"
+    )
+    if /i "%%~A"=="--reload" (
+        set "UVICORN_FLAGS=--reload --reload-include *.py"
+        set "MODE_LABEL=Gelistirici Modu (--reload aktif)"
+    )
+)
 
+:: 1. Hazir .venv kontrolu (Once ust dizindeki ortak backend\.venv, yoksa yerel .venv)
+set "VENV_PY="
+if exist "%~dp0..\..\backend\.venv\Scripts\python.exe" (
+    set "VENV_PY=%~dp0..\..\backend\.venv\Scripts\python.exe"
+) else if exist "%~dp0.venv\Scripts\python.exe" (
+    set "VENV_PY=%~dp0.venv\Scripts\python.exe"
+)
+
+if defined VENV_PY (
+    if "%INSTALL_ONLY%"=="1" goto :VERIFY_DEPS
+    goto :START_SERVER
+)
+
+:: 2. Hic .venv yoksa sistemdeki Python ile olustur
 :FIND_PYTHON
+echo ============================================================
+echo   FITNESS APP - BACKEND ILK KURULUM SIHIRBAZI
+echo ============================================================
 echo [1/3] Sistemde Python kurulumu araniyor...
 set "PY_MODE="
 set "PY_EXE="
@@ -48,29 +75,8 @@ if defined PY_EXE goto :CREATE_VENV
 
 echo.
 echo [HATA] Bilgisayarda kurulu bir Python 3 bulunamadi!
-where winget >nul 2>&1
-if errorlevel 1 goto :NO_WINGET
-
-echo Python 3.12 paket yoneticisi (winget) ile otomatik kurulabilir.
-choice /c EH /n /m "Python 3.12 simdi otomatik kurulsun mu? [E/H]: "
-if errorlevel 2 goto :NO_WINGET
-
-echo.
-echo [KURULUM] Python 3.12 indiriliyor ve kuruluyor, lutfen bekleyin...
-winget install -e --id Python.Python.3.12 --scope user --accept-package-agreements --accept-source-agreements
-call :CHECK_PY_PATH "%LOCALAPPDATA%\Programs\Python\Python312\python.exe"
-if defined PY_EXE goto :CREATE_VENV
-
-echo.
-echo [BILGI] Python kurulduysa bu pencereyi kapatip dosyayi tekrar calistirin.
-pause
-exit /b 1
-
-:NO_WINGET
-echo Lutfen https://www.python.org/downloads/ adresinden Python 3.12 kurun
-echo (Kurulumda "Add python.exe to PATH" secenegini isaretleyin).
-echo.
-pause
+echo Lutfen https://www.python.org/downloads/ adresinden Python 3.12 kurun.
+if "%NO_PAUSE%"=="0" pause
 exit /b 1
 
 :CREATE_VENV
@@ -80,47 +86,75 @@ if "%PY_MODE%"=="PATH" python -m venv ".venv"
 if defined PY_EXE "%PY_EXE%" -m venv ".venv"
 
 if not exist ".venv\Scripts\python.exe" goto :VENV_FAIL
+set "VENV_PY=%~dp0.venv\Scripts\python.exe"
 
-:CHECK_DEPS
-".venv\Scripts\python.exe" -c "import fastapi, uvicorn, sqlalchemy, pydantic, dotenv, httpx" >nul 2>&1
+:VERIFY_DEPS
+"%VENV_PY%" -c "import fastapi, uvicorn, sqlalchemy, pydantic, jwt, bcrypt, multipart, dotenv, httpx" >nul 2>&1
 if not errorlevel 1 goto :DEPS_OK
 
 echo [3/3] Backend Python paketleri yukleniyor (requirements.txt)...
-".venv\Scripts\python.exe" -m pip install --upgrade pip
-".venv\Scripts\python.exe" -m pip install -r "requirements.txt"
+"%VENV_PY%" -m pip install -r "requirements.txt"
 if errorlevel 1 goto :PIP_FAIL
 
 :DEPS_OK
-if /i "%~1"=="--install-only" goto :INSTALL_DONE
+if "%INSTALL_ONLY%"=="1" (
+    echo [TAMAM] Backend sanal ortami ve bagimliliklari hazir.
+    exit /b 0
+)
 
-echo.
-echo [HAZIR] Backend API sunucusu baslatiliyor:
-echo   - Yerel API Adresi : http://127.0.0.1:8000
-echo   - Swagger API Docs : http://127.0.0.1:8000/docs
-echo   - Saglik Kontrolu  : http://127.0.0.1:8000/health
-echo.
-echo Durdurmak icin bu pencerede CTRL+C tuslarina basabilirsiniz.
+:START_SERVER
+:: Port 8000 cakisma korumasi (Errno 10048 onleyici)
+for /f "tokens=5" %%P in ('netstat -ano ^| findstr ":8000 " ^| findstr "LISTENING" 2^>nul') do (
+    if not "%%P"=="0" (
+        echo [BILGI] Port 8000 uzerindeki eski sunucu sureci ^(PID: %%P^) sonlandiriliyor...
+        taskkill /F /PID %%P >nul 2>&1
+    )
+)
+
+echo ============================================================
+echo   FITNESS APP - BACKEND API SUNUCUSU (FastAPI + SQLite)
+echo ============================================================
+echo   Calisma Modu      : %MODE_LABEL%
+echo   Yerel API Adresi  : http://127.0.0.1:8000
+echo   Swagger API Docs  : http://127.0.0.1:8000/docs
+echo   Saglik Kontrolu   : http://127.0.0.1:8000/health
+echo ------------------------------------------------------------
+echo   Not: Gelistirici auto-reload icin "--dev" parametresi verin.
+echo   Durdurmak icin bu pencerede CTRL+C tuslarina basabilirsiniz.
 echo ============================================================
 echo.
 
-".venv\Scripts\python.exe" -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+:RUN_UVICORN
+"%VENV_PY%" -m uvicorn main:app --host 0.0.0.0 --port 8000 %UVICORN_FLAGS%
+set "EXIT_CODE=%errorlevel%"
+
+if not "%EXIT_CODE%"=="0" (
+    "%VENV_PY%" -c "import fastapi, uvicorn, sqlalchemy, pydantic, jwt, bcrypt, multipart, dotenv, httpx" >nul 2>&1
+    if errorlevel 1 (
+        echo.
+        echo [ONARIM] Eksik Python paketi tespit edildi, otomatik yukleniyor...
+        "%VENV_PY%" -m pip install -r "requirements.txt"
+        if not errorlevel 1 (
+            echo [ONARIM] Paketler tamamlandi, sunucu yeniden baslatiliyor...
+            echo.
+            goto :RUN_UVICORN
+        )
+    )
+)
+
 echo.
 echo [BILGI] Backend sunucusu durduruldu.
-pause
-exit /b 0
-
-:INSTALL_DONE
-echo [TAMAM] Backend sanal ortami ve bagimliliklari hazir.
-exit /b 0
+if "%NO_PAUSE%"=="0" pause
+exit /b %EXIT_CODE%
 
 :VENV_FAIL
 echo [HATA] Sanal ortam (.venv) olusturulamadi!
-pause
+if "%NO_PAUSE%"=="0" pause
 exit /b 1
 
 :PIP_FAIL
 echo [HATA] Python paketleri yuklenirken hata olustu! Internet baglantinizi kontrol edin.
-pause
+if "%NO_PAUSE%"=="0" pause
 exit /b 1
 
 :CHECK_PY_PATH

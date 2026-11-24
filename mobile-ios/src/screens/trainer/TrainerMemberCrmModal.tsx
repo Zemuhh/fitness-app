@@ -11,6 +11,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   Activity,
   AlertTriangle,
@@ -18,7 +19,9 @@ import {
   Calendar,
   CheckCircle2,
   CreditCard,
+  Droplets,
   Flame,
+  Info,
   MessageSquareQuote,
   Phone,
   PlusCircle,
@@ -28,8 +31,16 @@ import {
   TrendingDown,
   TrendingUp,
   X,
+  Zap,
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
+import {
+  BodyHeatmapCard,
+  BodyZonesRecord,
+  EnrichedTrainerMemberFields,
+  MemberDailyWellness,
+  getEnergyStatusDisplay,
+} from '@/components/BodyHeatmapCard';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS } from '@/theme/colors';
 import {
@@ -47,6 +58,7 @@ interface Props {
   member: TrainerMemberCrm | null;
   onClose: () => void;
   onMemberMutated: () => Promise<void>;
+  onZonesMutated?: (memberId: number, zones: BodyZonesRecord) => void;
   onShowBanner?: (type: 'success' | 'error', text: string) => void;
 }
 
@@ -61,6 +73,7 @@ export function TrainerMemberCrmModal({
   member,
   onClose,
   onMemberMutated,
+  onZonesMutated,
   onShowBanner,
 }: Props) {
   const { triggerGlobalRefresh, reloadUsers } = useAuthDemo();
@@ -77,6 +90,10 @@ export function TrainerMemberCrmModal({
 
   const [metricsSummary, setMetricsSummary] = useState<MemberMetricsSummary | null>(null);
   const [loadingMetrics, setLoadingMetrics] = useState<boolean>(false);
+  const [metricsError, setMetricsError] = useState<string | null>(null);
+
+  const [wellness, setWellness] = useState<MemberDailyWellness | null>(null);
+  const [loadingWellness, setLoadingWellness] = useState<boolean>(false);
 
   const [localFeedback, setLocalFeedback] = useState<{
     type: 'success' | 'error';
@@ -96,13 +113,28 @@ export function TrainerMemberCrmModal({
 
   const fetchMetrics = useCallback(async (memberId: number) => {
     setLoadingMetrics(true);
+    setMetricsError(null);
     try {
       const res = await apiRequest<MemberMetricsSummary>(`/member/${memberId}/metrics`);
       setMetricsSummary(res);
-    } catch {
-      // Hata durumunda sessizce boş özet bırak
+    } catch (err: any) {
+      setMetricsError(
+        err?.message || 'Ölçüm geçmişi yüklenemedi. Lütfen tekrar deneyin.'
+      );
     } finally {
       setLoadingMetrics(false);
+    }
+  }, []);
+
+  const fetchWellness = useCallback(async (memberId: number) => {
+    setLoadingWellness(true);
+    try {
+      const res = await apiRequest<MemberDailyWellness>(`/wellness/${memberId}/today`);
+      setWellness(res);
+    } catch {
+      // Yedek olarak üye nesnesindeki alanları kullan
+    } finally {
+      setLoadingWellness(false);
     }
   }, []);
 
@@ -115,16 +147,39 @@ export function TrainerMemberCrmModal({
       setMetricDateInput(getTodayIso());
       setCommentInput('');
       setLocalFeedback(null);
+      setWellness(null);
       fetchMetrics(member.id);
+      fetchWellness(member.id);
     } else if (!visible) {
       setMetricsSummary(null);
+      setWellness(null);
       setLocalFeedback(null);
     }
-  }, [visible, member?.id, fetchMetrics]);
+  }, [visible, member?.id, fetchMetrics, fetchWellness]);
 
   if (!member) return null;
 
+  const enrichedMember = member as TrainerMemberCrm & EnrichedTrainerMemberFields;
   const isLowCredit = member.low_credit_warning || member.remaining_credits <= 2;
+
+  const waterMl = wellness?.water_ml ?? enrichedMember.today_water_ml ?? 0;
+  const waterGoalMl = wellness?.water_goal_ml ?? enrichedMember.water_goal_ml ?? 3000;
+  const waterPct =
+    waterGoalMl > 0
+      ? Math.min(100, Math.max(0, Math.round((waterMl / waterGoalMl) * 100)))
+      : 0;
+
+  const proteinG = wellness?.protein_g ?? enrichedMember.today_protein_g ?? 0;
+  const proteinGoalG = wellness?.protein_goal_g ?? enrichedMember.protein_goal_g ?? 140;
+  const proteinPct =
+    proteinGoalG > 0
+      ? Math.min(100, Math.max(0, Math.round((proteinG / proteinGoalG) * 100)))
+      : 0;
+
+  const energyRaw =
+    wellness?.energy_status ?? enrichedMember.today_energy_status ?? 'normal';
+  const energyMeta = getEnergyStatusDisplay(energyRaw);
+  const sleepHours = wellness?.sleep_hours ?? null;
 
   const handlePrefillFromLatest = () => {
     const latest = metricsSummary?.latest || member.latest_metric;
@@ -230,9 +285,9 @@ export function TrainerMemberCrmModal({
     >
       <KeyboardAvoidingView
         style={styles.backdrop}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
-        <View style={styles.sheet}>
+        <SafeAreaView style={styles.sheet} edges={['bottom']}>
           {/* Üst Sabit Başlık */}
           <View style={styles.topHeader}>
             <View style={styles.topHeaderLeft}>
@@ -335,6 +390,107 @@ export function TrainerMemberCrmModal({
                 </View>
               </View>
             </View>
+
+            {/* GÜNLÜK SU, PROTEİN & ENERJİ / UYKU DURUMU KARTI */}
+            <View style={styles.sectionCard}>
+              <View style={styles.sectionTitleRow}>
+                <View style={[styles.iconBadge, { backgroundColor: '#E0F2FE' }]}>
+                  <Droplets size={16} color="#0284C7" />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.sectionTitle}>Günlük Su, Protein & Enerji Durumu</Text>
+                  <Text style={styles.sectionSub}>
+                    Üyenin bugünkü beslenme ve toparlanma verisi
+                  </Text>
+                </View>
+                {loadingWellness ? (
+                  <ActivityIndicator size="small" color={COLORS.secondary} />
+                ) : (
+                  <View
+                    style={[
+                      styles.energyStatusChip,
+                      {
+                        backgroundColor: energyMeta.bg,
+                        borderColor: energyMeta.border,
+                      },
+                    ]}
+                  >
+                    <Text
+                      style={[styles.energyStatusChipText, { color: energyMeta.color }]}
+                    >
+                      {energyMeta.label}
+                    </Text>
+                  </View>
+                )}
+              </View>
+
+              {energyMeta.key === 'low' && (
+                <View style={styles.lowEnergyWarningBox}>
+                  <Zap size={14} color="#B91C1C" />
+                  <Text style={styles.lowEnergyWarningText}>
+                    ⚡ Bugün Enerjisi/Uykusu Düşük - Tempolu Yüklenme
+                    {sleepHours !== null ? ` (${sleepHours} sa uyku)` : ''}
+                  </Text>
+                </View>
+              )}
+
+              {/* Su Hedefi İlerleme Çubuğu */}
+              <View style={styles.wellnessBarGroup}>
+                <View style={styles.wellnessBarHeader}>
+                  <Text style={styles.wellnessBarLabel}>💧 Su Hedefi Tamamlama</Text>
+                  <Text style={[styles.wellnessBarValue, { color: '#0284C7' }]}>
+                    %{waterPct} • {waterMl} / {waterGoalMl} ml
+                  </Text>
+                </View>
+                <View style={[styles.wellnessTrack, { backgroundColor: '#E0F2FE' }]}>
+                  <View
+                    style={[
+                      styles.wellnessFill,
+                      {
+                        width: `${waterPct}%`,
+                        backgroundColor: '#0EA5E9',
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+
+              {/* Protein Hedefi İlerleme Çubuğu */}
+              <View style={styles.wellnessBarGroup}>
+                <View style={styles.wellnessBarHeader}>
+                  <Text style={styles.wellnessBarLabel}>🥩 Protein Hedefi Tamamlama</Text>
+                  <Text style={[styles.wellnessBarValue, { color: '#047857' }]}>
+                    %{proteinPct} • {proteinG} / {proteinGoalG} g
+                  </Text>
+                </View>
+                <View style={[styles.wellnessTrack, { backgroundColor: '#D1FAE5' }]}>
+                  <View
+                    style={[
+                      styles.wellnessFill,
+                      {
+                        width: `${proteinPct}%`,
+                        backgroundColor: '#10B981',
+                      },
+                    ]}
+                  />
+                </View>
+              </View>
+            </View>
+
+            {/* İNTERAKTİF VÜCUT & SAKATLIK BÖLGE HARİTASI */}
+            <BodyHeatmapCard
+              userId={member.id}
+              userName={member.full_name}
+              initialZones={enrichedMember.body_zones}
+              title="İnteraktif Vücut & Sakatlık Haritası"
+              subtitle="Eğitmen olarak bölgeye dokunup sağlam, hassasiyet veya sakatlık durumunu güncelleyin"
+              compact
+              onZonesSaved={async (updatedZones) => {
+                onZonesMutated?.(member.id, updatedZones);
+                await onMemberMutated();
+                triggerGlobalRefresh();
+              }}
+            />
 
             {/* 1. BÖLÜM: SAKATLIK & ÖZEL ANTRENMAN NOTU */}
             <View style={styles.sectionCard}>
@@ -529,6 +685,17 @@ export function TrainerMemberCrmModal({
                   <ActivityIndicator size="small" color={COLORS.secondary} />
                   <Text style={styles.metricsLoaderText}>Ölçüm geçmişi yükleniyor...</Text>
                 </View>
+              ) : metricsError && reversedMetrics.length === 0 ? (
+                <View style={styles.metricsErrorWrap}>
+                  <Text style={styles.metricsErrorText}>{metricsError}</Text>
+                  <TouchableOpacity
+                    style={styles.metricsRetryBtn}
+                    onPress={() => fetchMetrics(member.id)}
+                    activeOpacity={0.85}
+                  >
+                    <Text style={styles.metricsRetryBtnText}>Tekrar Dene</Text>
+                  </TouchableOpacity>
+                </View>
               ) : reversedMetrics.length === 0 ? (
                 <Text style={styles.emptyHistoryText}>
                   Bu üye için henüz kayıtlı bir vücut ölçümü bulunmuyor.
@@ -665,8 +832,18 @@ export function TrainerMemberCrmModal({
                 </>
               )}
             </View>
+
+            {/* SAĞLIK & SAKATLIK TAKİBİ SORUMLULUK REDDİ (APP STORE 1.4.1) */}
+            <View style={styles.medicalDisclaimerBox}>
+              <Info size={15} color={COLORS.textSecondary} />
+              <Text style={styles.medicalDisclaimerText}>
+                Bilgilendirme: Bu alandaki analizler ve notlar yalnızca spor/fitness
+                takibi amaçlıdır; tıbbi tanı, tedavi veya doktor tavsiyesi yerine
+                geçmez.
+              </Text>
+            </View>
           </ScrollView>
-        </View>
+        </SafeAreaView>
       </KeyboardAvoidingView>
     </Modal>
   );
@@ -1078,5 +1255,100 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 17,
     fontWeight: '600',
+  },
+  energyStatusChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  energyStatusChipText: {
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  lowEnergyWarningBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#FEF2F2',
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+  },
+  lowEnergyWarningText: {
+    flex: 1,
+    color: '#B91C1C',
+    fontSize: 12,
+    fontWeight: '800',
+    lineHeight: 17,
+  },
+  wellnessBarGroup: {
+    gap: 6,
+  },
+  wellnessBarHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  wellnessBarLabel: {
+    color: COLORS.textPrimary,
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  wellnessBarValue: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  wellnessTrack: {
+    height: 8,
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  wellnessFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  metricsErrorWrap: {
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+  },
+  metricsErrorText: {
+    color: COLORS.dangerText,
+    fontSize: 12.5,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  metricsRetryBtn: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  metricsRetryBtnText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  medicalDisclaimerBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 13,
+    marginBottom: 8,
+  },
+  medicalDisclaimerText: {
+    flex: 1,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 17.5,
+    fontWeight: '500',
   },
 });

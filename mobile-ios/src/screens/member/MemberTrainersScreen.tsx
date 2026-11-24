@@ -44,7 +44,7 @@ export function MemberTrainersScreen({
         const res = await apiRequest<TrainerCard[]>(
           `/trainers?member_id=${member.id}`
         );
-        setTrainers(res);
+        setTrainers(Array.isArray(res) ? res : []);
       } catch (err: any) {
         setErrorMsg(err?.message || 'Eğitmen kadrosu yüklenemedi.');
       } finally {
@@ -114,7 +114,15 @@ export function MemberTrainersScreen({
       </View>
 
       {/* Geniş ve Ferah Beyaz Eğitmen Kartları */}
-      {trainers.map((tr) => (
+      {(trainers ?? []).length === 0 ? (
+        <View style={styles.trainerCard}>
+          <Text style={styles.trainerName}>Henüz aktif eğitmen bulunamadı</Text>
+          <Text style={styles.bioText}>
+            Stüdyo eğitmen kadrosu güncellendiğinde profilleri ve açık ders vakitleri burada listelenecektir.
+          </Text>
+        </View>
+      ) : (
+        (trainers ?? []).map((tr) => (
         <View key={tr.id} style={styles.trainerCard}>
           {/* Üst Kimlik Satırı */}
           <View style={styles.cardTopRow}>
@@ -190,7 +198,8 @@ export function MemberTrainersScreen({
             </TouchableOpacity>
           </View>
         </View>
-      ))}
+      ))
+      )}
     </ScrollView>
   );
 }

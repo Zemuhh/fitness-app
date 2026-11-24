@@ -9,26 +9,36 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import Svg, { Circle, Defs, LinearGradient, Stop } from 'react-native-svg';
 import {
   ArrowRight,
   Award,
   Calendar,
   Clock,
+  Droplets,
   Flame,
+  Gift,
   MapPin,
+  Plus,
   QrCode,
   Sparkles,
   User,
   XCircle,
 } from 'lucide-react-native';
+import { apiRequest } from '@/config/api';
 import { ActivityRing } from '@/components/ActivityRing';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
+import { LiveGymOccupancyCard } from '@/components/LiveGymOccupancyCard';
+import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
 import {
   AppUser,
+  DailyWellness,
+  EnergyStatus,
   MemberBookingItem,
   MemberDashboardData,
   MemberDrawerRoute,
+  MemberReferralInfo,
 } from '@/types/fitness';
 import { formatTurkishDateLabel, getDaysRemaining } from '@/utils/dateHelpers';
 import { getCategoryVisuals } from '@/screens/member/MemberAvatar';
@@ -43,6 +53,60 @@ export interface MemberDashboardTabProps {
   busyBookingId: number | null;
 }
 
+const HOME_ENERGY_CHOICES: Array<{
+  key: EnergyStatus;
+  label: string;
+  activeBg: string;
+  activeBorder: string;
+  activeText: string;
+}> = [
+  {
+    key: 'high',
+    label: '🔋 Enerjik',
+    activeBg: '#ECFDF5',
+    activeBorder: '#34D399',
+    activeText: '#047857',
+  },
+  {
+    key: 'normal',
+    label: '⚡ Normal',
+    activeBg: '#EFF6FF',
+    activeBorder: '#60A5FA',
+    activeText: '#1D4ED8',
+  },
+  {
+    key: 'low',
+    label: '🪫 Uykusuz / Yorgunum',
+    activeBg: '#FFFBEB',
+    activeBorder: '#F59E0B',
+    activeText: '#B45309',
+  },
+];
+
+function formatLitersValue(ml: number): string {
+  const liters = Math.max(0, ml) / 1000;
+  const rounded = Math.round(liters * 100) / 100;
+  if (Number.isInteger(rounded)) return rounded.toFixed(1);
+  const twoDec = rounded.toFixed(2);
+  return twoDec.endsWith('0') ? rounded.toFixed(1) : twoDec;
+}
+
+function deriveInviteCode(fullName: string, id: number): string {
+  const clean = (fullName || 'UYE')
+    .trim()
+    .split(/\s+/)[0]
+    .replace(/ğ/gi, 'G')
+    .replace(/ü/gi, 'U')
+    .replace(/ş/gi, 'S')
+    .replace(/ı/gi, 'I')
+    .replace(/i/gi, 'I')
+    .replace(/ö/gi, 'O')
+    .replace(/ç/gi, 'C')
+    .replace(/[^A-Za-z0-9]/g, '')
+    .toUpperCase();
+  return `${clean || `FIT${id}`}10`;
+}
+
 export function MemberDashboardTab({
   member,
   dashboard,
@@ -52,7 +116,47 @@ export function MemberDashboardTab({
   onCancelBooking,
   busyBookingId,
 }: MemberDashboardTabProps) {
+  const { refreshSignal, triggerGlobalRefresh } = useAuthDemo();
+
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [liveRefreshCount, setLiveRefreshCount] = useState<number>(0);
+
+  const [wellness, setWellness] = useState<DailyWellness>(() => ({
+    member_id: member.id,
+    date: new Date().toISOString().slice(0, 10),
+    water_ml: 1500,
+    water_goal_ml: 3000,
+    sleep_hours: 7.5,
+    energy_status: 'normal',
+    calories_intake: 0,
+    calories_goal: 2100,
+    protein_g: 0,
+    protein_goal_g: 140,
+    carbs_g: 0,
+    carbs_goal_g: 220,
+    fat_g: 0,
+    fat_goal_g: 65,
+  }));
+  const [addingWater, setAddingWater] = useState<boolean>(false);
+
+  const fallbackInviteCode = useMemo(
+    () =>
+      dashboard.member?.referral_code ||
+      member.referral_code ||
+      deriveInviteCode(dashboard.member?.full_name || member.full_name, member.id),
+    [
+      dashboard.member?.full_name,
+      dashboard.member?.referral_code,
+      member.full_name,
+      member.id,
+      member.referral_code,
+    ]
+  );
+
+  const [inviteCode, setInviteCode] = useState<string>(fallbackInviteCode);
+  const [referralCount, setReferralCount] = useState<number>(
+    dashboard.member?.referral_count ?? member.referral_count ?? 0
+  );
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(10)).current;
@@ -72,11 +176,89 @@ export function MemberDashboardTab({
     ]).start();
   }, [fadeAnim, slideAnim]);
 
+  const fetchHomeExtras = useCallback(async () => {
+    try {
+      const [wellRes, refRes] = await Promise.all([
+        apiRequest<DailyWellness>(`/wellness/${member.id}/today`).catch(() => null),
+        apiRequest<MemberReferralInfo>(`/referral/${member.id}`).catch(() => null),
+      ]);
+      if (wellRes && typeof wellRes.water_ml === 'number') {
+        setWellness(wellRes);
+      }
+      if (refRes && refRes.referral_code) {
+        setInviteCode(refRes.referral_code);
+        setReferralCount(refRes.referral_count ?? 0);
+      }
+    } catch {
+      // Yedek değerlerle kesintisiz devam et
+    }
+  }, [member.id]);
+
+  useEffect(() => {
+    fetchHomeExtras();
+  }, [fetchHomeExtras, refreshSignal]);
+
   const handlePullRefresh = useCallback(async () => {
     setRefreshing(true);
-    await Promise.resolve(onRefreshParent());
+    setLiveRefreshCount((c) => c + 1);
+    await Promise.all([
+      Promise.resolve(onRefreshParent()),
+      fetchHomeExtras(),
+    ]);
     setRefreshing(false);
-  }, [onRefreshParent]);
+  }, [fetchHomeExtras, onRefreshParent]);
+
+  const handleQuickAddWater = useCallback(async () => {
+    if (addingWater) return;
+    setAddingWater(true);
+    setWellness((prev) => ({
+      ...prev,
+      water_ml: prev.water_ml + 250,
+    }));
+
+    try {
+      const updated = await apiRequest<DailyWellness>(
+        `/wellness/${member.id}/water`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ amount_ml: 250 }),
+        }
+      );
+      if (updated && typeof updated.water_ml === 'number') {
+        setWellness(updated);
+      }
+      triggerGlobalRefresh();
+    } catch {
+      // Optimistic değer korunur
+    } finally {
+      setAddingWater(false);
+    }
+  }, [addingWater, member.id, triggerGlobalRefresh]);
+
+  const handleQuickEnergySelect = useCallback(
+    async (status: EnergyStatus) => {
+      setWellness((prev) => ({
+        ...prev,
+        energy_status: status,
+      }));
+      try {
+        const updated = await apiRequest<DailyWellness>(
+          `/wellness/${member.id}/energy`,
+          {
+            method: 'POST',
+            body: JSON.stringify({ energy_status: status }),
+          }
+        );
+        if (updated && updated.energy_status) {
+          setWellness(updated);
+        }
+        triggerGlobalRefresh();
+      } catch {
+        // Optimistic seçim korunur
+      }
+    },
+    [member.id, triggerGlobalRefresh]
+  );
 
   const firstName = useMemo(() => {
     const clean = (dashboard.member?.full_name || member.full_name || '').trim();
@@ -98,8 +280,8 @@ export function MemberDashboardTab({
   const daysLeft = getDaysRemaining(pkg?.expiry_date);
 
   const upcomingBooking = useMemo(() => {
-    return dashboard.my_bookings.find((b) => b.status === 'booked') ?? null;
-  }, [dashboard.my_bookings]);
+    return (dashboard?.my_bookings ?? []).find((b) => b.status === 'booked') ?? null;
+  }, [dashboard?.my_bookings]);
 
   const upcomingCatVis = upcomingBooking
     ? getCategoryVisuals(upcomingBooking.category)
@@ -107,6 +289,16 @@ export function MemberDashboardTab({
 
   const isCancellingUpcoming =
     upcomingBooking !== null && busyBookingId === upcomingBooking.booking_id;
+
+  // Su halkası SVG ölçüleri
+  const waterRingSize = 104;
+  const waterStroke = 10;
+  const waterCenter = waterRingSize / 2;
+  const waterRadius = (waterRingSize - waterStroke * 2) / 2;
+  const waterCircumference = 2 * Math.PI * waterRadius;
+  const waterGoal = wellness.water_goal_ml > 0 ? wellness.water_goal_ml : 3000;
+  const waterRatio = Math.max(0, Math.min(1, wellness.water_ml / waterGoal));
+  const waterDashOffset = waterCircumference * (1 - waterRatio);
 
   return (
     <ScrollView
@@ -127,6 +319,9 @@ export function MemberDashboardTab({
           transform: [{ translateY: slideAnim }],
         }}
       >
+        {/* 0. CANLI SALON YOĞUNLUK RADARI BENTO KARTI (EN ÜSTTE) */}
+        <LiveGymOccupancyCard refreshTrigger={liveRefreshCount + refreshSignal} />
+
         {/* 1. ZARİF KARŞILAMA BAŞLIĞI & DÜZENLİ SERİ ROZETİ */}
         <View style={styles.greetingSection}>
           <View style={styles.greetingTextCol}>
@@ -144,36 +339,7 @@ export function MemberDashboardTab({
           </View>
         </View>
 
-        {/* 2. ERYA PİLATES İMZA MİMARİ KEMERLİ STÜDYO KARTI */}
-        <View style={styles.studioSignatureBanner}>
-          <View style={styles.archHaloTopLine} />
-          <View style={styles.signatureTopRow}>
-            <EryaBrandLogo size={38} />
-            <View style={styles.signatureTextWrap}>
-              <Text style={styles.signatureMotto}>
-                DENGEYLE GÜÇLEN • ZARAFETLE PARLA
-              </Text>
-              <Text style={styles.signatureScriptQuote}>
-                “A journey to your best self”
-              </Text>
-            </View>
-          </View>
-
-          <View style={styles.signatureMetaRow}>
-            <View style={styles.locationChip}>
-              <MapPin size={12} color={COLORS.primary} />
-              <Text style={styles.locationChipText}>
-                Eryaman Port AVM D:2/2C • 09:00–22:00
-              </Text>
-            </View>
-            <View style={styles.multisportChip}>
-              <Award size={12} color={COLORS.secondary} />
-              <Text style={styles.multisportChipText}>MultiSport Geçerli</Text>
-            </View>
-          </View>
-        </View>
-
-        {/* 3. KALAN SEANS & AKTİF REFORMER/CADILLAC PAKET KARTI */}
+        {/* 2. KALAN SEANS & AKTİF REFORMER/CADILLAC PAKET KARTI */}
         <View style={styles.creditsCard}>
           <View style={styles.creditsCardRow}>
             <View style={styles.creditsInfoCol}>
@@ -234,7 +400,207 @@ export function MemberDashboardTab({
           </View>
         </View>
 
-        {/* 4. YAKLAŞAN SEANS RANDEVU KARTI */}
+        {/* 3. GÜNLÜK TOPARLANMA: SU TÜKETİM HALKASI & ENERJİ SEÇİCİSİ BENTO KARTI */}
+        <View style={styles.recoveryBentoCard}>
+          <View style={styles.recoveryHeaderRow}>
+            <View style={styles.recoveryTitleLeft}>
+              <View style={styles.recoveryIconBadge}>
+                <Droplets size={16} color="#0284C7" />
+              </View>
+              <View>
+                <Text style={styles.recoveryTitle}>Günlük Toparlanma & Su</Text>
+                <Text style={styles.recoverySubtitle}>
+                  Hidrasyon halkası & antrenman enerji durumu
+                </Text>
+              </View>
+            </View>
+
+            <TouchableOpacity
+              style={styles.nutritionJumpPill}
+              onPress={() => onNavigate('nutrition')}
+              activeOpacity={0.8}
+              accessibilityRole="button"
+            >
+              <Text style={styles.nutritionJumpPillText}>🥗 AI Koç</Text>
+              <ArrowRight size={13} color="#0D9488" />
+            </TouchableOpacity>
+          </View>
+
+          {/* Su Halkası + +250 ml Tek Dokunuş Butonu */}
+          <View style={styles.waterRow}>
+            <TouchableOpacity
+              style={styles.waterSvgWrap}
+              onPress={handleQuickAddWater}
+              activeOpacity={0.85}
+              accessibilityRole="button"
+              accessibilityLabel="+250 ml su ekle"
+            >
+              <Svg width={waterRingSize} height={waterRingSize}>
+                <Defs>
+                  <LinearGradient
+                    id="homeWaterRingGrad"
+                    x1="0%"
+                    y1="0%"
+                    x2="100%"
+                    y2="100%"
+                  >
+                    <Stop offset="0%" stopColor="#38BDF8" />
+                    <Stop offset="100%" stopColor="#0D9488" />
+                  </LinearGradient>
+                </Defs>
+                <Circle
+                  cx={waterCenter}
+                  cy={waterCenter}
+                  r={waterRadius}
+                  stroke="#E0F2FE"
+                  strokeWidth={waterStroke}
+                  fill="none"
+                />
+                <Circle
+                  cx={waterCenter}
+                  cy={waterCenter}
+                  r={waterRadius}
+                  stroke="url(#homeWaterRingGrad)"
+                  strokeWidth={waterStroke}
+                  strokeLinecap="round"
+                  strokeDasharray={`${waterCircumference} ${waterCircumference}`}
+                  strokeDashoffset={waterDashOffset}
+                  transform={`rotate(-90 ${waterCenter} ${waterCenter})`}
+                  fill="none"
+                />
+              </Svg>
+              <View style={styles.waterRingCenterLabel} pointerEvents="none">
+                <Text style={styles.waterRingCurrentText}>
+                  {formatLitersValue(wellness.water_ml)}
+                </Text>
+                <Text style={styles.waterRingGoalText}>
+                  / {formatLitersValue(waterGoal)} L
+                </Text>
+              </View>
+            </TouchableOpacity>
+
+            <View style={styles.waterRightInfo}>
+              <Text style={styles.waterRatioHeadline}>
+                {formatLitersValue(wellness.water_ml)} / {formatLitersValue(waterGoal)} L
+              </Text>
+              <Text style={styles.waterDescText}>
+                Günlük su hedefinize ulaşmak için her bardakta dokunun.
+              </Text>
+              <TouchableOpacity
+                style={[styles.quickWaterBtn, addingWater && { opacity: 0.75 }]}
+                onPress={handleQuickAddWater}
+                disabled={addingWater}
+                activeOpacity={0.84}
+                accessibilityRole="button"
+              >
+                <Plus size={15} color="#FFFFFF" strokeWidth={2.5} />
+                <Text style={styles.quickWaterBtnText}>💧 +250 ml Su Ekle</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          {/* Bugün Nasıl Hissediyorsun? Seçicisi */}
+          <View style={styles.energySectionBox}>
+            <Text style={styles.energyPromptTitle}>Bugün Nasıl Hissediyorsun?</Text>
+            <View style={styles.energyPillsRow}>
+              {HOME_ENERGY_CHOICES.map((opt) => {
+                const active = wellness.energy_status === opt.key;
+                return (
+                  <TouchableOpacity
+                    key={opt.key}
+                    style={[
+                      styles.energyChip,
+                      active && {
+                        backgroundColor: opt.activeBg,
+                        borderColor: opt.activeBorder,
+                      },
+                    ]}
+                    onPress={() => handleQuickEnergySelect(opt.key)}
+                    activeOpacity={0.82}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text
+                      style={[
+                        styles.energyChipText,
+                        active && { color: opt.activeText, fontWeight: '800' },
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
+            {wellness.energy_status === 'low' && (
+              <Text style={styles.lowEnergyHintText}>
+                ⚡ Eğitmeninizin ekranına bugün düşük enerjili olduğunuz otomatik
+                iletildi.
+              </Text>
+            )}
+          </View>
+        </View>
+
+        {/* 4. ARKADAŞINI GETİR (+1 HEDİYE DERS) ÖZET DAVET KARTI */}
+        <TouchableOpacity
+          style={styles.referralPromoCard}
+          onPress={() => onNavigate('referral')}
+          activeOpacity={0.88}
+          accessibilityRole="button"
+        >
+          <View style={styles.referralLeftIconBox}>
+            <Gift size={24} color="#0D9488" strokeWidth={2.1} />
+          </View>
+
+          <View style={styles.referralCenterCol}>
+            <View style={styles.referralTopTagRow}>
+              <Text style={styles.referralCardTitle}>
+                🎁 Arkadaşını Getir (+1 Hediye Ders)
+              </Text>
+            </View>
+            <Text style={styles.referralCardDesc}>
+              Özel kodun{' '}
+              <Text style={styles.referralInlineCode}>{inviteCode}</Text> ile
+              arkadaşını davet et, ikiniz de +1 ücretsiz seans kazanın!
+              {referralCount > 0 ? ` (${referralCount} davet tamamlandı)` : ''}
+            </Text>
+          </View>
+
+          <View style={styles.referralArrowCircle}>
+            <ArrowRight size={17} color="#FFFFFF" strokeWidth={2.4} />
+          </View>
+        </TouchableOpacity>
+
+        {/* 5. ERYA PİLATES İMZA MİMARİ KEMERLİ STÜDYO KARTI */}
+        <View style={styles.studioSignatureBanner}>
+          <View style={styles.archHaloTopLine} />
+          <View style={styles.signatureTopRow}>
+            <EryaBrandLogo size={38} />
+            <View style={styles.signatureTextWrap}>
+              <Text style={styles.signatureMotto}>
+                DENGEYLE GÜÇLEN • ZARAFETLE PARLA
+              </Text>
+              <Text style={styles.signatureScriptQuote}>
+                “A journey to your best self”
+              </Text>
+            </View>
+          </View>
+
+          <View style={styles.signatureMetaRow}>
+            <View style={styles.locationChip}>
+              <MapPin size={12} color={COLORS.primary} />
+              <Text style={styles.locationChipText}>
+                Eryaman Port AVM D:2/2C • 09:00–22:00
+              </Text>
+            </View>
+            <View style={styles.multisportChip}>
+              <Award size={12} color={COLORS.secondary} />
+              <Text style={styles.multisportChipText}>MultiSport Geçerli</Text>
+            </View>
+          </View>
+        </View>
+
+        {/* 6. YAKLAŞAN SEANS RANDEVU KARTI */}
         <View style={styles.upcomingCard}>
           <View style={styles.cardHeaderRow}>
             <View style={styles.cardHeaderLeft}>
@@ -337,7 +703,7 @@ export function MemberDashboardTab({
           )}
         </View>
 
-        {/* 5. YAN YANA 2 ADET HIZLI STÜDYO KISAYOLU (VEKTÖR İKONLU) */}
+        {/* 7. YAN YANA 2 ADET HIZLI STÜDYO KISAYOLU (VEKTÖR İKONLU) */}
         <View style={styles.shortcutsRow}>
           <TouchableOpacity
             style={styles.shortcutCard}
@@ -439,6 +805,225 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontSize: 11.5,
     fontWeight: '800',
+  },
+  recoveryBentoCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 18,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    gap: 14,
+    ...CARD_SHADOW,
+  },
+  recoveryHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  recoveryTitleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    flex: 1,
+  },
+  recoveryIconBadge: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: '#E0F2FE',
+    borderWidth: 1,
+    borderColor: '#BAE6FD',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  recoveryTitle: {
+    fontFamily: FONTS.serif,
+    color: COLORS.textPrimary,
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  recoverySubtitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  nutritionJumpPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: '#ECFDF5',
+    borderWidth: 1,
+    borderColor: '#99F6E4',
+    paddingHorizontal: 11,
+    paddingVertical: 6,
+    borderRadius: 999,
+  },
+  nutritionJumpPillText: {
+    fontFamily: FONTS.sans,
+    color: '#0F766E',
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  waterRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  waterSvgWrap: {
+    width: 104,
+    height: 104,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waterRingCenterLabel: {
+    position: 'absolute',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  waterRingCurrentText: {
+    fontFamily: FONTS.serif,
+    color: '#0F172A',
+    fontSize: 21,
+    fontWeight: '700',
+    lineHeight: 24,
+  },
+  waterRingGoalText: {
+    fontFamily: FONTS.sans,
+    color: '#0284C7',
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  waterRightInfo: {
+    flex: 1,
+    gap: 6,
+  },
+  waterRatioHeadline: {
+    fontFamily: FONTS.sans,
+    color: '#0284C7',
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  waterDescText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  quickWaterBtn: {
+    alignSelf: 'flex-start',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    minHeight: 38,
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginTop: 2,
+  },
+  quickWaterBtnText: {
+    fontFamily: FONTS.sans,
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  energySectionBox: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 16,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    gap: 9,
+  },
+  energyPromptTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
+  energyPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 7,
+  },
+  energyChip: {
+    paddingHorizontal: 11,
+    paddingVertical: 7.5,
+    borderRadius: 11,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1.5,
+    borderColor: '#CBD5E1',
+  },
+  energyChipText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  lowEnergyHintText: {
+    fontFamily: FONTS.sans,
+    color: '#B45309',
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  referralPromoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#ECFDF5',
+    borderRadius: 24,
+    padding: 17,
+    marginBottom: 16,
+    borderWidth: 1.5,
+    borderColor: '#6EE7B7',
+    ...CARD_SHADOW,
+  },
+  referralLeftIconBox: {
+    width: 48,
+    height: 48,
+    borderRadius: 16,
+    backgroundColor: '#FFFFFF',
+    borderWidth: 1,
+    borderColor: '#A7F3D0',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  referralCenterCol: {
+    flex: 1,
+    gap: 4,
+  },
+  referralTopTagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  referralCardTitle: {
+    fontFamily: FONTS.serif,
+    color: '#064E3B',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  referralCardDesc: {
+    fontFamily: FONTS.sans,
+    color: '#0F766E',
+    fontSize: 12.2,
+    fontWeight: '600',
+    lineHeight: 17.5,
+  },
+  referralInlineCode: {
+    fontWeight: '800',
+    color: '#4F46E5',
+  },
+  referralArrowCircle: {
+    width: 34,
+    height: 34,
+    borderRadius: 999,
+    backgroundColor: '#0D9488',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   studioSignatureBanner: {
     backgroundColor: COLORS.espresso,

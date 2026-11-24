@@ -47,6 +47,73 @@ export interface AppUser {
   notify_reminders?: boolean;
   notify_waitlist?: boolean;
   notify_campaigns?: boolean;
+  referral_code?: string | null;
+  referral_count?: number;
+  body_zones?: Record<string, string>;
+}
+
+export type EnergyStatus = 'high' | 'normal' | 'low';
+
+export interface HourlyForecastItem {
+  hour: string;
+  pct: number;
+}
+
+export interface ClubLiveStatus {
+  occupancy_pct: number;
+  active_members_count: number;
+  active_members_label: string;
+  capacity?: number;
+  status_level?: 'low' | 'moderate' | 'high' | string;
+  status_badge: string;
+  hourly_forecast: HourlyForecastItem[];
+}
+
+export interface DailyWellness {
+  member_id: number;
+  date: string;
+  water_ml: number;
+  water_goal_ml: number;
+  sleep_hours: number;
+  energy_status: EnergyStatus;
+  calories_intake: number;
+  calories_goal: number;
+  protein_g: number;
+  protein_goal_g: number;
+  carbs_g: number;
+  carbs_goal_g: number;
+  fat_g: number;
+  fat_goal_g: number;
+}
+
+export interface NutritionAnalyzeResponse {
+  meal_text: string;
+  added_calories: number;
+  added_protein_g: number;
+  added_carbs_g: number;
+  added_fat_g: number;
+  coach_note: string;
+  wellness: DailyWellness;
+}
+
+export interface MemberReferralInfo {
+  member_id: number;
+  member_name: string;
+  referral_code: string;
+  referral_count: number;
+  earned_free_credits: number;
+  remaining_credits: number;
+}
+
+export interface ReferralRedeemResponse {
+  success: boolean;
+  referral_code: string;
+  inviter_id?: number;
+  inviter_name?: string;
+  referral_count: number;
+  remaining_credits: number;
+  bonus_credits_added: number;
+  message: string;
 }
 
 export interface MemberPackage {
@@ -316,6 +383,14 @@ export interface TrainerAttendee {
   total_credits: number;
   low_credit_warning: boolean;
   status: AttendanceStatus;
+  body_zones?: Record<string, any> | null;
+  today_energy_status?: EnergyStatus | string | null;
+  today_water_ml?: number | null;
+  water_goal_ml?: number | null;
+  today_protein_g?: number | null;
+  protein_goal_g?: number | null;
+  water_pct?: number | null;
+  protein_pct?: number | null;
 }
 
 export interface TrainerSession {
@@ -370,6 +445,14 @@ export interface TrainerMemberCrm {
   low_credit_warning: boolean;
   attended_sessions_count: number;
   latest_metric?: BodyMetric | null;
+  body_zones?: Record<string, any> | null;
+  today_energy_status?: EnergyStatus | string | null;
+  today_water_ml?: number | null;
+  water_goal_ml?: number | null;
+  today_protein_g?: number | null;
+  protein_goal_g?: number | null;
+  water_pct?: number | null;
+  protein_pct?: number | null;
 }
 
 export interface InstagramWebhookResponse {

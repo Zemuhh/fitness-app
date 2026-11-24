@@ -3,15 +3,18 @@ import {
   ActivityIndicator,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import {
   Activity,
   Calendar,
   CreditCard,
+  Gift,
   Home,
   Megaphone,
   QrCode,
+  Sparkles,
   User,
   Users,
 } from 'lucide-react-native';
@@ -37,6 +40,8 @@ import {
 } from '@/types/fitness';
 import { MemberDashboardTab } from '@/screens/member/MemberDashboardTab';
 import { MemberBookingTab } from '@/screens/member/MemberBookingTab';
+import { MemberNutritionScreen } from '@/screens/member/MemberNutritionScreen';
+import { MemberReferralScreen } from '@/screens/member/MemberReferralScreen';
 import { MemberTrainersScreen } from '@/screens/member/MemberTrainersScreen';
 import { MemberPackageRenewScreen } from '@/screens/member/MemberPackageRenewScreen';
 import { MemberNewsScreen } from '@/screens/member/MemberNewsScreen';
@@ -51,6 +56,8 @@ import { TrainerDetailModal } from '@/screens/member/TrainerDetailModal';
 export const MEMBER_DRAWER_MENU: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
   { key: 'home', Icon: Home, label: 'Ana Sayfa' },
   { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
+  { key: 'nutrition', Icon: Sparkles, label: '🥗 AI Beslenme & Toparlanma' },
+  { key: 'referral', Icon: Gift, label: '🎁 Arkadaşını Getir (+1 Ders)' },
   { key: 'packages', Icon: CreditCard, label: 'Paketler' },
   { key: 'qr', Icon: QrCode, label: 'QR Giriş', isQrAction: true },
   { key: 'metrics', Icon: Activity, label: 'Gelişim' },
@@ -62,6 +69,8 @@ export const MEMBER_DRAWER_MENU: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
 export const MEMBER_CONCISE_TITLES: Record<MemberDrawerRoute, string> = {
   home: 'Ana Sayfa',
   schedule: 'Ders Programı',
+  nutrition: '🥗 AI Beslenme & Toparlanma',
+  referral: '🎁 Arkadaşını Getir (+1 Ders)',
   packages: 'Paketler',
   metrics: 'Gelişim',
   trainers: 'Eğitmenler',
@@ -115,6 +124,7 @@ export function MemberRootView({
   const [announcements, setAnnouncements] = useState<AnnouncementItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const loadedMemberIdRef = useRef<number | null>(null);
 
   const [busyBookingId, setBusyBookingId] = useState<number | null>(null);
@@ -191,16 +201,21 @@ export function MemberRootView({
   const fetchDashboard = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
+      setLoadError(null);
       try {
         const [dashRes, annRes] = await Promise.all([
           apiRequest<MemberDashboardData>(`/member/${member.id}/dashboard`),
           apiRequest<AnnouncementItem[]>('/announcements').catch(() => []),
         ]);
         setDashboard(dashRes);
-        setAnnouncements(annRes);
+        setAnnouncements(Array.isArray(annRes) ? annRes : []);
         loadedMemberIdRef.current = dashRes.member.id;
       } catch (err: any) {
-        showBanner('error', err?.message || 'Üye verileri yüklenemedi.');
+        const msg =
+          err?.message ||
+          'Üye verileri yüklenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.';
+        setLoadError(msg);
+        showBanner('error', msg);
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -448,10 +463,23 @@ export function MemberRootView({
       )}
 
       <View style={styles.body}>
-        {loading || !dashboard ? (
+        {loading && !dashboard ? (
           <View style={styles.centerLoader}>
             <ActivityIndicator size="large" color={COLORS.primary} />
             <Text style={styles.loaderText}>Stüdyo deneyiminiz hazırlanıyor...</Text>
+          </View>
+        ) : !dashboard ? (
+          <View style={styles.centerLoader}>
+            <Text style={styles.errorText}>
+              {loadError || 'Üye verileri yüklenemedi.'}
+            </Text>
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={() => fetchDashboard(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.retryBtnText}>Tekrar Dene</Text>
+            </TouchableOpacity>
           </View>
         ) : currentRoute === 'home' ? (
           <MemberDashboardTab
@@ -475,6 +503,23 @@ export function MemberRootView({
             onOpenPackageRenew={() => handleNavigate('packages')}
             onOpenTrainerDetail={(tId) => setSelectedTrainerId(tId)}
             busySessionId={busySessionId}
+          />
+        ) : currentRoute === 'nutrition' ? (
+          <MemberNutritionScreen
+            member={dashboard.member}
+            onNavigate={handleNavigate}
+            onShowBanner={showBanner}
+          />
+        ) : currentRoute === 'referral' ? (
+          <MemberReferralScreen
+            member={dashboard.member}
+            activePackage={dashboard.active_package}
+            onCreditsUpdated={async () => {
+              await fetchDashboard(true);
+              triggerGlobalRefresh();
+            }}
+            onNavigate={handleNavigate}
+            onShowBanner={showBanner}
           />
         ) : currentRoute === 'trainers' ? (
           <MemberTrainersScreen
@@ -573,6 +618,25 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 13.5,
     fontWeight: '600',
+  },
+  errorText: {
+    color: COLORS.dangerText,
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+    paddingHorizontal: 24,
+  },
+  retryBtn: {
+    marginTop: 6,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  retryBtnText: {
+    color: COLORS.white,
+    fontSize: 13.5,
+    fontWeight: '800',
   },
   bannerBox: {
     marginHorizontal: 18,

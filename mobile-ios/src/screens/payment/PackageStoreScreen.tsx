@@ -16,6 +16,7 @@ import {
 } from 'react-native';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AlertCircle,
   ArrowRight,
@@ -522,17 +523,18 @@ export function PackageStoreScreen({
           ),
         ]);
 
-        setPlans(fetchedPlans);
+        const safePlans = Array.isArray(fetchedPlans) ? fetchedPlans : [];
+        setPlans(safePlans);
         setHistoryData(fetchedHistory);
 
         setSelectedPlanId((prevId) => {
-          if (prevId && fetchedPlans.some((p) => p.id === prevId)) {
+          if (prevId && safePlans.some((p) => p.id === prevId)) {
             return prevId;
           }
           const popular =
-            fetchedPlans.find((p) => p.popular_badge?.includes('En Çok')) ||
-            fetchedPlans.find((p) => p.credits === 8) ||
-            fetchedPlans[0];
+            safePlans.find((p) => p.popular_badge?.includes('En Çok')) ||
+            safePlans.find((p) => p.credits === 8) ||
+            safePlans[0];
           return popular ? popular.id : null;
         });
       } catch (err: any) {
@@ -637,12 +639,35 @@ export function PackageStoreScreen({
 
   if (loading && plans.length === 0) {
     return (
-      <View style={styles.loaderContainer}>
+      <SafeAreaView
+        style={styles.loaderContainer}
+        edges={onClose ? ['top', 'left', 'right', 'bottom'] : ['left', 'right']}
+      >
         <ActivityIndicator size="large" color={THEME.primary} />
         <Text style={styles.loaderText}>
           Paket kataloğu ve güvenli ödeme bağlantısı hazırlanıyor...
         </Text>
-      </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (loadError && plans.length === 0) {
+    return (
+      <SafeAreaView
+        style={styles.loaderContainer}
+        edges={onClose ? ['top', 'left', 'right', 'bottom'] : ['left', 'right']}
+      >
+        <AlertCircle size={30} color={THEME.danger} />
+        <Text style={styles.errorCenterText}>{loadError}</Text>
+        <TouchableOpacity
+          style={styles.retryCenterBtn}
+          onPress={() => loadStoreAndHistory(false)}
+          activeOpacity={0.85}
+        >
+          <RefreshCw size={15} color={THEME.white} />
+          <Text style={styles.retryCenterBtnText}>Tekrar Dene</Text>
+        </TouchableOpacity>
+      </SafeAreaView>
     );
   }
 
@@ -652,7 +677,10 @@ export function PackageStoreScreen({
   const combinedError = checkoutError || loadError;
 
   return (
-    <View style={styles.root}>
+    <SafeAreaView
+      style={styles.root}
+      edges={onClose ? ['top', 'left', 'right', 'bottom'] : ['left', 'right']}
+    >
       <ScrollView
         ref={scrollRef}
         style={styles.scroll}
@@ -673,9 +701,9 @@ export function PackageStoreScreen({
               <Zap size={13} color={THEME.primary} />
               <Text style={styles.storePillText}>256-BİT SSL & 3D SECURE ÖDEME</Text>
             </View>
-            <Text style={styles.screenTitle}>Paket Mağazası & Satın Alma</Text>
+            <Text style={styles.screenTitle}>Stüdyo Ders Paketleri</Text>
             <Text style={styles.screenSubtitle}>
-              Paketinizi seçip güvenli banka 3D Secure ödeme sayfasında işleminizi tamamlayın.
+              Stüdyoda yüz yüze yapılan fiziksel antrenman, PT ve reformer pilates ders paketinizi seçip güvenli 3D Secure sayfasında işleminizi tamamlayın.
             </Text>
           </View>
 
@@ -828,7 +856,7 @@ export function PackageStoreScreen({
 
             <Text style={styles.receiptPlanTitle}>{verifiedReceipt.plan_name}</Text>
             <Text style={styles.receiptTimestamp}>
-              Doğrulanmış Dijital Makbuz • {formatTurkishDateTime(verifiedReceipt.created_at)}
+              Doğrulanmış Ödeme Makbuzu • {formatTurkishDateTime(verifiedReceipt.created_at)}
             </Text>
 
             <View style={styles.receiptCreditsGrid}>
@@ -954,20 +982,58 @@ export function PackageStoreScreen({
           </View>
         </View>
 
+        {/* FİZİKSEL HİZMET ÖDEME BİLGİLENDİRME KARTI (APP STORE 3.1.3(e)) */}
+        <View style={styles.physicalServiceBanner}>
+          <View style={styles.physicalServiceHeader}>
+            <ShieldCheck size={17} color={THEME.primary} />
+            <Text style={styles.physicalServiceTitle}>
+              Stüdyoda Yüz Yüze Yapılan Fiziksel Antrenman / PT / Pilates Dersleri
+            </Text>
+          </View>
+          <Text style={styles.physicalServiceDesc}>
+            Bu ödeme yalnızca stüdyoda yüz yüze gerçekleştirilen fiziksel antrenman, PT ve reformer pilates ders paketleri içindir. AI Beslenme Analizi, Vücut Haritası ve İlerleme Takibi gibi uygulama içi dijital araçlar tüm aktif kulüp üyelerine ücretsiz dahildir.
+          </Text>
+        </View>
+
         {combinedError && (
           <View style={styles.errorBox}>
             <Text style={styles.errorBoxText}>{combinedError}</Text>
+            {loadError && (
+              <TouchableOpacity
+                style={styles.inlineRetryBtn}
+                onPress={() => loadStoreAndHistory(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.inlineRetryBtnText}>Tekrar Dene</Text>
+              </TouchableOpacity>
+            )}
           </View>
         )}
 
         {/* 1. BÖLÜM: PAKET VİTRİN KARTLARI */}
         <View style={styles.sectionHeader}>
           <Award size={18} color={THEME.primary} />
-          <Text style={styles.sectionTitle}>1. Spor Paketinizi Seçin</Text>
+          <Text style={styles.sectionTitle}>1. Stüdyo Ders Paketinizi Seçin</Text>
         </View>
 
         <View style={styles.planList}>
-          {plans.map((plan) => {
+          {(plans ?? []).length === 0 ? (
+            <View style={styles.emptyHistoryCard}>
+              <Sparkles size={22} color={THEME.textMuted} />
+              <Text style={styles.emptyHistoryTitle}>Aktif Ders Paketi Bulunamadı</Text>
+              <Text style={styles.emptyHistorySub}>
+                Paket kataloğu şu an boş görünüyor. Yenilemek için tekrar deneyebilirsiniz.
+              </Text>
+              <TouchableOpacity
+                style={styles.inlineRetryBtn}
+                onPress={() => loadStoreAndHistory(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.inlineRetryBtnText}>Tekrar Dene</Text>
+              </TouchableOpacity>
+            </View>
+          ) : (
+            (plans ?? []).map((plan) => {
             const isSelected = selectedPlan?.id === plan.id;
             const isMostPopular = Boolean(plan.popular_badge?.includes('En Çok'));
 
@@ -1041,7 +1107,7 @@ export function PackageStoreScreen({
                 </View>
 
                 <View style={styles.featuresList}>
-                  {plan.features.map((feat, idx) => (
+                  {(plan.features ?? []).map((feat, idx) => (
                     <View key={idx} style={styles.featureRow}>
                       <Check size={14} color={THEME.primary} />
                       <Text style={styles.featureText}>{feat}</Text>
@@ -1088,7 +1154,8 @@ export function PackageStoreScreen({
                 </View>
               </TouchableOpacity>
             );
-          })}
+          })
+          )}
         </View>
 
         {/* 2. BÖLÜM: TAKSİT ÖN SEÇİMİ & GÜVENLİ ÖDEME GEÇİDİ YÖNLENDİRMESİ */}
@@ -1214,9 +1281,9 @@ export function PackageStoreScreen({
           <Text style={styles.sectionTitle}>Ödeme & Paket Geçmişim</Text>
         </View>
 
-        {historyData && historyData.transactions.length > 0 ? (
+        {(historyData?.transactions ?? []).length > 0 ? (
           <View style={styles.historyList}>
-            {historyData.transactions.map((tx: PaymentHistoryItem) => (
+            {(historyData?.transactions ?? []).map((tx: PaymentHistoryItem) => (
               <View key={tx.id} style={styles.historyCard}>
                 <View style={styles.historyTopRow}>
                   <View style={styles.historyCodePill}>
@@ -1276,15 +1343,14 @@ export function PackageStoreScreen({
         ) : (
           <View style={styles.emptyHistoryCard}>
             <Sparkles size={22} color={THEME.textMuted} />
-            <Text style={styles.emptyHistoryTitle}>Henüz Dijital Ödeme Kaydı Yok</Text>
+            <Text style={styles.emptyHistoryTitle}>Henüz Ödeme Kaydı Yok</Text>
             <Text style={styles.emptyHistorySub}>
-              Güvenli ödeme geçidinden bir paket satın aldığınızda doğrulanmış dijital
-              makbuzlarınız burada listelenir.
+              Stüdyo ders paketi satın aldığınızda doğrulanmış ödeme makbuzlarınız burada listelenir.
             </Text>
           </View>
         )}
       </ScrollView>
-    </View>
+    </SafeAreaView>
   );
 }
 
@@ -2237,5 +2303,66 @@ const styles = StyleSheet.create({
     fontSize: 12.5,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  physicalServiceBanner: {
+    backgroundColor: THEME.surface,
+    borderRadius: 18,
+    padding: 15,
+    borderWidth: 1,
+    borderColor: THEME.primaryBorder,
+    gap: 7,
+    ...CARD_SHADOW,
+  },
+  physicalServiceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  physicalServiceTitle: {
+    flex: 1,
+    color: THEME.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  physicalServiceDesc: {
+    color: THEME.textSecondary,
+    fontSize: 12.5,
+    lineHeight: 18.5,
+    fontWeight: '500',
+  },
+  errorCenterText: {
+    color: THEME.danger,
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+  },
+  retryCenterBtn: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: THEME.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 14,
+  },
+  retryCenterBtnText: {
+    color: THEME.white,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  inlineRetryBtn: {
+    alignSelf: 'flex-start',
+    marginTop: 8,
+    backgroundColor: THEME.primary,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 10,
+  },
+  inlineRetryBtnText: {
+    color: THEME.white,
+    fontSize: 12.5,
+    fontWeight: '800',
   },
 });

@@ -201,8 +201,8 @@ export function MemberQrTab({
     [tokenPayload]
   );
 
-  const nextBooking = data.my_bookings.find((b) => b.status === 'booked');
-  const recentCheckins = data.recent_checkins || [];
+  const nextBooking = (data?.my_bookings ?? []).find((b) => b.status === 'booked');
+  const recentCheckins = data?.recent_checkins ?? [];
 
   return (
     <ScrollView

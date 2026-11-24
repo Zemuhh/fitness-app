@@ -21,8 +21,15 @@ yarn-error.*
 .expo/
 dist/
 web-build/
+.vercel/
+**/.vercel/
 .metro-health-check*
 *.tsbuildinfo
+
+# Tünel & Yerel İkili Dosyalar
+cloudflared.exe
+**/cloudflared.exe
+*.exe
 
 # Geçici SQLite Kilit / Günlük Dosyaları
 *.db-journal
@@ -38,3 +45,7 @@ web-build/
 *.mobileprovision
 .DS_Store
 Thumbs.db
+
+# FastAPI Statik PWA / SPA Dosyaları
+!backend/static/
+!backend/static/**

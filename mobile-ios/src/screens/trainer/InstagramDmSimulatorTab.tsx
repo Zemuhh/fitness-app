@@ -217,10 +217,14 @@ export function InstagramDmSimulatorTab({
     }
   };
 
+  if (!__DEV__) {
+    return null;
+  }
+
   return (
     <KeyboardAvoidingView
       style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       keyboardVerticalOffset={100}
     >
       {/* Daylight Wellness Instagram DM Üst Kartı */}
@@ -315,6 +319,7 @@ export function InstagramDmSimulatorTab({
         style={styles.chatArea}
         contentContainerStyle={styles.chatContent}
         showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
       >
         {messages.map((m) => {
           const isMember = m.sender === 'member';
@@ -434,29 +439,31 @@ export function InstagramDmSimulatorTab({
         )}
       </ScrollView>
 
-      {/* Hızlı Test Senaryosu Hapları */}
-      <View style={styles.quickPromptsStrip}>
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.quickPromptsContent}
-        >
-          {PRESET_MESSAGES.map((preset) => (
-            <TouchableOpacity
-              key={preset}
-              style={styles.quickPromptPill}
-              disabled={sending}
-              onPress={() => sendMessage(preset)}
-              activeOpacity={0.82}
-            >
-              <Sparkles size={11} color={COLORS.secondary} />
-              <Text style={styles.quickPromptText} numberOfLines={1}>
-                {preset}
-              </Text>
-            </TouchableOpacity>
-          ))}
-        </ScrollView>
-      </View>
+      {/* Hızlı Test Senaryosu Hapları (Yalnızca Geliştirme Ortamı) */}
+      {__DEV__ && (
+        <View style={styles.quickPromptsStrip}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={styles.quickPromptsContent}
+          >
+            {PRESET_MESSAGES.map((preset) => (
+              <TouchableOpacity
+                key={preset}
+                style={styles.quickPromptPill}
+                disabled={sending}
+                onPress={() => sendMessage(preset)}
+                activeOpacity={0.82}
+              >
+                <Sparkles size={11} color={COLORS.secondary} />
+                <Text style={styles.quickPromptText} numberOfLines={1}>
+                  {preset}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </ScrollView>
+        </View>
+      )}
 
       {/* Mesaj Giriş Çubuğu */}
       <View style={styles.dmComposerWrap}>

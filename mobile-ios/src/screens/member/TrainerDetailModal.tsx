@@ -365,7 +365,7 @@ export function TrainerDetailModal({
               </View>
             </View>
 
-            {detail.open_sessions.length === 0 ? (
+            {(detail.open_sessions ?? []).length === 0 ? (
               <View style={styles.emptySessionsCard}>
                 <Calendar size={26} color={COLORS.textMuted} />
                 <Text style={styles.emptySessionsTitle}>Yaklaşan açık ders bulunmuyor</Text>
@@ -374,7 +374,7 @@ export function TrainerDetailModal({
                 </Text>
               </View>
             ) : (
-              detail.open_sessions.map((session) => {
+              (detail.open_sessions ?? []).map((session) => {
                 const isFull =
                   session.is_full || session.current_enrolled >= session.capacity;
                 const spotsLeft = Math.max(0, session.capacity - session.current_enrolled);

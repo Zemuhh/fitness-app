@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   KeyboardAvoidingView,
+  Modal,
   Platform,
   RefreshControl,
   ScrollView,
@@ -12,13 +14,16 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AlertTriangle,
   AtSign,
   Bell,
   Calendar,
   CheckCircle2,
+  ChevronRight,
   CreditCard,
+  FileText,
   Flame,
   Hourglass,
   Layers,
@@ -26,8 +31,13 @@ import {
   QrCode,
   Save,
   ShieldCheck,
+  Trash2,
   User,
 } from 'lucide-react-native';
+import {
+  LegalDocumentsModal,
+  LegalDocumentTab,
+} from '@/components/LegalDocumentsModal';
 import { apiRequest } from '@/config/api';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS } from '@/theme/colors';
@@ -56,7 +66,8 @@ export function MemberProfileTab({
   onOpenQr,
   onShowBanner,
 }: Props) {
-  const { reloadUsers, triggerGlobalRefresh } = useAuthDemo();
+  const { reloadUsers, triggerGlobalRefresh, deleteMyAccount, isAdmin, authUser } =
+    useAuthDemo();
   const member = data.member;
 
   const [fullName, setFullName] = useState<string>(member.full_name || '');
@@ -77,6 +88,10 @@ export function MemberProfileTab({
 
   const [savingProfile, setSavingProfile] = useState<boolean>(false);
   const [savingSwitchKey, setSavingSwitchKey] = useState<string | null>(null);
+  const [legalModalTab, setLegalModalTab] = useState<LegalDocumentTab | null>(null);
+  const [deleteModalVisible, setDeleteModalVisible] = useState<boolean>(false);
+  const [deletingAccount, setDeletingAccount] = useState<boolean>(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   useEffect(() => {
     setFullName(member.full_name || '');
@@ -157,9 +172,45 @@ export function MemberProfileTab({
     }
   };
 
+  const isPreviewingAnotherUser =
+    isAdmin || (authUser?.id != null && authUser.id !== member.id);
+
+  const handleOpenDeleteModal = () => {
+    if (isPreviewingAnotherUser) {
+      const msg =
+        'Yönetici önizleme modunda bu üyenin hesabı buradan silinemez. Hesap silme işlemi yalnızca kullanıcının kendi oturumu üzerinden yapılabilir.';
+      onShowBanner('warning', msg);
+      Alert.alert('Yönetici Önizleme Modu', msg);
+      return;
+    }
+    setDeleteError(null);
+    setDeleteModalVisible(true);
+  };
+
+  const handleConfirmDeleteAccount = async () => {
+    setDeletingAccount(true);
+    setDeleteError(null);
+    try {
+      await deleteMyAccount();
+      setDeleteModalVisible(false);
+    } catch (err: any) {
+      const msg =
+        err?.message ||
+        'Hesabınız silinirken bir sorun oluştu. Lütfen bağlantınızı kontrol edip tekrar deneyin.';
+      setDeleteError(msg);
+      onShowBanner('error', msg);
+      Alert.alert('Hesap Silinemedi', msg);
+    } finally {
+      setDeletingAccount(false);
+    }
+  };
+
   const memberAccessCode = `FIT-${1000 + member.id}`;
-  const allPackages =
-    data.all_packages || (data.active_package ? [data.active_package] : []);
+  const allPackages = Array.isArray(data.all_packages)
+    ? data.all_packages
+    : data.active_package
+    ? [data.active_package]
+    : [];
   const activePkg = allPackages.find((p) => p.is_active) ?? data.active_package;
   const pastPackages = allPackages.filter((p) => !p.is_active);
   const activeDaysLeft = activePkg ? getDaysRemaining(activePkg.expiry_date) : 0;
@@ -167,11 +218,12 @@ export function MemberProfileTab({
   return (
     <KeyboardAvoidingView
       style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView
         style={styles.container}
         contentContainerStyle={styles.content}
+        keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -462,7 +514,149 @@ export function MemberProfileTab({
             />
           </View>
         </View>
+
+        {/* 4. YASAL BELGELER & GİZLİLİK (KVKK) */}
+        <View style={styles.sectionCard}>
+          <View style={styles.sectionHeaderLeft}>
+            <ShieldCheck size={17} color={COLORS.primary} />
+            <Text style={styles.sectionTitle}>Yasal Belgeler & Gizlilik</Text>
+          </View>
+
+          <TouchableOpacity
+            style={styles.legalRowBtn}
+            onPress={() => setLegalModalTab('privacy')}
+            activeOpacity={0.82}
+            accessibilityRole="button"
+            accessibilityLabel="Gizlilik Politikası (KVKK)"
+          >
+            <View style={styles.legalRowLeft}>
+              <ShieldCheck size={16} color={COLORS.primary} />
+              <Text style={styles.legalRowText}>Gizlilik Politikası (KVKK)</Text>
+            </View>
+            <ChevronRight size={16} color={COLORS.textMuted} />
+          </TouchableOpacity>
+
+          <TouchableOpacity
+            style={styles.legalRowBtn}
+            onPress={() => setLegalModalTab('terms')}
+            activeOpacity={0.82}
+            accessibilityRole="button"
+            accessibilityLabel="Kullanım Koşulları"
+          >
+            <View style={styles.legalRowLeft}>
+              <FileText size={16} color={COLORS.secondary} />
+              <Text style={styles.legalRowText}>Kullanım Koşulları</Text>
+            </View>
+            <ChevronRight size={16} color={COLORS.textMuted} />
+          </TouchableOpacity>
+        </View>
+
+        {/* 5. HESAP YÖNETİMİ & KALICI SİLME */}
+        <View style={styles.dangerCard}>
+          <View style={styles.sectionHeaderLeft}>
+            <Trash2 size={17} color={COLORS.danger} />
+            <Text style={styles.dangerTitle}>Hesap Yönetimi</Text>
+          </View>
+          <Text style={styles.dangerDesc}>
+            Hesabınızı kalıcı olarak sildiğinizde tüm randevularınız, kalan ders
+            kredileriniz, vücut ölçümleriniz, beslenme kayıtlarınız ve profil
+            bilgileriniz geri alınamayacak şekilde silinir.
+          </Text>
+
+          <TouchableOpacity
+            style={styles.deleteAccountBtn}
+            onPress={handleOpenDeleteModal}
+            activeOpacity={0.85}
+            accessibilityRole="button"
+            accessibilityLabel="Hesabımı Kalıcı Olarak Sil"
+          >
+            <Trash2 size={16} color={COLORS.dangerText} />
+            <Text style={styles.deleteAccountBtnText}>Hesabımı Kalıcı Olarak Sil</Text>
+          </TouchableOpacity>
+        </View>
       </ScrollView>
+
+      <LegalDocumentsModal
+        visible={legalModalTab !== null}
+        initialTab={legalModalTab ?? 'privacy'}
+        onClose={() => setLegalModalTab(null)}
+      />
+
+      <Modal
+        visible={deleteModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!deletingAccount) setDeleteModalVisible(false);
+        }}
+      >
+        <SafeAreaView style={styles.modalBackdrop} edges={['top', 'bottom', 'left', 'right']}>
+          <View style={styles.deleteModalCard}>
+            <View style={styles.deleteModalIconWrap}>
+              <AlertTriangle size={24} color={COLORS.danger} />
+            </View>
+
+            <Text style={styles.deleteModalTitle}>Hesabımı Kalıcı Olarak Sil</Text>
+            <Text style={styles.deleteModalBody}>
+              Bu işlem geri alınamaz. Onayladığınızda hesabınız kapatılacak ve
+              aşağıdaki verileriniz kalıcı olarak silinecektir:
+            </Text>
+
+            <View style={styles.deleteBulletList}>
+              <Text style={styles.deleteBulletItem}>
+                • Tüm aktif ve geçmiş ders randevularınız
+              </Text>
+              <Text style={styles.deleteBulletItem}>
+                • Üyelik paketleriniz ve kalan ders kredileriniz
+              </Text>
+              <Text style={styles.deleteBulletItem}>
+                • Vücut ölçümleriniz, sakatlık notlarınız ve beslenme kayıtlarınız
+              </Text>
+              <Text style={styles.deleteBulletItem}>
+                • Profil, iletişim ve erişim bilgileriniz
+              </Text>
+            </View>
+
+            {deleteError ? (
+              <View style={styles.deleteModalErrorBox}>
+                <AlertTriangle size={14} color={COLORS.danger} />
+                <Text style={styles.deleteModalErrorText}>{deleteError}</Text>
+              </View>
+            ) : null}
+
+            <View style={styles.deleteModalActions}>
+              <TouchableOpacity
+                style={styles.deleteCancelBtn}
+                disabled={deletingAccount}
+                onPress={() => setDeleteModalVisible(false)}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Vazgeç"
+              >
+                <Text style={styles.deleteCancelBtnText}>Vazgeç</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.deleteConfirmBtn,
+                  deletingAccount && { opacity: 0.7 },
+                ]}
+                disabled={deletingAccount}
+                onPress={handleConfirmDeleteAccount}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Hesabı Kalıcı Olarak Silmeyi Onayla"
+              >
+                {deletingAccount ? (
+                  <ActivityIndicator size="small" color={COLORS.white} />
+                ) : (
+                  <Text style={styles.deleteConfirmBtnText}>Kalıcı Olarak Sil</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </View>
+        </SafeAreaView>
+      </Modal>
     </KeyboardAvoidingView>
   );
 }
@@ -830,5 +1024,169 @@ const styles = StyleSheet.create({
   switchDivider: {
     height: 1,
     backgroundColor: COLORS.border,
+  },
+  legalRowBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 14,
+    paddingHorizontal: 14,
+    paddingVertical: 13,
+  },
+  legalRowLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  legalRowText: {
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  dangerCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 22,
+    padding: 20,
+    marginBottom: 16,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+    gap: 12,
+    ...CARD_SHADOW,
+  },
+  dangerTitle: {
+    color: COLORS.dangerText,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  dangerDesc: {
+    color: COLORS.textSecondary,
+    fontSize: 12.5,
+    lineHeight: 18,
+    fontWeight: '500',
+  },
+  deleteAccountBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    backgroundColor: COLORS.dangerBg,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+    borderRadius: 14,
+    paddingVertical: 13.5,
+  },
+  deleteAccountBtnText: {
+    color: COLORS.dangerText,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: COLORS.scrim,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  deleteModalCard: {
+    width: '100%',
+    maxWidth: 400,
+    backgroundColor: COLORS.surface,
+    borderRadius: 22,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+    gap: 12,
+    ...CARD_SHADOW,
+  },
+  deleteModalIconWrap: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    backgroundColor: COLORS.dangerBg,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
+  deleteModalTitle: {
+    color: COLORS.textPrimary,
+    fontSize: 17.5,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  deleteModalBody: {
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: 'center',
+    fontWeight: '500',
+  },
+  deleteBulletList: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 14,
+    padding: 13,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 6,
+  },
+  deleteBulletItem: {
+    color: COLORS.textPrimary,
+    fontSize: 12.5,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  deleteModalErrorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.dangerBg,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+    borderRadius: 12,
+    padding: 10,
+  },
+  deleteModalErrorText: {
+    flex: 1,
+    color: COLORS.dangerText,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  deleteModalActions: {
+    flexDirection: 'row',
+    gap: 10,
+    marginTop: 4,
+  },
+  deleteCancelBtn: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 13,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteCancelBtnText: {
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  deleteConfirmBtn: {
+    flex: 1,
+    minHeight: 46,
+    borderRadius: 13,
+    backgroundColor: COLORS.danger,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteConfirmBtnText: {
+    color: COLORS.white,
+    fontSize: 13.5,
+    fontWeight: '800',
   },
 });

@@ -1,9 +1,10 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text, text
+from sqlalchemy import Boolean, Column, ForeignKey, Integer, String, Text, inspect, text
 from sqlalchemy.engine import Engine
 
 from database import Base
-import models  # noqa: F401 - Ensures 'users' table is registered in Base.metadata
+import models  # noqa: F401 - Ensures 'users' and 'daily_wellness' tables are registered in Base.metadata
+import payment_models  # noqa: F401 - Ensures payment tables are registered in Base.metadata
 
 
 def _now_iso() -> str:
@@ -121,34 +122,44 @@ class DataIntakeLog(Base):
 
 def run_sqlite_schema_migrations(db_engine: Engine) -> None:
     """
-    Idempotently adds new columns to pre-existing SQLite tables before ORM queries execute,
-    then ensures all new tables exist via Base.metadata.create_all.
+    Idempotently creates missing tables (including daily_wellness) and adds new columns
+    (including users.body_zones, users.referral_code, users.referral_count) on both
+    SQLite and PostgreSQL without disturbing existing data.
     """
     Base.metadata.create_all(bind=db_engine)
 
+    is_postgres = db_engine.dialect.name.startswith("postgres")
+    bool_false_default = "FALSE" if is_postgres else "0"
+
     column_migrations = [
         ("users", "email", "VARCHAR(150)"),
-        ("announcements", "is_pinned", "BOOLEAN NOT NULL DEFAULT 0"),
+        ("users", "body_zones", "TEXT"),
+        ("users", "referral_code", "VARCHAR(40)"),
+        ("users", "referral_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("users", "policy_accepted", f"BOOLEAN NOT NULL DEFAULT {bool_false_default}"),
+        ("users", "policy_accepted_at", "VARCHAR(40)"),
+        ("users", "policy_version", "VARCHAR(20) NOT NULL DEFAULT 'v1.0'"),
+        ("users", "policy_file_path", "VARCHAR(260)"),
+        ("users", "last_login_at", "VARCHAR(40)"),
+        ("users", "login_count", "INTEGER NOT NULL DEFAULT 0"),
+        ("class_sessions", "started_at", "VARCHAR(40)"),
+        ("class_sessions", "ended_at", "VARCHAR(40)"),
+        ("class_sessions", "actual_duration_minutes", "INTEGER"),
+        ("class_sessions", "session_status", "VARCHAR(30) NOT NULL DEFAULT 'scheduled'"),
+        ("bookings", "checked_in_at", "VARCHAR(40)"),
+        ("announcements", "is_pinned", f"BOOLEAN NOT NULL DEFAULT {bool_false_default}"),
         ("admin_accounts", "email", "VARCHAR(150)"),
         ("admin_accounts", "password_hash", "VARCHAR(256)"),
     ]
 
+    inspector = inspect(db_engine)
+    existing_tables = set(inspector.get_table_names())
+
     with db_engine.begin() as conn:
-        existing_tables = {
-            row[0]
-            for row in conn.execute(
-                text("SELECT name FROM sqlite_master WHERE type='table'")
-            ).fetchall()
-        }
         for table_name, col_name, col_ddl in column_migrations:
             if table_name not in existing_tables:
                 continue
-            cols = {
-                row[1]
-                for row in conn.execute(
-                    text(f"PRAGMA table_info({table_name})")
-                ).fetchall()
-            }
+            cols = {col["name"] for col in inspector.get_columns(table_name)}
             if col_name not in cols:
                 conn.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_ddl}")

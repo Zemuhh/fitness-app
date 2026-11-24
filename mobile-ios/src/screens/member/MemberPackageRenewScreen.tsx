@@ -66,9 +66,9 @@ const FALLBACK_CATALOG: PackageCatalogPlan[] = [
     savings_amount_try: 0,
     popular_badge: 'En Çok Tercih Edilen',
     features: [
-      '8 Seans Butik Grup Reformer Pilates (6-7 Kişilik)',
+      '8 Seans Stüdyoda Yüz Yüze Butik Grup Reformer Pilates (6-7 Kişilik)',
       'Mevcut kalan seans haklarınızın üzerine anında eklenir',
-      'Uygulamadan Anında Rezervasyon & 4 Saate Kadar İptal',
+      '4 Saate Kadar Ücretsiz İptal & Kredi İadesi (Dijital takip araçları tüm aktif kulüp üyelerine ücretsiz dahil)',
     ],
     is_active: true,
   },
@@ -85,8 +85,8 @@ const FALLBACK_CATALOG: PackageCatalogPlan[] = [
     savings_amount_try: 0,
     popular_badge: 'Zarif Uyum',
     features: [
-      '8 Seans Düet veya Trio Reformer Pilates Erişimi',
-      'Kişisel Esneklik & Core Güçlendirme Takibi',
+      '8 Seans Stüdyoda Yüz Yüze Düet veya Trio Reformer Pilates',
+      'Birebir Eğitmen Eşliğinde Esneklik & Core Antrenmanı',
       '40 Gün Esnek Kullanım + Kredi Koruma',
     ],
     is_active: true,
@@ -104,8 +104,8 @@ const FALLBACK_CATALOG: PackageCatalogPlan[] = [
     savings_amount_try: 0,
     popular_badge: 'Klinik & Özel İlgi',
     features: [
-      '8 Seans VIP 1-1 Reformer & Cadillac Trapeze Tower',
-      'Skolyoz, Bel-Boyun Hassasiyeti & Duruş Biyomekaniği',
+      '8 Seans Stüdyoda Yüz Yüze 1-1 Reformer & Cadillac Trapeze Tower',
+      'Birebir Eğitmen Eşliğinde Postür & Hareket Programı',
       '45 Gün Geçerlilik + Kredi Devir Garantisi',
     ],
     is_active: true,
@@ -123,8 +123,8 @@ const FALLBACK_CATALOG: PackageCatalogPlan[] = [
     savings_amount_try: 1600,
     popular_badge: 'Maksimum Avantaj',
     features: [
-      '16 Seans Tüm Reformer, Cadillac & Özel Seans Erişimi',
-      'Haftalık Postür Takibi & Kişisel Programlama',
+      '16 Seans Stüdyoda Yüz Yüze Reformer, Cadillac & Özel PT Dersleri',
+      'Birebir Eğitmen Eşliğinde Haftalık Postür & Antrenman Programlama',
       'En Avantajlı Seans Birim Ücreti + 75 Gün Süre',
     ],
     is_active: true,
@@ -165,6 +165,7 @@ export function MemberPackageRenewScreen({
 
   const [catalogPlans, setCatalogPlans] = useState<PackageCatalogPlan[]>(FALLBACK_CATALOG);
   const [historyData, setHistoryData] = useState<MemberPaymentHistoryResponse | null>(null);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [installmentCount, setInstallmentCount] = useState<InstallmentCount>(1);
   const [submittingPlanCode, setSubmittingPlanCode] = useState<string | null>(null);
 
@@ -177,6 +178,7 @@ export function MemberPackageRenewScreen({
   const daysLeft = activePkg ? getDaysRemaining(activePkg.expiry_date) : 0;
 
   const loadCatalogAndHistory = useCallback(async () => {
+    setCatalogError(null);
     try {
       const [plansRes, histRes] = await Promise.all([
         apiRequest<PackageCatalogPlan[]>('/payments/packages'),
@@ -190,8 +192,11 @@ export function MemberPackageRenewScreen({
       if (histRes) {
         setHistoryData(histRes);
       }
-    } catch {
-      // Keep fallback catalog so UI remains responsive
+    } catch (err: any) {
+      setCatalogError(
+        err?.message ||
+          'Güncel paket listesi sunucudan alınamadı. Bağlantınızı kontrol edip tekrar deneyebilirsiniz.'
+      );
     }
   }, [member.id]);
 
@@ -528,6 +533,32 @@ export function MemberPackageRenewScreen({
         </Text>
       </View>
 
+      {/* FİZİKSEL HİZMET ÖDEME BİLGİLENDİRME KARTI (APP STORE 3.1.3(e)) */}
+      <View style={styles.physicalServiceBanner}>
+        <View style={styles.physicalServiceHeader}>
+          <ShieldCheck size={16} color={COLORS.primary} />
+          <Text style={styles.physicalServiceTitle}>
+            Stüdyoda Yüz Yüze Yapılan Fiziksel Antrenman / PT / Pilates Dersleri
+          </Text>
+        </View>
+        <Text style={styles.physicalServiceDesc}>
+          Bu ödeme yalnızca stüdyoda yüz yüze gerçekleştirilen fiziksel antrenman, PT ve reformer pilates ders paketleri içindir. AI Beslenme Analizi, Vücut Haritası ve İlerleme Takibi gibi uygulama içi dijital araçlar tüm aktif kulüp üyelerine ücretsiz dahildir.
+        </Text>
+      </View>
+
+      {catalogError && (
+        <View style={styles.catalogRetryBox}>
+          <Text style={styles.catalogRetryText}>{catalogError}</Text>
+          <TouchableOpacity
+            style={styles.catalogRetryBtn}
+            onPress={loadCatalogAndHistory}
+            activeOpacity={0.85}
+          >
+            <Text style={styles.catalogRetryBtnText}>Tekrar Dene</Text>
+          </TouchableOpacity>
+        </View>
+      )}
+
       {checkoutError && !activeSession && (
         <View style={styles.inlineErrBox}>
           <Text style={styles.inlineErrText}>{checkoutError}</Text>
@@ -536,9 +567,9 @@ export function MemberPackageRenewScreen({
 
       {/* 2. YENİ PAKETLER & TAKSİT SEÇİCİ */}
       <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Paket Satın Al / Yenile</Text>
+        <Text style={styles.sectionTitle}>Stüdyo Ders Paketi Satın Al / Yenile</Text>
         <Text style={styles.sectionSub}>
-          Paketinizi ve taksit tercihinizi seçin; 256-Bit SSL & 3D Secure banka ödeme sayfasına yönlendirileceksiniz.
+          Stüdyoda yüz yüze alacağınız ders paketini ve taksit tercihinizi seçin; 256-Bit SSL & 3D Secure banka ödeme sayfasına yönlendirileceksiniz.
         </Text>
       </View>
 
@@ -564,7 +595,7 @@ export function MemberPackageRenewScreen({
       </View>
 
       {/* 3. SATIN ALINABİLİR PAKET KARTLARI */}
-      {catalogPlans.map((pkg, idx) => {
+      {(catalogPlans ?? []).map((pkg, idx) => {
         const isSubmitting =
           creatingSession && submittingPlanCode === pkg.code;
         const palette = resolvePlanPalette(pkg.code, idx);
@@ -628,7 +659,7 @@ export function MemberPackageRenewScreen({
             </View>
 
             <View style={styles.featureList}>
-              {pkg.features.map((feat, fIdx) => (
+              {(pkg.features ?? []).map((feat, fIdx) => (
                 <View key={`${pkg.code}-f-${fIdx}`} style={styles.featureRow}>
                   <CheckCircle2 size={14} color={palette.accentColor} />
                   <Text style={styles.featureText}>{feat}</Text>
@@ -663,14 +694,14 @@ export function MemberPackageRenewScreen({
       })}
 
       {/* 4. SON ÖDEME GEÇMİŞİ */}
-      {historyData && historyData.transactions.length > 0 && (
+      {(historyData?.transactions ?? []).length > 0 && (
         <View style={styles.historySection}>
           <View style={styles.historyHeaderRow}>
             <History size={17} color={COLORS.secondary} />
             <Text style={styles.historySectionTitle}>Son Ödeme İşlemlerim</Text>
           </View>
 
-          {historyData.transactions.slice(0, 5).map((tx: PaymentHistoryItem) => (
+          {(historyData?.transactions ?? []).slice(0, 5).map((tx: PaymentHistoryItem) => (
             <View key={tx.id} style={styles.historyRowCard}>
               <View style={{ flex: 1, gap: 2 }}>
                 <Text style={styles.historyTxTitle}>{tx.plan_name}</Text>
@@ -1280,5 +1311,63 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 11,
     fontWeight: '700',
+  },
+  physicalServiceBanner: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 18,
+    padding: 15,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    gap: 7,
+    ...CARD_SHADOW,
+  },
+  physicalServiceHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  physicalServiceTitle: {
+    flex: 1,
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '800',
+    lineHeight: 18,
+  },
+  physicalServiceDesc: {
+    color: COLORS.textSecondary,
+    fontSize: 12.5,
+    lineHeight: 18.5,
+    fontWeight: '500',
+  },
+  catalogRetryBox: {
+    backgroundColor: COLORS.warningBg,
+    borderRadius: 14,
+    padding: 12,
+    marginBottom: 14,
+    borderWidth: 1,
+    borderColor: '#EDD092',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  catalogRetryText: {
+    flex: 1,
+    color: COLORS.warningText,
+    fontSize: 12,
+    fontWeight: '700',
+    lineHeight: 17,
+  },
+  catalogRetryBtn: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  catalogRetryBtnText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontWeight: '800',
   },
 });

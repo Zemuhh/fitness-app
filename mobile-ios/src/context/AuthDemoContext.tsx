@@ -76,6 +76,9 @@ function mapSessionToAuthUser(session: AuthSessionOut): AuthSessionUser {
     default_panel: isAdmin
       ? 'admin'
       : session.default_panel || (session.role === 'trainer' ? 'trainer' : 'member'),
+    policy_accepted: isAdmin ? true : Boolean(session.policy_accepted),
+    policy_accepted_at: isAdmin ? null : session.policy_accepted_at ?? null,
+    policy_version: session.policy_version,
   };
 }
 
@@ -139,11 +142,14 @@ export interface AuthDemoContextValue {
   reloadPanelConfig: () => Promise<void>;
   switchPanel: (panel: ActivePanelMode, targetUser?: AppUser) => void;
   returnToAdminPanel: () => void;
+  loginWithAccessCode: (accessCode: string) => Promise<void>;
+  markPolicyAccepted: (acceptedAt?: string) => void;
   loginWithPassword: (identifier: string, password: string) => Promise<AuthSessionOut>;
   loginWithGoogle: () => Promise<void>;
   completeTokenLogin: (token: string) => Promise<AuthSessionOut>;
   completeCodeLogin: (code: string) => Promise<AuthSessionOut>;
   logout: () => Promise<void>;
+  deleteMyAccount: () => Promise<void>;
   authRequest: <T>(endpoint: string, options?: RequestInit) => Promise<T>;
 }
 
@@ -206,7 +212,10 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
       setAllDirectoryUsers(cleaned);
       return cleaned;
     } catch (err: any) {
-      setConnectionError(err?.message || 'Backend API bağlantısı kurulamadı.');
+      setConnectionError(
+        err?.message ||
+          'Sunucuya bağlanılamadı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.'
+      );
       return [];
     } finally {
       setLoadingUsers(false);
@@ -280,6 +289,33 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
     },
     [applyAuthenticatedSession]
   );
+
+  const loginWithAccessCode = useCallback(
+    async (accessCode: string): Promise<void> => {
+      const normalizedCode = accessCode.trim().toUpperCase();
+      if (!normalizedCode) {
+        throw new Error('Lütfen erişim kodunuzu girin.');
+      }
+      const session = await apiRequest<AuthSessionOut>('/auth/code-login', {
+        method: 'POST',
+        body: JSON.stringify({ access_code: normalizedCode }),
+      });
+      await applyAuthenticatedSession(session);
+    },
+    [applyAuthenticatedSession]
+  );
+
+  const markPolicyAccepted = useCallback((acceptedAt?: string): void => {
+    setAuthUser((prev) =>
+      prev
+        ? {
+            ...prev,
+            policy_accepted: true,
+            policy_accepted_at: acceptedAt ?? new Date().toISOString(),
+          }
+        : prev
+    );
+  }, []);
 
   const loginWithPassword = useCallback(
     async (identifier: string, password: string): Promise<AuthSessionOut> => {
@@ -362,6 +398,27 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
         // Çıkış her koşulda yerel oturumu temizler
       }
     }
+  }, []);
+
+  const deleteMyAccount = useCallback(async (): Promise<void> => {
+    const currentToken = authTokenRef.current;
+    if (!currentToken) {
+      throw new Error('Aktif oturum bulunamadı. Lütfen tekrar giriş yapın.');
+    }
+
+    await apiRequest<{ deleted?: boolean; message?: string }>('/auth/me', {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${currentToken}` },
+    });
+
+    writeStoredToken(null);
+    authTokenRef.current = null;
+    setAuthToken(null);
+    setAuthUser(null);
+    setSelectedUserId(null);
+    setAllDirectoryUsers([]);
+    setActivePanel('member');
+    setConnectionError(null);
   }, []);
 
   // Web popup postMessage dinleyicisi (Google OAuth penceresinden anlık dönüş)
@@ -563,11 +620,14 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
       reloadPanelConfig,
       switchPanel,
       returnToAdminPanel,
+      loginWithAccessCode,
+      markPolicyAccepted,
       loginWithPassword,
       loginWithGoogle,
       completeTokenLogin,
       completeCodeLogin,
       logout,
+      deleteMyAccount,
       authRequest,
     }),
     [
@@ -589,11 +649,14 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
       reloadPanelConfig,
       switchPanel,
       returnToAdminPanel,
+      loginWithAccessCode,
+      markPolicyAccepted,
       loginWithPassword,
       loginWithGoogle,
       completeTokenLogin,
       completeCodeLogin,
       logout,
+      deleteMyAccount,
       authRequest,
     ]
   );

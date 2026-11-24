@@ -1,164 +1,141 @@
-import Constants from 'expo-constants';
-import { Platform } from 'react-native';
-
 /**
- * ============================================================================
- * CANLI GENEL PAYLAŞIM (HTTPS CLOUDFLARE TUNNEL) & YEREL AĞ (LAN) YAPILANDIRMASI
- * - Google Chrome / Safari üzerinden canlı HTTPS paylaşım linkinden girildiğinde:
- *   PUBLIC_HTTPS_BACKEND_URL otomatik kullanılır (sıfır CORS ve sıfır Mixed-Content hatası).
- * - Bilgisayardan (localhost / 127.0.0.1) girildiğinde: http://127.0.0.1:8000
- * - Aynı Wi-Fi ağındaki telefondan (LAN IPv4 / Expo Go) girildiğinde:
- *   http://192.168.1.147:8000 (4G/5G veya tünel bağlantısında HTTPS tünele geçer).
- * ============================================================================
+ * Canlı Bulut Backend API Yapılandırması (HTTPS - Render Production)
  */
-export const LOCAL_WIFI_IP = '192.168.1.147';
-export const BACKEND_PORT = 8000;
+export const API_BASE_URL = 'https://fitness-appp.onrender.com';
 
-// Canlı Cloudflare HTTPS Backend Tüneli (Google Chrome & Uzaktan Canlı Erişim)
-export const PUBLIC_HTTPS_BACKEND_URL =
-  'https://vacancies-allocation-opportunity-summary.trycloudflare.com';
+const NETWORK_ERROR_TR =
+  'Bağlantı kurulamadı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.';
+const SERVER_ERROR_TR =
+  'Sunucuya şu an ulaşılamıyor. Lütfen kısa bir süre sonra tekrar deneyin.';
+const TIMEOUT_ERROR_TR =
+  'İstek zaman aşımına uğradı. Lütfen bağlantınızı kontrol edip tekrar deneyin.';
+const AUTH_ERROR_TR =
+  'Oturumunuz sona erdi veya kimlik doğrulaması başarısız oldu. Lütfen tekrar giriş yapın.';
+const FORBIDDEN_ERROR_TR = 'Bu işlem için yetkiniz bulunmuyor.';
+const NOT_FOUND_ERROR_TR = 'İstenen kayıt veya içerik bulunamadı.';
+const RATE_LIMIT_ERROR_TR =
+  'Çok fazla istek gönderildi. Lütfen kısa bir süre bekleyip tekrar deneyin.';
+const VALIDATION_ERROR_TR = 'Girilen bilgileri kontrol edip tekrar deneyin.';
 
-// Özel bir URL zorlamak isterseniz buraya yazabilirsiniz (boş bırakıldığında otomatik algılar)
-export const MANUAL_API_URL_OVERRIDE = '';
+const RAW_TECHNICAL_PATTERNS = [
+  /failed to fetch/i,
+  /network request failed/i,
+  /networkerror/i,
+  /load failed/i,
+  /typeerror/i,
+  /syntaxerror/i,
+  /json parse error/i,
+  /unexpected token/i,
+  /500 internal server error/i,
+  /internal server error/i,
+  /bad gateway/i,
+  /service unavailable/i,
+  /gateway timeout/i,
+  /<!doctype/i,
+  /<html/i,
+  /econnrefused/i,
+  /enotfound/i,
+  /abort(ed)?/i,
+];
 
-function normalizeBaseUrl(url: string): string {
-  return url.trim().replace(/\/+$/, '');
+function isTechnicalRawMessage(message: string): boolean {
+  const trimmed = message.trim();
+  if (!trimmed) return true;
+  return RAW_TECHNICAL_PATTERNS.some((pattern) => pattern.test(trimmed));
 }
 
-function isPrivateLanIpv4(host: string): boolean {
-  if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {
-    return false;
-  }
-  return (
-    host.startsWith('192.168.') ||
-    host.startsWith('10.') ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(host)
-  );
-}
-
-function extractLanIpv4(raw?: string | null): string | null {
-  if (!raw) return null;
-  const cleaned = raw.replace(/^[a-zA-Z0-9+.-]+:\/\//, '');
-  const host = cleaned.split('/')[0]?.split(':')[0]?.trim();
-  if (!host || host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0') {
-    return null;
-  }
-  const isIpv4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
-  return isIpv4 ? host : null;
-}
-
-function readWebQueryApiOverride(): string | null {
-  if (Platform.OS !== 'web' || typeof window === 'undefined') {
-    return null;
-  }
-  try {
-    const params = new URLSearchParams(window.location.search);
-    const fromQuery = params.get('api_url') || params.get('backend');
-    if (fromQuery && /^https?:\/\//i.test(fromQuery.trim())) {
-      return normalizeBaseUrl(fromQuery);
-    }
-  } catch {
-    // ignore URL parsing errors
-  }
-  return null;
-}
-
-function resolveApiBaseUrl(): string {
-  if (MANUAL_API_URL_OVERRIDE.trim().length > 0) {
-    return normalizeBaseUrl(MANUAL_API_URL_OVERRIDE);
-  }
-
-  const envUrl =
-    typeof process !== 'undefined' && process.env?.EXPO_PUBLIC_API_URL
-      ? process.env.EXPO_PUBLIC_API_URL.trim()
-      : '';
-  if (envUrl.length > 0) {
-    return normalizeBaseUrl(envUrl);
-  }
-
-  const queryOverride = readWebQueryApiOverride();
-  if (queryOverride) {
-    return queryOverride;
-  }
-
-  // 1. Web Tarayıcı (Google Chrome, Safari, Mobil Tarayıcı):
-  //    - HTTPS tünelden (*.trycloudflare.com veya genel alan adı) girildiğinde HTTPS Backend Tüneli
-  //    - localhost / 127.0.0.1 üzerinden HTTP ile girildiğinde http://127.0.0.1:8000
-  //    - Yerel Wi-Fi IPv4 üzerinden HTTP ile girildiğinde http://192.168.x.x:8000
-  if (Platform.OS === 'web' && typeof window !== 'undefined') {
-    const protocol = window.location.protocol;
-    const hostname = (window.location.hostname || '').trim().toLowerCase();
-
-    if (
-      protocol === 'https:' ||
-      hostname.endsWith('.trycloudflare.com') ||
-      (hostname.length > 0 &&
-        hostname !== 'localhost' &&
-        hostname !== '127.0.0.1' &&
-        !isPrivateLanIpv4(hostname))
-    ) {
-      if (PUBLIC_HTTPS_BACKEND_URL.trim().length > 0) {
-        return normalizeBaseUrl(PUBLIC_HTTPS_BACKEND_URL);
+export function normalizeTurkishApiError(rawError: unknown, status?: number): string {
+  if (typeof status === 'number') {
+    if (status >= 500) {
+      if (typeof rawError === 'string' && !isTechnicalRawMessage(rawError)) {
+        return rawError.trim();
       }
+      return SERVER_ERROR_TR;
     }
-
-    if (!hostname || hostname === 'localhost' || hostname === '127.0.0.1') {
-      return `http://127.0.0.1:${BACKEND_PORT}`;
+    if (status === 429) {
+      return RATE_LIMIT_ERROR_TR;
     }
-
-    return `http://${hostname}:${BACKEND_PORT}`;
+    if (status === 401) {
+      if (
+        typeof rawError === 'string' &&
+        rawError.trim() &&
+        !/^(unauthorized|not authenticated|invalid token)$/i.test(rawError.trim()) &&
+        !isTechnicalRawMessage(rawError)
+      ) {
+        return rawError.trim();
+      }
+      return AUTH_ERROR_TR;
+    }
+    if (status === 403) {
+      if (
+        typeof rawError === 'string' &&
+        rawError.trim() &&
+        !/^forbidden$/i.test(rawError.trim()) &&
+        !isTechnicalRawMessage(rawError)
+      ) {
+        return rawError.trim();
+      }
+      return FORBIDDEN_ERROR_TR;
+    }
+    if (status === 404) {
+      if (
+        typeof rawError === 'string' &&
+        rawError.trim() &&
+        !/^not found$/i.test(rawError.trim()) &&
+        !isTechnicalRawMessage(rawError)
+      ) {
+        return rawError.trim();
+      }
+      return NOT_FOUND_ERROR_TR;
+    }
+    if (status === 422) {
+      if (typeof rawError === 'string' && !isTechnicalRawMessage(rawError)) {
+        return rawError.trim();
+      }
+      return VALIDATION_ERROR_TR;
+    }
   }
 
-  // 2. iOS / Android (Expo Go - Yerel Wi-Fi veya Tünel / Hücresel Veri):
-  const candidates = [
-    Constants.expoConfig?.hostUri,
-    (Constants as any).manifest2?.extra?.expoGo?.debuggerHost,
-    (Constants as any).manifest?.debuggerHost,
-    Constants.experienceUrl,
-  ];
-
-  for (const candidate of candidates) {
-    const detectedIp = extractLanIpv4(candidate);
-    if (detectedIp) {
-      return `http://${detectedIp}:${BACKEND_PORT}`;
+  if (typeof rawError === 'string') {
+    const trimmed = rawError.trim();
+    if (!trimmed) return NETWORK_ERROR_TR;
+    if (/abort/i.test(trimmed) || /timeout/i.test(trimmed)) {
+      return TIMEOUT_ERROR_TR;
     }
+    if (isTechnicalRawMessage(trimmed)) {
+      return typeof status === 'number' && status >= 500
+        ? SERVER_ERROR_TR
+        : NETWORK_ERROR_TR;
+    }
+    return trimmed;
   }
 
-  // Eğer Expo Tunnel (exp.direct) veya hücresel ağ üzerinden bağlanıldıysa genel HTTPS tünelini kullan
-  if (PUBLIC_HTTPS_BACKEND_URL.trim().length > 0) {
-    return normalizeBaseUrl(PUBLIC_HTTPS_BACKEND_URL);
+  if (rawError instanceof Error) {
+    if (rawError.name === 'AbortError') {
+      return TIMEOUT_ERROR_TR;
+    }
+    return normalizeTurkishApiError(rawError.message, status);
   }
 
-  // 3. Yedek: Bilgisayarın yerel IPv4 adresi
-  return `http://${LOCAL_WIFI_IP}:${BACKEND_PORT}`;
+  return typeof status === 'number' && status >= 500
+    ? SERVER_ERROR_TR
+    : NETWORK_ERROR_TR;
 }
 
-export const API_BASE_URL = resolveApiBaseUrl();
-
-function getFallbackBaseUrl(primaryBase: string): string | null {
-  const cleanTunnel = PUBLIC_HTTPS_BACKEND_URL.trim()
-    ? normalizeBaseUrl(PUBLIC_HTTPS_BACKEND_URL)
-    : null;
-
-  // HTTPS sayfalarda mixed-content engeline takılmamak için HTTP fallback yapma
-  if (
-    Platform.OS === 'web' &&
-    typeof window !== 'undefined' &&
-    window.location.protocol === 'https:'
-  ) {
-    return cleanTunnel && cleanTunnel !== primaryBase ? cleanTunnel : null;
+function extractResponseErrorDetail(data: any): string | undefined {
+  if (!data) return undefined;
+  if (typeof data === 'string') return data;
+  if (typeof data === 'object') {
+    if (typeof data.detail === 'string') return data.detail;
+    if (Array.isArray(data.detail) && data.detail.length > 0) {
+      const first = data.detail[0];
+      if (typeof first === 'string') return first;
+      if (first && typeof first.msg === 'string') return first.msg;
+    }
+    if (typeof data.message === 'string') return data.message;
+    if (typeof data.error === 'string') return data.error;
   }
-
-  if (cleanTunnel && primaryBase !== cleanTunnel) {
-    return cleanTunnel;
-  }
-
-  const localFallback =
-    Platform.OS === 'web'
-      ? `http://127.0.0.1:${BACKEND_PORT}`
-      : `http://${LOCAL_WIFI_IP}:${BACKEND_PORT}`;
-
-  return primaryBase !== localFallback ? localFallback : null;
+  return undefined;
 }
 
 export async function apiRequest<T>(
@@ -177,27 +154,29 @@ export async function apiRequest<T>(
   let response: Response;
   try {
     response = await fetch(`${API_BASE_URL}${normalizedPath}`, requestInit);
-  } catch (networkError) {
-    const fallbackBase = getFallbackBaseUrl(API_BASE_URL);
-    if (!fallbackBase) {
-      throw networkError;
-    }
-    response = await fetch(`${fallbackBase}${normalizedPath}`, requestInit);
+  } catch (err: unknown) {
+    throw new Error(normalizeTurkishApiError(err));
   }
 
-  const text = await response.text();
-  let data: any = null;
+  let text = '';
   try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = text;
+    text = await response.text();
+  } catch (err: unknown) {
+    throw new Error(normalizeTurkishApiError(err, response.status));
+  }
+
+  let data: any = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = text;
+    }
   }
 
   if (!response.ok) {
-    const errorMessage =
-      (data && typeof data === 'object' && (data.detail || data.message)) ||
-      `Sunucu hatası (${response.status})`;
-    throw new Error(String(errorMessage));
+    const rawDetail = extractResponseErrorDetail(data);
+    throw new Error(normalizeTurkishApiError(rawDetail, response.status));
   }
 
   return data as T;

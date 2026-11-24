@@ -3,6 +3,7 @@ import {
   ActivityIndicator,
   StyleSheet,
   Text,
+  TouchableOpacity,
   View,
 } from 'react-native';
 import {
@@ -37,7 +38,15 @@ export const TRAINER_DRAWER_MENU: DrawerMenuItemConfig<TrainerDrawerRoute>[] = [
   { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
   { key: 'crm', Icon: Users, label: 'Üyeler' },
   { key: 'create_session', Icon: CalendarPlus, label: 'Yeni Ders' },
-  { key: 'instagram_ai', Icon: MessageCircle, label: 'DM Asistanı' },
+  ...(__DEV__
+    ? [
+        {
+          key: 'instagram_ai' as TrainerDrawerRoute,
+          Icon: MessageCircle,
+          label: 'DM Asistanı',
+        },
+      ]
+    : []),
   { key: 'announcements_profile', Icon: Megaphone, label: 'Duyurular' },
 ];
 
@@ -67,11 +76,14 @@ export function TrainerRootView({
   const [schedule, setSchedule] = useState<TrainerScheduleData | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [busyBookingId, setBusyBookingId] = useState<number | null>(null);
   const [savingNote, setSavingNote] = useState<boolean>(false);
   const [focusDate, setFocusDate] = useState<string | null>(null);
 
-  const currentRoute: TrainerDrawerRoute = activeRoute ?? internalRoute;
+  const rawRoute: TrainerDrawerRoute = activeRoute ?? internalRoute;
+  const currentRoute: TrainerDrawerRoute =
+    !__DEV__ && rawRoute === 'instagram_ai' ? 'schedule' : rawRoute;
   const isStandalone = activeRoute === undefined;
 
   const navigateRoute = useCallback(
@@ -97,13 +109,18 @@ export function TrainerRootView({
   const fetchSchedule = useCallback(
     async (silent = false) => {
       if (!silent) setLoading(true);
+      setLoadError(null);
       try {
         const res = await apiRequest<TrainerScheduleData>(
           `/trainer/${trainer.id}/schedule`
         );
         setSchedule(res);
       } catch (err: any) {
-        showBanner('error', err?.message || 'Eğitmen takvimi yüklenemedi.');
+        const msg =
+          err?.message ||
+          'Eğitmen takvimi yüklenemedi. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.';
+        setLoadError(msg);
+        showBanner('error', msg);
       } finally {
         setLoading(false);
         setRefreshing(false);
@@ -242,7 +259,7 @@ export function TrainerRootView({
             onViewInSchedule={handleJumpToScheduleDate}
             onShowBanner={showBanner}
           />
-        ) : currentRoute === 'instagram_ai' ? (
+        ) : __DEV__ && currentRoute === 'instagram_ai' ? (
           <InstagramDmSimulatorTab
             onBookingMutated={() => fetchSchedule(true)}
             onNavigateRoute={navigateRoute}
@@ -255,10 +272,23 @@ export function TrainerRootView({
             onViewDateInSchedule={handleJumpToScheduleDate}
             onShowBanner={showBanner}
           />
-        ) : loading || !schedule ? (
+        ) : loading && !schedule ? (
           <View style={styles.centerLoader}>
             <ActivityIndicator size="large" color={COLORS.secondary} />
             <Text style={styles.loaderText}>Eğitmen stüdyo paneli hazırlanıyor...</Text>
+          </View>
+        ) : !schedule ? (
+          <View style={styles.centerLoader}>
+            <Text style={styles.errorText}>
+              {loadError || 'Eğitmen takvimi yüklenemedi.'}
+            </Text>
+            <TouchableOpacity
+              style={styles.retryBtn}
+              onPress={() => fetchSchedule(false)}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.retryBtnText}>Tekrar Dene</Text>
+            </TouchableOpacity>
           </View>
         ) : (
           <TrainerScheduleTab
@@ -298,6 +328,25 @@ const styles = StyleSheet.create({
     color: COLORS.textSecondary,
     fontSize: 13.5,
     fontWeight: '600',
+  },
+  errorText: {
+    color: COLORS.dangerText,
+    fontSize: 14,
+    fontWeight: '700',
+    textAlign: 'center',
+    paddingHorizontal: 24,
+  },
+  retryBtn: {
+    marginTop: 6,
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 11,
+    borderRadius: 12,
+  },
+  retryBtnText: {
+    color: COLORS.white,
+    fontSize: 13.5,
+    fontWeight: '800',
   },
   bannerBox: {
     marginHorizontal: 18,

@@ -81,9 +81,12 @@ export function MemberBookingTab({
   const [selectedCategory, setSelectedCategory] = useState<string>('Tümü');
   const [selectedTrainerId, setSelectedTrainerId] = useState<number | 'all'>('all');
 
+  const availableSessions = data?.available_sessions ?? [];
+  const waitlistItems = data?.waitlist_items ?? [];
+
   const trainerOptions: TrainerFilterOption[] = useMemo(() => {
     const map = new Map<number, TrainerFilterOption>();
-    data.available_sessions.forEach((s) => {
+    availableSessions.forEach((s) => {
       if (!map.has(s.trainer_id)) {
         map.set(s.trainer_id, {
           id: s.trainer_id,
@@ -93,16 +96,16 @@ export function MemberBookingTab({
       }
     });
     return Array.from(map.values()).sort((a, b) => a.id - b.id);
-  }, [data.available_sessions]);
+  }, [availableSessions]);
 
   const calendarPills: CalendarPillItem[] = useMemo(() => {
     const uniqueDates = new Set<string>([todayIso, tomorrowIso]);
-    data.available_sessions.forEach((s) => uniqueDates.add(s.date));
+    availableSessions.forEach((s) => uniqueDates.add(s.date));
     const sortedDates = Array.from(uniqueDates).sort();
 
     const datePills: CalendarPillItem[] = sortedDates.map((iso) => {
       const fmt = formatTurkishDateLabel(iso);
-      const count = data.available_sessions.filter((s) => s.date === iso).length;
+      const count = availableSessions.filter((s) => s.date === iso).length;
       return {
         key: iso,
         topLabel: fmt.primary,
@@ -114,15 +117,15 @@ export function MemberBookingTab({
     datePills.push({
       key: 'all',
       topLabel: 'Tümü',
-      bottomLabel: `${data.available_sessions.length} Seans`,
-      count: data.available_sessions.length,
+      bottomLabel: `${availableSessions.length} Seans`,
+      count: availableSessions.length,
     });
 
     return datePills;
-  }, [data.available_sessions, todayIso, tomorrowIso]);
+  }, [availableSessions, todayIso, tomorrowIso]);
 
   const filteredSessions = useMemo(() => {
-    return data.available_sessions.filter((s) => {
+    return availableSessions.filter((s) => {
       if (selectedDateKey !== 'all' && s.date !== selectedDateKey) {
         return false;
       }
@@ -138,7 +141,7 @@ export function MemberBookingTab({
       }
       return true;
     });
-  }, [data.available_sessions, selectedDateKey, selectedCategory, selectedTrainerId]);
+  }, [availableSessions, selectedDateKey, selectedCategory, selectedTrainerId]);
 
   const remainingCredits = data.active_package?.remaining_credits ?? 0;
   const totalCredits = data.active_package?.total_credits ?? 0;
@@ -308,11 +311,11 @@ export function MemberBookingTab({
           </Text>
         </View>
 
-        {data.waitlist_items.length > 0 ? (
+        {waitlistItems.length > 0 ? (
           <View style={styles.waitlistSummaryBadge}>
             <Hourglass size={12} color={COLORS.warningText} />
             <Text style={styles.waitlistSummaryText}>
-              {data.waitlist_items.length} Yedek Sıra
+              {waitlistItems.length} Yedek Sıra
             </Text>
           </View>
         ) : remainingCredits <= 2 ? (

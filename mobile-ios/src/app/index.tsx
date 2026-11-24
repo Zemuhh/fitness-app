@@ -20,6 +20,7 @@ import {
 } from 'lucide-react-native';
 import { API_BASE_URL } from '@/config/api';
 import { CleanAppHeader } from '@/components/CleanAppHeader';
+import { CompanyPolicyModal } from '@/components/CompanyPolicyModal';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
 import { SlideOverDrawer } from '@/components/SlideOverDrawer';
 import { useAuthDemo } from '@/context/AuthDemoContext';
@@ -41,11 +42,14 @@ export default function AppEntryScreen() {
     triggerGlobalRefresh,
     isAuthenticated,
     restoringSession,
+    authToken,
+    authUser,
     isAdmin,
     activePanel,
     panelConfig,
     switchPanel,
     returnToAdminPanel,
+    markPolicyAccepted,
     logout,
   } = useAuthDemo();
 
@@ -124,6 +128,25 @@ export default function AppEntryScreen() {
       <>
         <StatusBar style="light" />
         <LoginScreen />
+      </>
+    );
+  }
+
+  // 2.5. TEK SEFERLİK ŞİRKET POLİTİKA & KVKK SÖZLEŞME ONAY KAPISI (Yalnızca üye/eğitmen ilk girişi)
+  if (isAuthenticated && !isAdmin && authUser && authUser.policy_accepted === false) {
+    return (
+      <>
+        <StatusBar style="light" />
+        <CompanyPolicyModal
+          authToken={authToken}
+          userId={authUser.user_id ?? authUser.id ?? null}
+          userFullName={authUser.full_name}
+          userRole={authUser.role}
+          onAccepted={(acceptedAt) => {
+            markPolicyAccepted(acceptedAt);
+          }}
+          onLogout={logout}
+        />
       </>
     );
   }
@@ -251,16 +274,18 @@ export default function AppEntryScreen() {
             </View>
             <Text style={styles.errorTitle}>Sunucuya Ulaşılamadı</Text>
             <Text style={styles.errorDesc}>{connectionError}</Text>
-            <View style={styles.apiTargetPill}>
-              <Text style={styles.apiTarget}>Hedef API: {API_BASE_URL}</Text>
-            </View>
+            {__DEV__ && (
+              <View style={styles.apiTargetPill}>
+                <Text style={styles.apiTarget}>Hedef API: {API_BASE_URL}</Text>
+              </View>
+            )}
             <View style={styles.errorActionsRow}>
               <TouchableOpacity
                 style={styles.retryBtn}
                 onPress={reloadUsers}
                 activeOpacity={0.85}
               >
-                <Text style={styles.retryBtnText}>Yeniden Dene</Text>
+                <Text style={styles.retryBtnText}>Tekrar Dene</Text>
               </TouchableOpacity>
               {isAdmin ? (
                 <TouchableOpacity

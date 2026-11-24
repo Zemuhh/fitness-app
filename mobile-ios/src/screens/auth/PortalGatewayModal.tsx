@@ -91,11 +91,15 @@ export function PortalGatewayModal({
     }
   }, [visible, initialLookupCode, handleLookup]);
 
+  const upcomingBookings = Array.isArray(lookupData?.upcoming_bookings)
+    ? lookupData.upcoming_bookings
+    : [];
+
   const content = (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <KeyboardAvoidingView
         style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <View style={styles.headerRow}>
           <View style={styles.headerTitleCol}>
@@ -160,6 +164,18 @@ export function PortalGatewayModal({
               <View style={styles.errorBanner}>
                 <AlertTriangle size={15} color={COLORS.danger} />
                 <Text style={styles.errorText}>{lookupError}</Text>
+                {lookupInput.trim().length > 0 ? (
+                  <TouchableOpacity
+                    style={styles.retryChip}
+                    onPress={() => handleLookup()}
+                    disabled={lookupLoading}
+                    activeOpacity={0.8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Tekrar Dene"
+                  >
+                    <Text style={styles.retryChipText}>Tekrar Dene</Text>
+                  </TouchableOpacity>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -179,7 +195,7 @@ export function PortalGatewayModal({
                   <Text style={styles.creditBig}>
                     {lookupData.role === 'member'
                       ? `${lookupData.remaining_credits}/${lookupData.total_credits}`
-                      : `${lookupData.upcoming_bookings.length}`}
+                      : `${upcomingBookings.length}`}
                   </Text>
                   <Text style={styles.creditSub}>
                     {lookupData.role === 'member' ? 'KALAN DERS' : 'AKTİF SEANS'}
@@ -212,17 +228,17 @@ export function PortalGatewayModal({
                 <View style={styles.upcomingHeader}>
                   <Calendar size={16} color={COLORS.primary} />
                   <Text style={styles.upcomingTitle}>
-                    Yaklaşan Dersler ({lookupData.upcoming_bookings.length})
+                    Yaklaşan Dersler ({upcomingBookings.length})
                   </Text>
                 </View>
 
-                {lookupData.upcoming_bookings.length === 0 ? (
+                {upcomingBookings.length === 0 ? (
                   <View style={styles.emptyBox}>
                     <Dumbbell size={18} color={COLORS.textMuted} />
                     <Text style={styles.emptyText}>Planlanmış aktif randevu bulunmuyor.</Text>
                   </View>
                 ) : (
-                  lookupData.upcoming_bookings.map((item) => (
+                  upcomingBookings.map((item) => (
                     <View
                       key={`${item.booking_id}-${item.session_id}`}
                       style={styles.lessonRow}
@@ -374,6 +390,20 @@ const styles = StyleSheet.create({
     color: COLORS.dangerText,
     fontSize: 12.5,
     fontWeight: '600',
+  },
+  retryChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 8,
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+  },
+  retryChipText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.dangerText,
+    fontSize: 11.5,
+    fontWeight: '700',
   },
   resultTopRow: {
     flexDirection: 'row',

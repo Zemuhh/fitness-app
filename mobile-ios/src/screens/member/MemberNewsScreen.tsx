@@ -70,7 +70,7 @@ export function MemberNewsScreen({ onNavigate }: MemberNewsScreenProps) {
     setErrorMsg(null);
     try {
       const res = await apiRequest<AnnouncementItem[]>('/announcements');
-      setItems(res);
+      setItems(Array.isArray(res) ? res : []);
     } catch (err: any) {
       setErrorMsg(err?.message || 'Duyurular ve bilgilendirmeler yüklenemedi.');
     } finally {
@@ -190,7 +190,7 @@ export function MemberNewsScreen({ onNavigate }: MemberNewsScreenProps) {
               style={styles.retryBtn}
               onPress={() => fetchAnnouncements(false)}
             >
-              <Text style={styles.retryBtnText}>Yeniden Yükle</Text>
+              <Text style={styles.retryBtnText}>Tekrar Dene</Text>
             </TouchableOpacity>
           </View>
         ) : filteredItems.length === 0 ? (

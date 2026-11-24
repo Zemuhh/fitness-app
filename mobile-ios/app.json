@@ -9,8 +9,16 @@
     "userInterfaceStyle": "light",
     "backgroundColor": "#F6F1E9",
     "ios": {
+      "bundleIdentifier": "com.eryapilates.reformer",
+      "buildNumber": "1",
       "supportsTablet": true,
-      "userInterfaceStyle": "light"
+      "userInterfaceStyle": "light",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Salon QR kod girişi ve öğün fotoğrafı analizi için kamera erişimi gereklidir.",
+        "NSPhotoLibraryUsageDescription": "Öğün fotoğrafı yükleme ve profil fotoğrafı seçimi için fotoğraf arşivi erişimi gereklidir.",
+        "NSPhotoLibraryAddUsageDescription": "QR giriş kartı ve antrenman görsellerini kaydetmek için fotoğraf arşivi izni gereklidir."
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -23,7 +31,14 @@
     },
     "web": {
       "output": "single",
-      "favicon": "./assets/images/favicon.png"
+      "lang": "tr",
+      "favicon": "./assets/images/favicon.png",
+      "name": "FitClub Studio",
+      "shortName": "FitClub",
+      "display": "standalone",
+      "orientation": "portrait",
+      "backgroundColor": "#F4F7FB",
+      "themeColor": "#0D9488"
     },
     "plugins": [
       "expo-router"

@@ -11,86 +11,101 @@ import {
   View,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import Svg, { Path } from 'react-native-svg';
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
   Eye,
   EyeOff,
+  KeyRound,
   Lock,
   ShieldCheck,
-  Sparkles,
   User,
+  X,
 } from 'lucide-react-native';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
+import {
+  LegalDocumentsModal,
+  LegalDocumentTab,
+} from '@/components/LegalDocumentsModal';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { FONTS } from '@/theme/colors';
 
-function GoogleColorIcon({ size = 19 }: { size?: number }) {
-  return (
-    <Svg width={size} height={size} viewBox="0 0 24 24">
-      <Path
-        fill="#EA4335"
-        d="M12 10.2v3.9h5.5c-.2 1.3-1.6 3.8-5.5 3.8-3.3 0-6-2.7-6-6s2.7-6 6-6c1.9 0 3.1.8 3.9 1.5l2.6-2.5C16.8 3.3 14.6 2.4 12 2.4 6.7 2.4 2.4 6.7 2.4 12s4.3 9.6 9.6 9.6c5.5 0 9.2-3.9 9.2-9.4 0-.6-.1-1.1-.2-1.6H12z"
-      />
-      <Path
-        fill="#34A853"
-        d="M3.5 16.5l3.2-2.4c.9 2.2 3 3.8 5.3 3.8 1.9 0 3.5-.6 4.6-1.7l3 2.3C17.8 20.5 15.1 21.6 12 21.6c-3.8 0-7.1-2.1-8.5-5.1z"
-      />
-      <Path
-        fill="#FBBC05"
-        d="M6.7 14.1c-.2-.6-.4-1.3-.4-2.1s.2-1.5.4-2.1L3.5 7.5C2.8 8.9 2.4 10.4 2.4 12s.4 3.1 1.1 4.5l3.2-2.4z"
-      />
-      <Path
-        fill="#4285F4"
-        d="M21.2 12.2c0-.7-.1-1.4-.2-2H12v3.9h5.2c-.3 1.4-1.1 2.5-2.2 3.2l3 2.3c1.8-1.6 3.2-4.1 3.2-7.4z"
-      />
-    </Svg>
-  );
-}
+const MONO_FONT = Platform.select({
+  web: '"JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace',
+  ios: 'Menlo',
+  default: 'monospace',
+});
 
-const DARK = {
-  bg: '#090D16',
-  card: '#111827',
-  inputBg: '#0D1422',
-  border: '#1F2C42',
-  borderFocus: '#C9A452',
-  gold: '#C9A452',
-  goldBright: '#E2BE68',
-  goldSoft: 'rgba(201, 164, 82, 0.14)',
-  goldBorder: 'rgba(201, 164, 82, 0.34)',
-  textPrimary: '#F8FAFC',
-  textSecondary: '#94A3B8',
-  textMuted: '#64748B',
-  danger: '#F87171',
-  dangerBg: 'rgba(239, 68, 68, 0.12)',
-  dangerBorder: 'rgba(248, 113, 113, 0.32)',
-  googleBtnBg: '#162033',
-  googleBtnBorder: '#293852',
+const PALETTE = {
+  bg: '#111214',
+  surface: '#181A1E',
+  inputBg: '#131518',
+  border: 'rgba(250, 246, 238, 0.09)',
+  borderStrong: 'rgba(250, 246, 238, 0.16)',
+  accent: '#C9A452',
+  accentInk: '#111214',
+  accentBorder: 'rgba(201, 164, 82, 0.55)',
+  accentTint: 'rgba(201, 164, 82, 0.08)',
+  textPrimary: '#F5F2EB',
+  textSecondary: '#A8A298',
+  textMuted: '#757068',
+  danger: '#E07A74',
+  dangerBg: 'rgba(224, 122, 116, 0.10)',
+  dangerBorder: 'rgba(224, 122, 116, 0.28)',
 };
 
-export function LoginScreen() {
-  const { loginWithPassword, loginWithGoogle, panelConfig } = useAuthDemo();
+type LoginMode = 'code' | 'admin';
+type FocusField = 'accessCode' | 'identifier' | 'password' | null;
 
+export function LoginScreen() {
+  const { loginWithAccessCode, loginWithPassword, panelConfig } = useAuthDemo();
+
+  const [mode, setMode] = useState<LoginMode>('code');
+  const [accessCode, setAccessCode] = useState<string>('');
   const [identifier, setIdentifier] = useState<string>('');
   const [password, setPassword] = useState<string>('');
   const [showPassword, setShowPassword] = useState<boolean>(false);
-  const [focusedField, setFocusedField] = useState<'identifier' | 'password' | null>(null);
 
+  const [focusedField, setFocusedField] = useState<FocusField>(null);
   const [submitting, setSubmitting] = useState<boolean>(false);
-  const [googleBusy, setGoogleBusy] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [legalModalTab, setLegalModalTab] = useState<LegalDocumentTab | null>(null);
 
-  const allowGoogle = panelConfig?.allow_google_login !== false;
+  const switchMode = useCallback((nextMode: LoginMode) => {
+    setMode(nextMode);
+    setErrorMessage(null);
+    setFocusedField(null);
+  }, []);
 
-  const handleSubmitLogin = useCallback(async () => {
+  const handleCodeLogin = useCallback(async () => {
+    const cleanCode = accessCode.trim().toUpperCase();
+    if (!cleanCode) {
+      setErrorMessage('Lütfen size verilen erişim kodunu girin.');
+      return;
+    }
+
+    setSubmitting(true);
+    setErrorMessage(null);
+    try {
+      await loginWithAccessCode(cleanCode);
+    } catch (err: any) {
+      setErrorMessage(
+        err?.message || 'Erişim kodu doğrulanamadı. Kodu kontrol edip tekrar deneyin.'
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }, [accessCode, loginWithAccessCode]);
+
+  const handleAdminLogin = useCallback(async () => {
     const cleanId = identifier.trim();
     if (!cleanId) {
-      setErrorMessage('Lütfen e-posta adresinizi veya kullanıcı adınızı girin.');
+      setErrorMessage('Lütfen yönetici kullanıcı adınızı veya e-posta adresinizi girin.');
       return;
     }
     if (!password) {
-      setErrorMessage('Lütfen şifrenizi girin.');
+      setErrorMessage('Lütfen yönetici şifrenizi girin.');
       return;
     }
 
@@ -99,192 +114,251 @@ export function LoginScreen() {
     try {
       await loginWithPassword(cleanId, password);
     } catch (err: any) {
-      setErrorMessage(err?.message || 'Giriş yapılamadı. Bilgilerinizi kontrol edin.');
+      setErrorMessage(
+        err?.message || 'Yönetici girişi yapılamadı. Bilgilerinizi kontrol edin.'
+      );
     } finally {
       setSubmitting(false);
     }
   }, [identifier, password, loginWithPassword]);
 
-  const handleGoogleSignIn = useCallback(async () => {
-    setGoogleBusy(true);
-    setErrorMessage(null);
-    try {
-      await loginWithGoogle();
-    } catch (err: any) {
-      setErrorMessage(err?.message || 'Google ile giriş başlatılamadı.');
-    } finally {
-      setGoogleBusy(false);
-    }
-  }, [loginWithGoogle]);
-
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
-      {/* Dekoratif Yumuşak Arka Plan Işıltıları */}
-      <View pointerEvents="none" style={styles.ambientGlowTop} />
-      <View pointerEvents="none" style={styles.ambientGlowBottom} />
-
       <KeyboardAvoidingView
         style={styles.flexOne}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
       >
         <ScrollView
           contentContainerStyle={styles.scrollContent}
           keyboardShouldPersistTaps="handled"
           showsVerticalScrollIndicator={false}
         >
-          <View style={styles.centerColumn}>
-            {/* Üst Marka Bölümü */}
-            <View style={styles.brandSection}>
-              <EryaBrandLogo size={48} showWordmark lightText />
-              <View style={styles.studioPill}>
-                <Sparkles size={12} color={DARK.goldBright} />
-                <Text style={styles.studioPillText}>GÜVENLİ STÜDYO OTURUMU</Text>
-              </View>
-              <Text style={styles.heroTitle}>Hoş Geldiniz</Text>
-              <Text style={styles.heroSubtitle}>
-                Devam etmek için e-posta adresiniz, kullanıcı adınız veya Google hesabınız ile
-                giriş yapın.
+          <View style={styles.container}>
+            <View style={styles.headerBlock}>
+              <EryaBrandLogo size={44} showWordmark lightText />
+
+              <Text style={styles.title}>
+                {mode === 'code' ? 'Üye ve Eğitmen Girişi' : 'Stüdyo Yöneticisi Girişi'}
+              </Text>
+              <Text style={styles.subtitle}>
+                {mode === 'code'
+                  ? 'Stüdyo yöneticiniz tarafından size özel oluşturulan erişim koduyla giriş yapın'
+                  : 'Müşteri erişim kodları ve stüdyo yönetim paneli için yönetici hesabınızla oturum açın'}
               </Text>
             </View>
 
-            {/* Stüdyo Duyuru Bandı (Admin tarafından aktif edildiyse) */}
             {panelConfig?.studio_banner_enabled &&
             (panelConfig.studio_banner_title || panelConfig.studio_banner_message) ? (
-              <View style={styles.studioBannerBox}>
+              <View style={styles.bannerCard}>
                 {panelConfig.studio_banner_title ? (
-                  <Text style={styles.studioBannerTitle}>{panelConfig.studio_banner_title}</Text>
+                  <Text style={styles.bannerTitle}>{panelConfig.studio_banner_title}</Text>
                 ) : null}
                 {panelConfig.studio_banner_message ? (
-                  <Text style={styles.studioBannerText}>{panelConfig.studio_banner_message}</Text>
+                  <Text style={styles.bannerMessage}>
+                    {panelConfig.studio_banner_message}
+                  </Text>
                 ) : null}
               </View>
             ) : null}
 
-            {/* Ana Giriş Kartı */}
-            <View style={styles.loginCard}>
-              {/* E-posta / Kullanıcı Adı */}
-              <Text style={styles.fieldLabel}>E-posta veya Kullanıcı Adı</Text>
-              <View
-                style={[
-                  styles.inputRow,
-                  focusedField === 'identifier' && styles.inputRowFocused,
-                ]}
-              >
-                <User
-                  size={18}
-                  color={focusedField === 'identifier' ? DARK.gold : DARK.textMuted}
-                />
-                <TextInput
-                  value={identifier}
-                  onChangeText={(val) => {
-                    setIdentifier(val);
-                    if (errorMessage) setErrorMessage(null);
-                  }}
-                  onFocus={() => setFocusedField('identifier')}
-                  onBlur={() => setFocusedField(null)}
-                  placeholder="ornek@eposta.com veya kullanıcı adı"
-                  placeholderTextColor={DARK.textMuted}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="email-address"
-                  returnKeyType="next"
-                  style={styles.textInput}
-                />
-              </View>
-
-              {/* Şifre */}
-              <Text style={[styles.fieldLabel, { marginTop: 16 }]}>Şifre</Text>
-              <View
-                style={[
-                  styles.inputRow,
-                  focusedField === 'password' && styles.inputRowFocused,
-                ]}
-              >
-                <Lock
-                  size={18}
-                  color={focusedField === 'password' ? DARK.gold : DARK.textMuted}
-                />
-                <TextInput
-                  value={password}
-                  onChangeText={(val) => {
-                    setPassword(val);
-                    if (errorMessage) setErrorMessage(null);
-                  }}
-                  onFocus={() => setFocusedField('password')}
-                  onBlur={() => setFocusedField(null)}
-                  placeholder="Şifrenizi girin"
-                  placeholderTextColor={DARK.textMuted}
-                  secureTextEntry={!showPassword}
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  returnKeyType="go"
-                  onSubmitEditing={handleSubmitLogin}
-                  style={styles.textInput}
-                />
-                <TouchableOpacity
-                  onPress={() => setShowPassword((prev) => !prev)}
-                  hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                  accessibilityRole="button"
-                  accessibilityLabel={showPassword ? 'Şifreyi gizle' : 'Şifreyi göster'}
-                >
-                  {showPassword ? (
-                    <EyeOff size={18} color={DARK.textSecondary} />
-                  ) : (
-                    <Eye size={18} color={DARK.textSecondary} />
-                  )}
-                </TouchableOpacity>
-              </View>
-
-              {/* Hata Kutusu */}
-              {errorMessage ? (
-                <View style={styles.errorBanner}>
-                  <AlertCircle size={16} color={DARK.danger} />
-                  <Text style={styles.errorText}>{errorMessage}</Text>
-                </View>
-              ) : null}
-
-              {/* Ana Giriş Yap Butonu */}
-              <TouchableOpacity
-                style={[styles.primaryLoginBtn, submitting && styles.btnDisabled]}
-                onPress={handleSubmitLogin}
-                disabled={submitting || googleBusy}
-                activeOpacity={0.86}
-                accessibilityRole="button"
-                accessibilityLabel="Giriş Yap"
-              >
-                {submitting ? (
-                  <ActivityIndicator size="small" color="#090D16" />
-                ) : (
-                  <>
-                    <Text style={styles.primaryLoginBtnText}>Giriş Yap</Text>
-                    <ArrowRight size={18} color="#090D16" strokeWidth={2.4} />
-                  </>
-                )}
-              </TouchableOpacity>
-
-              {/* Google ile Giriş Yap */}
-              {allowGoogle && (
+            <View style={styles.card}>
+              {mode === 'code' ? (
                 <>
-                  <View style={styles.dividerRow}>
-                    <View style={styles.dividerLine} />
-                    <Text style={styles.dividerText}>veya</Text>
-                    <View style={styles.dividerLine} />
+                  <Text style={styles.fieldLabel}>Erişim kodu</Text>
+                  <View
+                    style={[
+                      styles.codeInputRow,
+                      focusedField === 'accessCode' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <KeyRound
+                      size={18}
+                      strokeWidth={1.5}
+                      color={
+                        focusedField === 'accessCode'
+                          ? PALETTE.accent
+                          : PALETTE.textMuted
+                      }
+                    />
+                    <TextInput
+                      value={accessCode}
+                      onChangeText={(val) => {
+                        setAccessCode(val.toUpperCase());
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('accessCode')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="ERYA-4821"
+                      placeholderTextColor={PALETTE.textMuted}
+                      autoCapitalize="characters"
+                      autoCorrect={false}
+                      spellCheck={false}
+                      returnKeyType="go"
+                      onSubmitEditing={handleCodeLogin}
+                      style={styles.codeInput}
+                      accessibilityLabel="Erişim kodu"
+                    />
+                    {accessCode.length > 0 ? (
+                      <TouchableOpacity
+                        onPress={() => {
+                          setAccessCode('');
+                          if (errorMessage) setErrorMessage(null);
+                        }}
+                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                        accessibilityRole="button"
+                        accessibilityLabel="Kodu temizle"
+                      >
+                        <X size={16} strokeWidth={1.5} color={PALETTE.textMuted} />
+                      </TouchableOpacity>
+                    ) : null}
                   </View>
 
+                  <Text style={styles.helperText}>
+                    Kodunuzu bilmiyorsanız stüdyo resepsiyonu veya yöneticinizden talep
+                    edebilirsiniz.
+                  </Text>
+
+                  {errorMessage ? (
+                    <View style={styles.errorBox}>
+                      <AlertCircle size={16} strokeWidth={1.5} color={PALETTE.danger} />
+                      <Text style={styles.errorText}>{errorMessage}</Text>
+                    </View>
+                  ) : null}
+
                   <TouchableOpacity
-                    style={[styles.googleBtn, googleBusy && styles.btnDisabled]}
-                    onPress={handleGoogleSignIn}
-                    disabled={submitting || googleBusy}
+                    style={[styles.primaryButton, submitting && styles.buttonDisabled]}
+                    onPress={handleCodeLogin}
+                    disabled={submitting}
                     activeOpacity={0.85}
                     accessibilityRole="button"
-                    accessibilityLabel="Google ile Giriş Yap"
+                    accessibilityLabel="Giriş Yap"
                   >
-                    {googleBusy ? (
-                      <ActivityIndicator size="small" color={DARK.textPrimary} />
+                    {submitting ? (
+                      <ActivityIndicator size="small" color={PALETTE.accentInk} />
                     ) : (
                       <>
-                        <GoogleColorIcon size={19} />
-                        <Text style={styles.googleBtnText}>Google ile Giriş Yap</Text>
+                        <Text style={styles.primaryButtonText}>Giriş Yap</Text>
+                        <ArrowRight
+                          size={18}
+                          strokeWidth={1.75}
+                          color={PALETTE.accentInk}
+                        />
+                      </>
+                    )}
+                  </TouchableOpacity>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.fieldLabel}>Kullanıcı adı veya e-posta</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'identifier' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <User
+                      size={18}
+                      strokeWidth={1.5}
+                      color={
+                        focusedField === 'identifier'
+                          ? PALETTE.accent
+                          : PALETTE.textMuted
+                      }
+                    />
+                    <TextInput
+                      value={identifier}
+                      onChangeText={(val) => {
+                        setIdentifier(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('identifier')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="yonetici veya ornek@erya.com"
+                      placeholderTextColor={PALETTE.textMuted}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      keyboardType="email-address"
+                      returnKeyType="next"
+                      style={styles.textInput}
+                      accessibilityLabel="Kullanıcı adı veya e-posta"
+                    />
+                  </View>
+
+                  <Text style={[styles.fieldLabel, styles.fieldLabelSpacing]}>Şifre</Text>
+                  <View
+                    style={[
+                      styles.inputRow,
+                      focusedField === 'password' && styles.inputRowFocused,
+                    ]}
+                  >
+                    <Lock
+                      size={18}
+                      strokeWidth={1.5}
+                      color={
+                        focusedField === 'password'
+                          ? PALETTE.accent
+                          : PALETTE.textMuted
+                      }
+                    />
+                    <TextInput
+                      value={password}
+                      onChangeText={(val) => {
+                        setPassword(val);
+                        if (errorMessage) setErrorMessage(null);
+                      }}
+                      onFocus={() => setFocusedField('password')}
+                      onBlur={() => setFocusedField(null)}
+                      placeholder="Şifreniz"
+                      placeholderTextColor={PALETTE.textMuted}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      returnKeyType="go"
+                      onSubmitEditing={handleAdminLogin}
+                      style={styles.textInput}
+                      accessibilityLabel="Şifre"
+                    />
+                    <TouchableOpacity
+                      onPress={() => setShowPassword((prev) => !prev)}
+                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                      accessibilityRole="button"
+                      accessibilityLabel={
+                        showPassword ? 'Şifreyi gizle' : 'Şifreyi göster'
+                      }
+                    >
+                      {showPassword ? (
+                        <EyeOff size={18} strokeWidth={1.5} color={PALETTE.textSecondary} />
+                      ) : (
+                        <Eye size={18} strokeWidth={1.5} color={PALETTE.textSecondary} />
+                      )}
+                    </TouchableOpacity>
+                  </View>
+
+                  {errorMessage ? (
+                    <View style={styles.errorBox}>
+                      <AlertCircle size={16} strokeWidth={1.5} color={PALETTE.danger} />
+                      <Text style={styles.errorText}>{errorMessage}</Text>
+                    </View>
+                  ) : null}
+
+                  <TouchableOpacity
+                    style={[styles.primaryButton, submitting && styles.buttonDisabled]}
+                    onPress={handleAdminLogin}
+                    disabled={submitting}
+                    activeOpacity={0.85}
+                    accessibilityRole="button"
+                    accessibilityLabel="Giriş Yap"
+                  >
+                    {submitting ? (
+                      <ActivityIndicator size="small" color={PALETTE.accentInk} />
+                    ) : (
+                      <>
+                        <Text style={styles.primaryButtonText}>Giriş Yap</Text>
+                        <ArrowRight
+                          size={18}
+                          strokeWidth={1.75}
+                          color={PALETTE.accentInk}
+                        />
                       </>
                     )}
                   </TouchableOpacity>
@@ -292,16 +366,66 @@ export function LoginScreen() {
               )}
             </View>
 
-            {/* Alt Güvenlik Bilgisi */}
-            <View style={styles.footerRow}>
-              <ShieldCheck size={14} color={DARK.textMuted} />
-              <Text style={styles.footerText}>
-                ERYA Pilates & Reformer • Şifreli Oturum Doğrulaması
-              </Text>
+            <View style={styles.modeSwitchContainer}>
+              {mode === 'code' ? (
+                <TouchableOpacity
+                  style={styles.modeSwitchLink}
+                  onPress={() => switchMode('admin')}
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Stüdyo Yöneticisi Girişi"
+                >
+                  <ShieldCheck size={16} strokeWidth={1.5} color={PALETTE.textMuted} />
+                  <Text style={styles.modeSwitchText}>Stüdyo Yöneticisi Girişi</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity
+                  style={styles.modeSwitchLink}
+                  onPress={() => switchMode('code')}
+                  activeOpacity={0.75}
+                  accessibilityRole="button"
+                  accessibilityLabel="Erişim Kodu ile Girişe Dön"
+                >
+                  <ArrowLeft size={16} strokeWidth={1.5} color={PALETTE.textSecondary} />
+                  <Text style={styles.modeSwitchText}>Erişim Kodu ile Girişe Dön</Text>
+                </TouchableOpacity>
+              )}
+            </View>
+
+            <View style={styles.legalLinksRow}>
+              <TouchableOpacity
+                style={styles.legalLinkBtn}
+                onPress={() => setLegalModalTab('privacy')}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Gizlilik Politikası (KVKK)"
+              >
+                <Text style={styles.legalLinkText}>Gizlilik Politikası (KVKK)</Text>
+              </TouchableOpacity>
+              <Text style={styles.legalDot}>•</Text>
+              <TouchableOpacity
+                style={styles.legalLinkBtn}
+                onPress={() => setLegalModalTab('terms')}
+                activeOpacity={0.75}
+                accessibilityRole="button"
+                accessibilityLabel="Kullanım Koşulları"
+              >
+                <Text style={styles.legalLinkText}>Kullanım Koşulları</Text>
+              </TouchableOpacity>
+            </View>
+
+            <View style={styles.footer}>
+              <Text style={styles.footerText}>ERYA Pilates & Reformer</Text>
             </View>
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
+
+      <LegalDocumentsModal
+        visible={legalModalTab !== null}
+        initialTab={legalModalTab ?? 'privacy'}
+        onClose={() => setLegalModalTab(null)}
+      />
     </SafeAreaView>
   );
 }
@@ -309,229 +433,223 @@ export function LoginScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: DARK.bg,
+    backgroundColor: PALETTE.bg,
   },
   flexOne: {
     flex: 1,
   },
-  ambientGlowTop: {
-    position: 'absolute',
-    top: -120,
-    right: -80,
-    width: 320,
-    height: 320,
-    borderRadius: 160,
-    backgroundColor: 'rgba(201, 164, 82, 0.08)',
-  },
-  ambientGlowBottom: {
-    position: 'absolute',
-    bottom: -140,
-    left: -90,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    backgroundColor: 'rgba(99, 102, 241, 0.06)',
-  },
   scrollContent: {
     flexGrow: 1,
     justifyContent: 'center',
-    paddingHorizontal: 20,
-    paddingVertical: 28,
+    paddingHorizontal: 24,
+    paddingVertical: 32,
   },
-  centerColumn: {
+  container: {
     width: '100%',
     maxWidth: 420,
     alignSelf: 'center',
   },
-  brandSection: {
-    alignItems: 'center',
+  headerBlock: {
+    alignItems: 'flex-start',
     marginBottom: 24,
   },
-  studioPill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    marginTop: 16,
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 999,
-    backgroundColor: DARK.goldSoft,
-    borderWidth: 1,
-    borderColor: DARK.goldBorder,
-  },
-  studioPillText: {
-    fontFamily: FONTS.sans,
-    color: DARK.goldBright,
-    fontSize: 10.5,
-    fontWeight: '800',
-    letterSpacing: 1.1,
-  },
-  heroTitle: {
+  title: {
     fontFamily: FONTS.serif,
-    color: DARK.textPrimary,
-    fontSize: 30,
-    fontWeight: '700',
-    marginTop: 12,
-    letterSpacing: 0.3,
+    color: PALETTE.textPrimary,
+    fontSize: 28,
+    lineHeight: 34,
+    fontWeight: '600',
+    marginTop: 24,
   },
-  heroSubtitle: {
+  subtitle: {
     fontFamily: FONTS.sans,
-    color: DARK.textSecondary,
-    fontSize: 13.5,
+    color: PALETTE.textSecondary,
+    fontSize: 14,
     lineHeight: 20,
-    textAlign: 'center',
-    marginTop: 6,
-    maxWidth: 340,
+    fontWeight: '400',
+    marginTop: 8,
   },
-  studioBannerBox: {
-    backgroundColor: 'rgba(201, 164, 82, 0.11)',
+  bannerCard: {
+    backgroundColor: PALETTE.accentTint,
     borderWidth: 1,
-    borderColor: DARK.goldBorder,
-    borderRadius: 16,
-    paddingHorizontal: 14,
-    paddingVertical: 11,
+    borderColor: PALETTE.borderStrong,
+    borderRadius: 12,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
     marginBottom: 16,
   },
-  studioBannerTitle: {
+  bannerTitle: {
     fontFamily: FONTS.sans,
-    color: DARK.goldBright,
-    fontSize: 12.5,
-    fontWeight: '800',
-    marginBottom: 2,
-  },
-  studioBannerText: {
-    fontFamily: FONTS.sans,
-    color: DARK.textPrimary,
-    fontSize: 12.5,
+    color: PALETTE.textPrimary,
+    fontSize: 13,
     lineHeight: 18,
+    fontWeight: '600',
+    marginBottom: 4,
   },
-  loginCard: {
-    backgroundColor: DARK.card,
-    borderRadius: 24,
+  bannerMessage: {
+    fontFamily: FONTS.sans,
+    color: PALETTE.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '400',
+  },
+  card: {
+    backgroundColor: PALETTE.surface,
+    borderRadius: 16,
     padding: 24,
     borderWidth: 1,
-    borderColor: DARK.border,
-    shadowColor: '#000000',
-    shadowOffset: { width: 0, height: 14 },
-    shadowOpacity: 0.35,
-    shadowRadius: 28,
-    elevation: 8,
+    borderColor: PALETTE.border,
   },
   fieldLabel: {
     fontFamily: FONTS.sans,
-    color: DARK.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '700',
+    color: PALETTE.textSecondary,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
     marginBottom: 8,
+  },
+  fieldLabelSpacing: {
+    marginTop: 16,
+  },
+  codeInputRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: PALETTE.inputBg,
+    borderWidth: 1,
+    borderColor: PALETTE.borderStrong,
+    borderRadius: 10,
+    height: 56,
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  codeInput: {
+    flex: 1,
+    fontFamily: MONO_FONT,
+    color: PALETTE.textPrimary,
+    fontSize: 18,
+    fontWeight: '600',
+    letterSpacing: 1.6,
+    paddingVertical: 0,
   },
   inputRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
-    backgroundColor: DARK.inputBg,
-    borderWidth: 1.2,
-    borderColor: DARK.border,
-    borderRadius: 14,
+    backgroundColor: PALETTE.inputBg,
+    borderWidth: 1,
+    borderColor: PALETTE.borderStrong,
+    borderRadius: 10,
+    height: 48,
     paddingHorizontal: 14,
-    minHeight: 50,
+    gap: 10,
   },
   inputRowFocused: {
-    borderColor: DARK.borderFocus,
-    backgroundColor: '#10192B',
+    borderColor: PALETTE.accentBorder,
   },
   textInput: {
     flex: 1,
     fontFamily: FONTS.sans,
-    color: DARK.textPrimary,
-    fontSize: 14.5,
-    paddingVertical: 12,
-    ...(Platform.OS === 'web' ? ({ outlineStyle: 'none' } as any) : {}),
+    color: PALETTE.textPrimary,
+    fontSize: 15,
+    fontWeight: '400',
+    paddingVertical: 0,
   },
-  errorBanner: {
+  helperText: {
+    fontFamily: FONTS.sans,
+    color: PALETTE.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '400',
+    marginTop: 12,
+  },
+  errorBox: {
     flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginTop: 16,
-    backgroundColor: DARK.dangerBg,
+    alignItems: 'flex-start',
+    backgroundColor: PALETTE.dangerBg,
     borderWidth: 1,
-    borderColor: DARK.dangerBorder,
-    borderRadius: 12,
+    borderColor: PALETTE.dangerBorder,
+    borderRadius: 10,
     paddingHorizontal: 12,
     paddingVertical: 10,
+    marginTop: 16,
+    gap: 8,
   },
   errorText: {
     flex: 1,
     fontFamily: FONTS.sans,
-    color: '#FCA5A5',
-    fontSize: 12.5,
-    fontWeight: '600',
-    lineHeight: 17,
+    color: PALETTE.danger,
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '500',
   },
-  primaryLoginBtn: {
-    marginTop: 22,
-    minHeight: 52,
-    borderRadius: 14,
-    backgroundColor: DARK.gold,
+  primaryButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: PALETTE.accent,
+    borderRadius: 10,
+    height: 52,
+    marginTop: 20,
     gap: 8,
   },
-  primaryLoginBtnText: {
+  primaryButtonText: {
     fontFamily: FONTS.sans,
-    color: '#090D16',
+    color: PALETTE.accentInk,
     fontSize: 15,
-    fontWeight: '800',
-    letterSpacing: 0.2,
-  },
-  btnDisabled: {
-    opacity: 0.65,
-  },
-  dividerRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginVertical: 18,
-  },
-  dividerLine: {
-    flex: 1,
-    height: 1,
-    backgroundColor: DARK.border,
-  },
-  dividerText: {
-    fontFamily: FONTS.sans,
-    color: DARK.textMuted,
-    fontSize: 12,
     fontWeight: '600',
   },
-  googleBtn: {
-    minHeight: 50,
-    borderRadius: 14,
-    backgroundColor: DARK.googleBtnBg,
-    borderWidth: 1,
-    borderColor: DARK.googleBtnBorder,
+  buttonDisabled: {
+    opacity: 0.65,
+  },
+  modeSwitchContainer: {
+    alignItems: 'center',
+    marginTop: 20,
+  },
+  modeSwitchLink: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+    gap: 8,
   },
-  googleBtnText: {
+  modeSwitchText: {
     fontFamily: FONTS.sans,
-    color: DARK.textPrimary,
-    fontSize: 14.5,
-    fontWeight: '700',
+    color: PALETTE.textSecondary,
+    fontSize: 13,
+    fontWeight: '500',
   },
-  footerRow: {
+  legalLinksRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 6,
-    marginTop: 22,
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 14,
+  },
+  legalLinkBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 6,
+  },
+  legalLinkText: {
+    fontFamily: FONTS.sans,
+    color: PALETTE.accent,
+    fontSize: 12.5,
+    fontWeight: '500',
+    textDecorationLine: 'underline',
+  },
+  legalDot: {
+    color: PALETTE.textMuted,
+    fontSize: 12,
+  },
+  footer: {
+    alignItems: 'center',
+    marginTop: 14,
   },
   footerText: {
     fontFamily: FONTS.sans,
-    color: DARK.textMuted,
-    fontSize: 11.5,
-    fontWeight: '500',
+    color: PALETTE.textMuted,
+    fontSize: 12,
+    fontWeight: '400',
   },
 });
