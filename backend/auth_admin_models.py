@@ -150,6 +150,9 @@ def run_sqlite_schema_migrations(db_engine: Engine) -> None:
         ("announcements", "is_pinned", f"BOOLEAN NOT NULL DEFAULT {bool_false_default}"),
         ("admin_accounts", "email", "VARCHAR(150)"),
         ("admin_accounts", "password_hash", "VARCHAR(256)"),
+        ("member_packages", "package_month", "VARCHAR(20)"),
+        ("member_packages", "package_notes", "TEXT DEFAULT ''"),
+        ("member_packages", "created_at", "VARCHAR(40)"),
     ]
 
     inspector = inspect(db_engine)
@@ -163,6 +166,7 @@ def run_sqlite_schema_migrations(db_engine: Engine) -> None:
         ("ix_member_packages_member_id", "member_packages", ("member_id",)),
         ("ix_member_packages_is_active", "member_packages", ("is_active",)),
         ("ix_member_packages_member_active", "member_packages", ("member_id", "is_active")),
+        ("idx_member_packages_package_month", "member_packages", ("package_month",)),
         ("ix_class_sessions_trainer_id", "class_sessions", ("trainer_id",)),
         ("ix_class_sessions_date", "class_sessions", ("date",)),
         ("ix_class_sessions_session_status", "class_sessions", ("session_status",)),

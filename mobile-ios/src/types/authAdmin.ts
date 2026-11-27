@@ -196,6 +196,8 @@ export interface AdminMemberItem {
   access_code?: string | null;
   package_id?: number | null;
   package_name?: string | null;
+  package_month?: string | null;
+  package_notes?: string | null;
   remaining_credits: number;
   total_credits: number;
   expiry_date?: string | null;
@@ -203,6 +205,42 @@ export interface AdminMemberItem {
   upcoming_bookings_count: number;
   attended_count?: number;
   streak_days?: number;
+}
+
+export interface AdminMemberPackageItem {
+  id: number;
+  member_id: number;
+  member_name: string;
+  package_name: string;
+  total_credits: number;
+  remaining_credits: number;
+  used_credits: number;
+  package_month?: string | null;
+  package_notes?: string | null;
+  expiry_date: string;
+  created_at?: string | null;
+  is_active: boolean;
+}
+
+export interface AdminMemberPackageCreatePayload {
+  package_name: string;
+  total_credits: number;
+  remaining_credits?: number;
+  package_month: string;
+  duration_days?: number;
+  expiry_date?: string;
+  package_notes?: string;
+  deactivate_previous?: boolean;
+}
+
+export interface AdminMemberPackageUpdatePayload {
+  package_name?: string;
+  total_credits?: number;
+  remaining_credits?: number;
+  package_month?: string;
+  expiry_date?: string;
+  package_notes?: string;
+  is_active?: boolean;
 }
 
 export interface AdminMemberCreatePayload {
@@ -214,6 +252,8 @@ export interface AdminMemberCreatePayload {
   instagram_handle?: string;
   notes?: string;
   package_name?: string;
+  package_month?: string;
+  package_notes?: string;
   credits?: number;
   duration_days?: number;
 }

@@ -56,8 +56,8 @@ const PRIVACY_SECTIONS: LegalSection[] = [
     body: 'AI Beslenme & Toparlanma özelliğini isteğe bağlı olarak kullandığınızda yüklediğiniz öğün fotoğrafları, kalori ve makro besin tahmini üretebilmek amacıyla harici yapay zeka servisiyle şifreli bağlantı üzerinden işlenir. Bu görseller yalnızca beslenme takibi amacıyla kullanılır; tıbbi tanı veya tedavi yerine geçmez, reklam veya üçüncü taraf pazarlama amaçlarıyla paylaşılmaz. İlk kullanım öncesinde açık onayınız alınır.',
   },
   {
-    title: '5. Veri Güvenliği ve Ödeme Altyapısı',
-    body: 'Tüm veri iletişimi şifreli HTTPS bağlantısı üzerinden gerçekleştirilir. Kişisel verileriniz reklam veya pazarlama amacıyla üçüncü taraflara satılmaz. Fiziksel stüdyo ders paketi ödemeleri PCI-DSS uyumlu ödeme kuruluşu altyapısı üzerinden işlenir; kart bilgileriniz uygulama sunucularında saklanmaz.',
+    title: '5. Veri Güvenliği ve Paket Yönetimi',
+    body: 'Tüm veri iletişimi şifreli HTTPS bağlantısı üzerinden gerçekleştirilir. Kişisel verileriniz reklam veya pazarlama amacıyla üçüncü taraflara satılmaz. Ders paketleri ve üyelik tanımlamaları stüdyo yönetimi tarafından gerçekleştirilir; mobil uygulama üzerinden kredi kartı veya dijital ödeme tahsilatı yapılmaz.',
   },
   {
     title: '6. KVKK Haklarınız ve Hesap Silme Hakkı',
@@ -68,7 +68,7 @@ const PRIVACY_SECTIONS: LegalSection[] = [
 const TERMS_SECTIONS: LegalSection[] = [
   {
     title: '1. Fiziksel Stüdyo Hizmetleri ve Paket Kapsamı',
-    body: 'ERYA Pilates & Reformer uygulaması üzerinden görüntülenen ve satın alınan tüm ücretli paketler yalnızca stüdyoda yüz yüze gerçekleştirilen fiziksel Reformer Pilates, Cadillac ve Personal Training (PT) dersleri içindir. Uygulama içi beslenme takibi, ilerleme grafikleri ve vücut haritası araçları tüm aktif kulüp üyelerine hiçbir ek ücret olmaksızın ücretsiz olarak sunulur.',
+    body: 'Ders paketleri ve üyelik tanımlamaları stüdyo yönetimi tarafından gerçekleştirilir; mobil uygulama üzerinden kredi kartı veya dijital ödeme tahsilatı yapılmaz. Uygulama üzerinde görüntülenen ders hakları yalnızca stüdyoda yüz yüze gerçekleştirilen fiziksel Reformer Pilates, Cadillac ve Personal Training (PT) dersleri içindir. Uygulama içi beslenme takibi, ilerleme grafikleri ve vücut haritası araçları tüm aktif kulüp üyelerine hiçbir ek ücret olmaksızın ücretsiz olarak sunulur.',
   },
   {
     title: '2. Rezervasyon, Ders Kredisi ve İptal Kuralları',

@@ -8,10 +8,10 @@ import {
 import {
   Activity,
   Calendar,
-  CreditCard,
   Gift,
   Home,
   Megaphone,
+  Package,
   QrCode,
   Sparkles,
   User,
@@ -102,7 +102,7 @@ export const MEMBER_DRAWER_MENU: DrawerMenuItemConfig<MemberDrawerRoute>[] = [
   { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
   { key: 'nutrition', Icon: Sparkles, label: '🥗 AI Beslenme & Toparlanma' },
   { key: 'referral', Icon: Gift, label: '🎁 Arkadaşını Getir (+1 Ders)' },
-  { key: 'packages', Icon: CreditCard, label: 'Paketler' },
+  { key: 'packages', Icon: Package, label: 'Paketlerim' },
   { key: 'qr', Icon: QrCode, label: 'QR Giriş', isQrAction: true },
   { key: 'metrics', Icon: Activity, label: 'Gelişim' },
   { key: 'trainers', Icon: Users, label: 'Eğitmenler' },
@@ -115,7 +115,7 @@ export const MEMBER_CONCISE_TITLES: Record<MemberDrawerRoute, string> = {
   schedule: 'Ders Programı',
   nutrition: '🥗 AI Beslenme & Toparlanma',
   referral: '🎁 Arkadaşını Getir (+1 Ders)',
-  packages: 'Paketler',
+  packages: 'Paketlerim',
   metrics: 'Gelişim',
   trainers: 'Eğitmenler',
   news: 'Duyurular',
@@ -700,14 +700,11 @@ export function MemberRootView({
               </View>
             )
           ) : (
-            <Suspense fallback={<LazyScreenFallback label="Paket mağazası hazırlanıyor..." />}>
+            <Suspense fallback={<LazyScreenFallback label="Paket bilgileriniz hazırlanıyor..." />}>
               <MemberPackageRenewScreen
                 data={dashboard}
                 refreshing={refreshing}
                 onRefresh={handleRefresh}
-                onRenewCompleted={async () => {
-                  await fetchDashboard(true);
-                }}
                 onShowBanner={showBanner}
               />
             </Suspense>

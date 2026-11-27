@@ -50,7 +50,9 @@ function writeStoredToken(token: string | null): void {
 }
 
 function mapSessionToAuthUser(session: AuthSessionOut): AuthSessionUser {
-  const isAdmin = Boolean(session.is_admin || session.role === 'admin');
+  const isAdmin = Boolean(
+    session.is_admin || session.role === 'admin' || session.default_panel === 'admin'
+  );
   return {
     id: isAdmin ? null : session.user_id ?? session.id ?? null,
     user_id: isAdmin ? null : session.user_id ?? session.id ?? null,
@@ -241,17 +243,18 @@ export function AuthDemoProvider({ children }: { children: React.ReactNode }) {
       setAuthUser(mappedAuthUser);
       setConnectionError(null);
 
-      const directory = await fetchUsersDirectory();
-
       if (mappedAuthUser.is_admin) {
         // Admin hesabı kişisel üye/sporcu bilgisi taşımaz; doğrudan Yönetim Merkezi'nde açılır
         setActivePanel('admin');
         setSelectedUserId(null);
+        await fetchUsersDirectory();
       } else {
         const ownAppUser = mapSessionToAppUser(session);
         const targetRole: ActivePanelMode =
           mappedAuthUser.role === 'trainer' ? 'trainer' : 'member';
         setActivePanel(targetRole);
+
+        const directory = await fetchUsersDirectory();
 
         if (ownAppUser) {
           setAllDirectoryUsers((prev) =>

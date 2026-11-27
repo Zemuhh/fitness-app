@@ -23,11 +23,11 @@ import {
   Check,
   CheckCircle2,
   ChevronRight,
-  CreditCard,
   FileText,
   Flame,
   Hourglass,
   Layers,
+  Package,
   Phone,
   QrCode,
   Save,
@@ -454,8 +454,8 @@ export function MemberProfileTab({
             onPress={onOpenPackageRenew}
             activeOpacity={0.86}
           >
-            <CreditCard size={16} color={COLORS.white} />
-            <Text style={styles.renewBtnText}>Paket Yenileme Ekranına Git</Text>
+            <Package size={16} color={COLORS.white} />
+            <Text style={styles.renewBtnText}>Paketlerim & Ders Haklarım</Text>
           </TouchableOpacity>
         </View>
 

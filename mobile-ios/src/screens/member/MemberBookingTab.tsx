@@ -265,7 +265,7 @@ const SessionCardItem = React.memo(function SessionCardItem({
             activeOpacity={0.86}
           >
             <Text style={styles.waitlistJoinBtnText}>
-              ⏳ Paket Yenile & Yedek Listeye Yazıl
+              ⏳ Ders Hakkı Yetersiz • Paket Bilgilerim
             </Text>
           </TouchableOpacity>
         ) : (
@@ -294,7 +294,7 @@ const SessionCardItem = React.memo(function SessionCardItem({
           activeOpacity={0.86}
         >
           <Text style={styles.topUpActionBtnText}>
-            Kredi Yetersiz • Paket Yenile
+            Ders Hakkı Yetersiz • Paket Bilgilerim
           </Text>
         </TouchableOpacity>
       ) : (
@@ -608,7 +608,7 @@ export function MemberBookingTab({
             onPress={onOpenPackageRenew}
             activeOpacity={0.84}
           >
-            <Text style={styles.topUpMiniBtnText}>+ Paket Yenile</Text>
+            <Text style={styles.topUpMiniBtnText}>Paketimi Gör</Text>
           </TouchableOpacity>
         ) : (
           <Text style={styles.sessionCountHint}>{filteredSessions.length} Açık Seans</Text>

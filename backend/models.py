@@ -278,6 +278,9 @@ class MemberPackage(Base):
     remaining_credits = Column(Integer, nullable=False)
     expiry_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     is_active = Column(Boolean, default=True, nullable=False, index=True)
+    package_month = Column(String(20), nullable=True, index=True)  # Örn: "2026-11" (YYYY-MM)
+    package_notes = Column(Text, nullable=True, default="")
+    created_at = Column(String(40), nullable=True)  # Örn: "2026-11-27 13:30:00"
 
     member = relationship("User", back_populates="packages")
     bookings = relationship("Booking", back_populates="package")

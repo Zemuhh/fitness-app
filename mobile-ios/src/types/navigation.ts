@@ -24,7 +24,7 @@ export const MEMBER_ROUTE_TITLES: Record<MemberDrawerRoute, string> = {
   nutrition: '🥗 AI Beslenme & Toparlanma',
   referral: '🎁 Arkadaşını Getir (+1 Ders)',
   trainers: 'Eğitmen Kadromuz',
-  packages: 'Paket Yenileme & Üyelik',
+  packages: 'Paketlerim & Ders Haklarım',
   news: 'Stüdyo Rehberi & Duyurular',
   metrics: 'Postür & Vücut Gelişimim',
   profile: 'Profilim & Bildirimler',

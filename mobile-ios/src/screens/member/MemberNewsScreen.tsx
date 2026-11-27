@@ -251,7 +251,7 @@ export function MemberNewsScreen({ onNavigate }: MemberNewsScreenProps) {
                       ]}
                     >
                       {isCampaign
-                        ? 'Paket Yenileme & Avantajları İncele'
+                        ? 'Paket Bilgilerim & Ders Haklarım'
                         : 'Ders Vakitlerini İncele & Kayıt Ol'}
                     </Text>
                     <ArrowRight

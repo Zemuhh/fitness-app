@@ -509,7 +509,7 @@ export function TrainerDetailModal({
                               <Hourglass size={15} color={COLORS.warningText} />
                               <Text style={styles.waitlistJoinBtnText}>
                                 {remainingCredits <= 0
-                                  ? 'Paket Yenile & Yedek Listeye Yazıl'
+                                  ? 'Ders Hakkı Yetersiz • Paket Bilgilerim'
                                   : '⏳ Yedek Listeye Yazıl'}
                               </Text>
                             </>
@@ -528,7 +528,7 @@ export function TrainerDetailModal({
                         ) : (
                           <Text style={styles.bookBtnText}>
                             {remainingCredits <= 0
-                              ? 'Kredi Yetersiz • Paket Yenile'
+                              ? 'Ders Hakkı Yetersiz • Paket Bilgilerim'
                               : 'Hemen Kayıt Ol'}
                           </Text>
                         )}

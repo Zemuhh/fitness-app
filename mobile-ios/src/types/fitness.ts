@@ -204,6 +204,9 @@ export interface MemberPackage {
   remaining_credits: number;
   expiry_date: string;
   is_active: boolean;
+  package_month?: string | null;
+  package_notes?: string | null;
+  created_at?: string | null;
 }
 
 export interface PackageRenewRequest {

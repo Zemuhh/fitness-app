@@ -495,6 +495,8 @@ class AdminMemberOut(BaseModel):
     access_code: str
     package_id: Optional[int] = None
     package_name: Optional[str] = None
+    package_month: Optional[str] = None
+    package_notes: Optional[str] = ""
     remaining_credits: int = 0
     total_credits: int = 0
     expiry_date: Optional[str] = None
@@ -516,6 +518,8 @@ class AdminMemberCreateRequest(BaseModel):
     package_name: Optional[str] = "8 Seans Grup Reformer Paketi"
     credits: Optional[int] = 8
     duration_days: Optional[int] = 40
+    package_month: Optional[str] = None
+    package_notes: Optional[str] = None
 
 
 class AdminMemberUpdateRequest(BaseModel):
@@ -530,6 +534,44 @@ class AdminMemberUpdateRequest(BaseModel):
     remaining_credits: Optional[int] = None
     total_credits: Optional[int] = None
     expiry_date: Optional[str] = None
+    package_month: Optional[str] = None
+    package_notes: Optional[str] = None
+
+
+class AdminMemberPackageItemOut(BaseModel):
+    id: int
+    member_id: int
+    member_name: str
+    package_name: str
+    total_credits: int
+    remaining_credits: int
+    used_credits: int
+    package_month: Optional[str] = None
+    package_notes: str = ""
+    expiry_date: str
+    created_at: Optional[str] = None
+    is_active: bool = True
+
+
+class AdminAssignMemberPackageRequest(BaseModel):
+    package_name: str
+    total_credits: int = Field(..., ge=1, le=200)
+    remaining_credits: Optional[int] = Field(default=None, ge=0, le=200)
+    package_month: Optional[str] = None
+    duration_days: Optional[int] = Field(default=30, ge=1, le=365)
+    expiry_date: Optional[str] = None
+    package_notes: Optional[str] = ""
+    deactivate_previous: bool = True
+
+
+class AdminUpdateMemberPackageRequest(BaseModel):
+    package_name: Optional[str] = None
+    total_credits: Optional[int] = Field(default=None, ge=1, le=200)
+    remaining_credits: Optional[int] = Field(default=None, ge=0, le=200)
+    package_month: Optional[str] = None
+    expiry_date: Optional[str] = None
+    package_notes: Optional[str] = None
+    is_active: Optional[bool] = None
 
 
 class AdminMemberCreditAdjustRequest(BaseModel):
@@ -1720,6 +1762,7 @@ def _resolve_user_by_access_code(db: Session, raw_code: str) -> Optional[User]:
 def auth_code_login(payload: CodeLoginRequest, db: Session = Depends(get_db)):
     """
     Yalnızca Admin tarafından üretilen kişiye özel erişim kodu ile giriş (kayıt olma yok).
+    'admin' kodu ile doğrudan yönetici oturumu açılabilir.
     """
     ensure_portal_initialized(db)
     raw_code = (payload.access_code or "").strip()
@@ -1728,6 +1771,25 @@ def auth_code_login(payload: CodeLoginRequest, db: Session = Depends(get_db)):
             status_code=400,
             detail="Lütfen stüdyo yöneticinizden aldığınız kişisel erişim kodunu girin.",
         )
+
+    if raw_code.lower() == "admin":
+        admin = (
+            db.query(AdminAccount).filter(AdminAccount.username == "admin").first()
+            or db.query(AdminAccount).first()
+        )
+        if not admin:
+            raise HTTPException(
+                status_code=500,
+                detail="Yönetici hesabı bulunamadı.",
+            )
+        sess = _issue_session(
+            db,
+            account_type="admin",
+            role="admin",
+            auth_provider="access_code",
+            admin_id=admin.id,
+        )
+        return _build_admin_session_out(admin, sess, message="Yönetici paneline hoş geldiniz!")
 
     user = _resolve_user_by_access_code(db, raw_code)
     if not user:
@@ -2732,6 +2794,49 @@ def _build_admin_trainer_out(db: Session, t: User) -> AdminTrainerOut:
     )
 
 
+def _normalize_package_month(
+    raw_month: Optional[str],
+    default_today: bool = False,
+) -> Optional[str]:
+    cleaned = (raw_month or "").strip()
+    if not cleaned:
+        return date.today().strftime("%Y-%m") if default_today else None
+    if not re.match(r"^\d{4}-(0[1-9]|1[0-2])$", cleaned):
+        raise HTTPException(
+            status_code=400,
+            detail="Paket dönemi YYYY-MM formatında olmalıdır (örn. 2026-11).",
+        )
+    return cleaned
+
+
+def _build_admin_member_package_item_out(
+    pkg: MemberPackage,
+    member_name: Optional[str] = None,
+) -> AdminMemberPackageItemOut:
+    total_c = int(pkg.total_credits or 0)
+    rem_c = int(pkg.remaining_credits or 0)
+    used_c = max(0, total_c - rem_c)
+    resolved_name = (
+        member_name
+        or (pkg.member.full_name if getattr(pkg, "member", None) else None)
+        or f"Üye #{pkg.member_id}"
+    )
+    return AdminMemberPackageItemOut(
+        id=pkg.id,
+        member_id=pkg.member_id,
+        member_name=resolved_name,
+        package_name=pkg.package_name,
+        total_credits=total_c,
+        remaining_credits=rem_c,
+        used_credits=used_c,
+        package_month=getattr(pkg, "package_month", None),
+        package_notes=getattr(pkg, "package_notes", None) or "",
+        expiry_date=pkg.expiry_date,
+        created_at=getattr(pkg, "created_at", None),
+        is_active=bool(pkg.is_active),
+    )
+
+
 def _build_admin_member_out(db: Session, m: User) -> AdminMemberOut:
     cred = _ensure_user_credential(db, m)
     auth_acc = _ensure_user_auth_account(db, m)
@@ -2763,6 +2868,8 @@ def _build_admin_member_out(db: Session, m: User) -> AdminMemberOut:
         access_code=cred.access_code,
         package_id=pkg.id if pkg else None,
         package_name=pkg.package_name if pkg else None,
+        package_month=getattr(pkg, "package_month", None) if pkg else None,
+        package_notes=(getattr(pkg, "package_notes", None) or "") if pkg else "",
         remaining_credits=rem,
         total_credits=tot,
         expiry_date=pkg.expiry_date if pkg else None,
@@ -3245,6 +3352,8 @@ def admin_create_member(
         pkg_title = (payload.package_name or "").strip() or "8 Seans Grup Reformer Paketi"
         dur = max(1, payload.duration_days or 40)
         total_c = max(payload.credits, 1)
+        pkg_month = _normalize_package_month(payload.package_month, default_today=False)
+        pkg_notes = (payload.package_notes or "").strip()
         db.add(
             MemberPackage(
                 member_id=member.id,
@@ -3253,6 +3362,9 @@ def admin_create_member(
                 remaining_credits=payload.credits,
                 expiry_date=(date.today() + timedelta(days=dur)).strftime("%Y-%m-%d"),
                 is_active=True,
+                package_month=pkg_month,
+                package_notes=pkg_notes,
+                created_at=_now_str(),
             )
         )
 
@@ -3295,7 +3407,14 @@ def admin_update_member(
 
     if any(
         v is not None
-        for v in (payload.package_name, payload.remaining_credits, payload.total_credits, payload.expiry_date)
+        for v in (
+            payload.package_name,
+            payload.remaining_credits,
+            payload.total_credits,
+            payload.expiry_date,
+            payload.package_month,
+            payload.package_notes,
+        )
     ):
         pkg = _get_active_package(db, member.id)
         if not pkg:
@@ -3308,6 +3427,9 @@ def admin_update_member(
                 remaining_credits=rem,
                 expiry_date=payload.expiry_date or (date.today() + timedelta(days=40)).strftime("%Y-%m-%d"),
                 is_active=True,
+                package_month=_normalize_package_month(payload.package_month, default_today=False),
+                package_notes=(payload.package_notes or "").strip(),
+                created_at=_now_str(),
             )
             db.add(pkg)
         else:
@@ -3321,10 +3443,166 @@ def admin_update_member(
                 pkg.total_credits = max(pkg.remaining_credits, payload.total_credits)
             if payload.expiry_date is not None and payload.expiry_date.strip():
                 pkg.expiry_date = payload.expiry_date.strip()
+            if payload.package_month is not None:
+                pkg.package_month = _normalize_package_month(payload.package_month, default_today=False)
+            if payload.package_notes is not None:
+                pkg.package_notes = payload.package_notes.strip()
 
     db.commit()
     db.refresh(member)
     return _build_admin_member_out(db, member)
+
+
+@admin_router.get("/member-packages", response_model=List[AdminMemberPackageItemOut])
+def admin_list_member_packages(
+    month: Optional[str] = Query(default=None, description="Opsiyonel YYYY-MM dönem filtresi"),
+    member_id: Optional[int] = Query(default=None, description="Opsiyonel müşteri ID filtresi"),
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    q = db.query(MemberPackage).options(joinedload(MemberPackage.member))
+    if month is not None and month.strip():
+        month_clean = _normalize_package_month(month, default_today=False)
+        q = q.filter(MemberPackage.package_month == month_clean)
+    if member_id is not None:
+        q = q.filter(MemberPackage.member_id == member_id)
+    packages = q.order_by(MemberPackage.id.desc()).all()
+    return [_build_admin_member_package_item_out(p) for p in packages]
+
+
+@admin_router.post("/members/{member_id}/packages", response_model=AdminMemberOut)
+def admin_assign_member_package(
+    member_id: int,
+    payload: AdminAssignMemberPackageRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    member = db.query(User).filter(User.id == member_id, User.role == "member").first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı.")
+
+    pkg_name = (payload.package_name or "").strip()
+    if not pkg_name:
+        raise HTTPException(status_code=400, detail="Paket adı zorunludur.")
+
+    total_c = int(payload.total_credits)
+    rem_c = total_c if payload.remaining_credits is None else int(payload.remaining_credits)
+    if rem_c > total_c:
+        total_c = rem_c
+
+    pkg_month = _normalize_package_month(payload.package_month, default_today=True)
+    if payload.expiry_date is not None and payload.expiry_date.strip():
+        expiry_str = payload.expiry_date.strip()
+        try:
+            datetime.strptime(expiry_str, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Bitiş tarihi YYYY-MM-DD formatında olmalıdır (örn. 2026-12-27).",
+            )
+    else:
+        dur = max(1, int(payload.duration_days or 30))
+        expiry_str = (date.today() + timedelta(days=dur)).strftime("%Y-%m-%d")
+
+    if payload.deactivate_previous:
+        db.query(MemberPackage).filter(
+            MemberPackage.member_id == member.id,
+            MemberPackage.is_active == True,
+        ).update({"is_active": False}, synchronize_session=False)
+
+    new_pkg = MemberPackage(
+        member_id=member.id,
+        package_name=pkg_name,
+        total_credits=total_c,
+        remaining_credits=rem_c,
+        expiry_date=expiry_str,
+        is_active=True,
+        package_month=pkg_month,
+        package_notes=(payload.package_notes or "").strip(),
+        created_at=_now_str(),
+    )
+    db.add(new_pkg)
+    db.commit()
+    db.refresh(member)
+    return _build_admin_member_out(db, member)
+
+
+@admin_router.put("/member-packages/{package_id}", response_model=AdminMemberPackageItemOut)
+def admin_update_member_package(
+    package_id: int,
+    payload: AdminUpdateMemberPackageRequest,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    pkg = (
+        db.query(MemberPackage)
+        .options(joinedload(MemberPackage.member))
+        .filter(MemberPackage.id == package_id)
+        .first()
+    )
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Üye paketi bulunamadı.")
+
+    if payload.package_name is not None and payload.package_name.strip():
+        pkg.package_name = payload.package_name.strip()
+    if payload.total_credits is not None:
+        pkg.total_credits = int(payload.total_credits)
+    if payload.remaining_credits is not None:
+        pkg.remaining_credits = max(0, int(payload.remaining_credits))
+    if pkg.total_credits < pkg.remaining_credits:
+        if payload.total_credits is not None and payload.remaining_credits is None:
+            pkg.remaining_credits = pkg.total_credits
+        else:
+            pkg.total_credits = pkg.remaining_credits
+    if payload.package_month is not None:
+        pkg.package_month = _normalize_package_month(payload.package_month, default_today=False)
+    if payload.expiry_date is not None and payload.expiry_date.strip():
+        expiry_str = payload.expiry_date.strip()
+        try:
+            datetime.strptime(expiry_str, "%Y-%m-%d")
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="Bitiş tarihi YYYY-MM-DD formatında olmalıdır (örn. 2026-12-27).",
+            )
+        pkg.expiry_date = expiry_str
+    if payload.package_notes is not None:
+        pkg.package_notes = payload.package_notes.strip()
+    if payload.is_active is not None:
+        pkg.is_active = bool(payload.is_active)
+
+    db.commit()
+    db.refresh(pkg)
+    return _build_admin_member_package_item_out(pkg)
+
+
+@admin_router.delete("/member-packages/{package_id}", response_model=AdminDeleteOut)
+def admin_delete_member_package(
+    package_id: int,
+    _admin: AdminAccount = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    pkg = db.query(MemberPackage).filter(MemberPackage.id == package_id).first()
+    if not pkg:
+        raise HTTPException(status_code=404, detail="Üye paketi bulunamadı.")
+
+    has_booking = db.query(Booking).filter(Booking.package_id == pkg.id).first()
+    has_payment_ref = (
+        db.query(PaymentTransaction).filter(PaymentTransaction.member_package_id == pkg.id).first()
+        or db.query(PaymentCheckoutSession).filter(PaymentCheckoutSession.credited_package_id == pkg.id).first()
+    )
+    if has_booking or has_payment_ref:
+        pkg.is_active = False
+        db.commit()
+        return AdminDeleteOut(
+            deleted=True,
+            id=package_id,
+            message="Bağlı rezervasyonu bulunan paket pasife alındı.",
+        )
+
+    db.delete(pkg)
+    db.commit()
+    return AdminDeleteOut(deleted=True, id=package_id, message="Üye paketi silindi.")
 
 
 @admin_router.post("/members/{member_id}/credits", response_model=AdminMemberOut)

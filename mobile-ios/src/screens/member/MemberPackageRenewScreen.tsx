@@ -1,729 +1,443 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useMemo } from 'react';
 import {
-  ActivityIndicator,
   RefreshControl,
   ScrollView,
   StyleSheet,
   Text,
-  TouchableOpacity,
   View,
 } from 'react-native';
 import {
-  AlertCircle,
-  ArrowRight,
   Calendar,
   CheckCircle2,
   Clock,
-  History,
-  Lock,
-  Receipt,
-  RefreshCw,
+  FileText,
+  Info,
+  Layers,
+  Package,
   ShieldCheck,
   Sparkles,
-  Star,
 } from 'lucide-react-native';
-import { apiRequest } from '@/config/api';
-import { useAuthDemo } from '@/context/AuthDemoContext';
-import {
-  formatProviderLabel,
-  formatTry,
-  formatTurkishDateTime,
-  useHostedCheckoutFlow,
-} from '@/screens/payment/PackageStoreScreen';
-import { CARD_SHADOW, COLORS } from '@/theme/colors';
+import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
 import {
   MemberDashboardData,
-  PackageRenewResponse,
+  MemberPackage,
 } from '@/types/fitness';
 import {
-  CheckoutSessionStatusResponse,
-  InstallmentCount,
-  MemberPaymentHistoryResponse,
-  PackageCatalogPlan,
-  PaymentHistoryItem,
-} from '@/types/payment';
-import { formatTurkishDateLabel, getDaysRemaining } from '@/utils/dateHelpers';
+  formatPackageMonthTr,
+  formatTurkishDateLabel,
+  getCurrentYearMonth,
+  getDaysRemaining,
+} from '@/utils/dateHelpers';
 
 export interface MemberPackageRenewScreenProps {
   data: MemberDashboardData;
   refreshing?: boolean;
   onRefresh?: () => void;
-  onRenewCompleted?: (res: PackageRenewResponse) => Promise<void> | void;
   onShowBanner?: (type: 'success' | 'warning' | 'error', text: string) => void;
 }
 
-const FALLBACK_CATALOG: PackageCatalogPlan[] = [
-  {
-    id: 1,
-    code: 'ERYA-GRUP-8',
-    name: '8 Seans Grup Reformer Paketi',
-    subtitle: '6-7 kişilik kemerli ayna stüdyoda postür, esneklik ve sıkılaşma',
-    credits: 8,
-    duration_days: 35,
-    price_try: 3000,
-    per_lesson_price_try: 375,
-    savings_percent: 0,
-    savings_amount_try: 0,
-    popular_badge: 'En Çok Tercih Edilen',
-    features: [
-      '8 Seans Stüdyoda Yüz Yüze Butik Grup Reformer Pilates (6-7 Kişilik)',
-      'Mevcut kalan seans haklarınızın üzerine anında eklenir',
-      '4 Saate Kadar Ücretsiz İptal & Kredi İadesi (Dijital takip araçları tüm aktif kulüp üyelerine ücretsiz dahil)',
-    ],
-    is_active: true,
-  },
-  {
-    id: 2,
-    code: 'ERYA-DUET-8',
-    name: '8 Seans Düet / Trio Reformer',
-    subtitle: 'Arkadaşınızla veya 2-3 kişilik özel grupla yüksek odaklı Reformer',
-    credits: 8,
-    duration_days: 40,
-    price_try: 4800,
-    per_lesson_price_try: 600,
-    savings_percent: 0,
-    savings_amount_try: 0,
-    popular_badge: 'Zarif Uyum',
-    features: [
-      '8 Seans Stüdyoda Yüz Yüze Düet veya Trio Reformer Pilates',
-      'Birebir Eğitmen Eşliğinde Esneklik & Core Antrenmanı',
-      '40 Gün Esnek Kullanım + Kredi Koruma',
-    ],
-    is_active: true,
-  },
-  {
-    id: 3,
-    code: 'ERYA-PRIVATE-8',
-    name: '8 Seans Bireysel Reformer & Cadillac',
-    subtitle: 'Seher Hoca & uzman kadroyla 1-1 skolyoz, postür ve omurga programı',
-    credits: 8,
-    duration_days: 45,
-    price_try: 6800,
-    per_lesson_price_try: 850,
-    savings_percent: 0,
-    savings_amount_try: 0,
-    popular_badge: 'Klinik & Özel İlgi',
-    features: [
-      '8 Seans Stüdyoda Yüz Yüze 1-1 Reformer & Cadillac Trapeze Tower',
-      'Birebir Eğitmen Eşliğinde Postür & Hareket Programı',
-      '45 Gün Geçerlilik + Kredi Devir Garantisi',
-    ],
-    is_active: true,
-  },
-  {
-    id: 4,
-    code: 'ERYA-VIP-16',
-    name: '16 Seans VIP Dönüşüm Paketi',
-    subtitle: 'Tam kapsamlı Reformer + Cadillac ile dik duruş ve sıkılaşma serisi',
-    credits: 16,
-    duration_days: 75,
-    price_try: 12000,
-    per_lesson_price_try: 750,
-    savings_percent: 12,
-    savings_amount_try: 1600,
-    popular_badge: 'Maksimum Avantaj',
-    features: [
-      '16 Seans Stüdyoda Yüz Yüze Reformer, Cadillac & Özel PT Dersleri',
-      'Birebir Eğitmen Eşliğinde Haftalık Postür & Antrenman Programlama',
-      'En Avantajlı Seans Birim Ücreti + 75 Gün Süre',
-    ],
-    is_active: true,
-  },
-];
-
-function resolvePlanPalette(code: string, idx: number) {
-  if (code.includes('PRIVATE') || idx === 2) {
-    return {
-      accentColor: COLORS.secondary,
-      accentBg: COLORS.secondaryLight,
-      accentBorder: COLORS.secondaryBorder,
-    };
+function resolvePackageMonth(pkg: MemberPackage): string | null {
+  if (pkg.package_month && pkg.package_month.trim().length > 0) {
+    return pkg.package_month.trim();
   }
-  if (code.includes('VIP') || idx === 3) {
-    return {
-      accentColor: COLORS.walnut,
-      accentBg: COLORS.surfaceElevated,
-      accentBorder: COLORS.borderStrong,
-    };
+  if (pkg.created_at && /^\d{4}-\d{2}/.test(pkg.created_at)) {
+    return pkg.created_at.slice(0, 7);
   }
-  return {
-    accentColor: COLORS.primary,
-    accentBg: COLORS.primaryLight,
-    accentBorder: COLORS.primaryBorder,
-  };
+  if (pkg.expiry_date && /^\d{4}-\d{2}/.test(pkg.expiry_date)) {
+    return pkg.expiry_date.slice(0, 7);
+  }
+  return null;
 }
 
 export function MemberPackageRenewScreen({
   data,
   refreshing = false,
   onRefresh,
-  onRenewCompleted,
-  onShowBanner,
 }: MemberPackageRenewScreenProps) {
-  const { reloadUsers, triggerGlobalRefresh } = useAuthDemo();
-  const scrollRef = useRef<React.ComponentRef<typeof ScrollView>>(null);
+  const currentMonth = useMemo(() => getCurrentYearMonth(), []);
+  const currentMonthLabel = useMemo(
+    () => formatPackageMonthTr(currentMonth),
+    [currentMonth]
+  );
 
-  const [catalogPlans, setCatalogPlans] = useState<PackageCatalogPlan[]>(FALLBACK_CATALOG);
-  const [historyData, setHistoryData] = useState<MemberPaymentHistoryResponse | null>(null);
-  const [catalogError, setCatalogError] = useState<string | null>(null);
-  const [installmentCount, setInstallmentCount] = useState<InstallmentCount>(1);
-  const [submittingPlanCode, setSubmittingPlanCode] = useState<string | null>(null);
+  const allPackages = useMemo<MemberPackage[]>(() => {
+    const raw =
+      Array.isArray(data.all_packages) && data.all_packages.length > 0
+        ? data.all_packages
+        : data.active_package
+        ? [data.active_package]
+        : [];
 
-  const member = data.member;
-  const activePkg = historyData?.active_package ?? data.active_package;
+    return [...raw].sort((a, b) => {
+      if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+      const monthA = resolvePackageMonth(a) || '';
+      const monthB = resolvePackageMonth(b) || '';
+      if (monthA !== monthB) return monthB.localeCompare(monthA);
+      return b.id - a.id;
+    });
+  }, [data.active_package, data.all_packages]);
+
+  const activePkg = useMemo<MemberPackage | null>(() => {
+    return data.active_package ?? allPackages.find((p) => p.is_active) ?? null;
+  }, [allPackages, data.active_package]);
+
+  const thisMonthPackages = useMemo<MemberPackage[]>(() => {
+    return allPackages.filter((pkg) => {
+      const m = resolvePackageMonth(pkg);
+      return m === currentMonth;
+    });
+  }, [allPackages, currentMonth]);
+
+  const thisMonthTotalCredits = useMemo(
+    () => thisMonthPackages.reduce((sum, p) => sum + (p.total_credits || 0), 0),
+    [thisMonthPackages]
+  );
+  const thisMonthRemainingCredits = useMemo(
+    () => thisMonthPackages.reduce((sum, p) => sum + (p.remaining_credits || 0), 0),
+    [thisMonthPackages]
+  );
+
   const remaining = activePkg?.remaining_credits ?? 0;
   const total = activePkg?.total_credits ?? 0;
+  const used = Math.max(0, total - remaining);
   const progressPct =
     total > 0 ? Math.max(0, Math.min(100, (remaining / total) * 100)) : 0;
   const daysLeft = activePkg ? getDaysRemaining(activePkg.expiry_date) : 0;
-
-  const loadCatalogAndHistory = useCallback(async () => {
-    setCatalogError(null);
-    try {
-      const [plansRes, histRes] = await Promise.all([
-        apiRequest<PackageCatalogPlan[]>('/payments/packages'),
-        apiRequest<MemberPaymentHistoryResponse>(
-          `/payments/member/${member.id}/history`
-        ).catch(() => null),
-      ]);
-      if (Array.isArray(plansRes) && plansRes.length > 0) {
-        setCatalogPlans(plansRes);
-      }
-      if (histRes) {
-        setHistoryData(histRes);
-      }
-    } catch (err: any) {
-      setCatalogError(
-        err?.message ||
-          'Güncel paket listesi sunucudan alınamadı. Bağlantınızı kontrol edip tekrar deneyebilirsiniz.'
-      );
-    }
-  }, [member.id]);
-
-  useEffect(() => {
-    loadCatalogAndHistory();
-  }, [loadCatalogAndHistory]);
-
-  const handleGatewaySucceeded = useCallback(
-    async (statusData: CheckoutSessionStatusResponse) => {
-      await Promise.all([
-        loadCatalogAndHistory(),
-        Promise.resolve(reloadUsers?.()),
-      ]);
-      triggerGlobalRefresh?.();
-
-      const newRemaining =
-        statusData.new_remaining_credits ??
-        statusData.active_package?.remaining_credits ??
-        remaining + statusData.purchased_credits;
-      const newTotal =
-        statusData.new_total_credits ??
-        statusData.active_package?.total_credits ??
-        newRemaining;
-      const expiryIso =
-        statusData.package_expiry_date ??
-        statusData.active_package?.expiry_date ??
-        '';
-
-      const successMessage = `${statusData.plan_name} 3D Secure ödemesi onaylandı! Yeni bakiyeniz: ${newRemaining} ders.`;
-
-      const renewPayload: PackageRenewResponse = {
-        message: successMessage,
-        member_id: member.id,
-        package_id: statusData.credited_package_id ?? statusData.active_package?.id ?? 0,
-        package_name: statusData.credited_package_name ?? statusData.plan_name,
-        added_credits: statusData.purchased_credits,
-        remaining_credits: newRemaining,
-        total_credits: newTotal,
-        expiry_date: expiryIso,
-      };
-
-      await Promise.resolve(onRenewCompleted?.(renewPayload));
-      onShowBanner?.('success', successMessage);
-
-      setTimeout(() => {
-        scrollRef.current?.scrollTo({ y: 0, animated: true });
-      }, 120);
-    },
-    [
-      loadCatalogAndHistory,
-      reloadUsers,
-      triggerGlobalRefresh,
-      remaining,
-      member.id,
-      onRenewCompleted,
-      onShowBanner,
-    ]
-  );
-
-  const {
-    creatingSession,
-    checkingStatus,
-    activeSession,
-    isWaitingForGateway,
-    verifiedReceipt,
-    setVerifiedReceipt,
-    checkoutError,
-    startCheckoutRedirect,
-    checkSessionStatus,
-    reopenActiveCheckoutPage,
-    cancelActiveCheckoutSession,
-    dismissSessionTracker,
-  } = useHostedCheckoutFlow({
-    memberId: member.id,
-    onSessionSucceeded: handleGatewaySucceeded,
-    onError: (msg) => onShowBanner?.('error', msg),
-  });
-
-  const handleSelectAndRedirect = async (pkg: PackageCatalogPlan) => {
-    setSubmittingPlanCode(pkg.code);
-    try {
-      const created = await startCheckoutRedirect({
-        planId: pkg.id,
-        planCode: pkg.code,
-        installmentCount,
-      });
-
-      if (created) {
-        onShowBanner?.(
-          'warning',
-          'Güvenli 3D Secure ödeme sayfası açıldı. Ödemeyi tamamladığınızda bakiyeniz otomatik güncellenir.'
-        );
-        setTimeout(() => {
-          scrollRef.current?.scrollTo({ y: 0, animated: true });
-        }, 120);
-      }
-    } finally {
-      setSubmittingPlanCode(null);
-    }
-  };
-
-  const handlePullRefresh = useCallback(() => {
-    loadCatalogAndHistory();
-    if (activeSession?.session_id && isWaitingForGateway) {
-      checkSessionStatus(activeSession.session_id, true);
-    }
-    onRefresh?.();
-  }, [loadCatalogAndHistory, activeSession?.session_id, isWaitingForGateway, checkSessionStatus, onRefresh]);
+  const activeMonthStr = activePkg ? resolvePackageMonth(activePkg) : null;
 
   return (
     <ScrollView
-      ref={scrollRef}
       style={styles.container}
       contentContainerStyle={styles.content}
       showsVerticalScrollIndicator={false}
       refreshControl={
         <RefreshControl
           refreshing={refreshing}
-          onRefresh={handlePullRefresh}
+          onRefresh={onRefresh}
           tintColor={COLORS.primary}
         />
       }
     >
-      {/* CANLI ÖDEME OTURUMU TAKİP KARTI */}
-      {activeSession && isWaitingForGateway && (
-        <View style={styles.liveSessionCard}>
-          <View style={styles.liveTopRow}>
-            <View style={styles.liveBadge}>
-              <Clock size={13} color={COLORS.warningText} />
-              <Text style={styles.liveBadgeText}>
-                {activeSession.status === 'requires_3ds'
-                  ? '3D SECURE BANKA SMS ONAYI BEKLENİYOR'
-                  : 'GÜVENLİ ÖDEME SAYFASI AÇIK'}
-              </Text>
+      {/* 1. ÜST ÖZET — AKTİF PAKET KARTI */}
+      {activePkg ? (
+        <View style={styles.activePackageCard}>
+          <View style={styles.topRow}>
+            <View style={styles.activeStatusBadge}>
+              <ShieldCheck size={13} color={COLORS.primary} />
+              <Text style={styles.activeStatusText}>AKTİF DERS PAKETİM</Text>
             </View>
-            <ActivityIndicator size="small" color={COLORS.primary} />
-          </View>
 
-          <Text style={styles.liveTitle}>{activeSession.plan_name}</Text>
-          <Text style={styles.liveDesc}>
-            {activeSession.status === 'requires_3ds'
-              ? `${activeSession.bank_name || 'Banka'} 3D Secure ekranındaki 6 haneli SMS kodunu onaylayın. İşlem tamamlandığında ders krediniz anında yüklenir.`
-              : `${formatProviderLabel(activeSession.provider)} üzerinden ödemenizi tamamlayın. Uygulama ödeme durumunu otomatik takip ediyor.`}
-          </Text>
-
-          <View style={styles.liveMetaStrip}>
-            <Text style={styles.liveMetaLabel}>Tutar & Taksit</Text>
-            <Text style={styles.liveMetaVal}>
-              {formatTry(activeSession.amount)}
-              {activeSession.installment_count > 1
-                ? ` (${activeSession.installment_count} Taksit)`
-                : ' (Tek Çekim)'}
-            </Text>
-          </View>
-
-          <TouchableOpacity
-            style={styles.livePrimaryBtn}
-            onPress={() => checkSessionStatus(activeSession.session_id, false)}
-            disabled={checkingStatus}
-            activeOpacity={0.86}
-          >
-            {checkingStatus ? (
-              <ActivityIndicator size="small" color={COLORS.white} />
-            ) : (
-              <>
-                <RefreshCw size={15} color={COLORS.white} />
-                <Text style={styles.livePrimaryBtnText}>
-                  Ödeme Durumunu Kontrol Et
+            {activeMonthStr ? (
+              <View style={styles.monthBadge}>
+                <Calendar size={12} color={COLORS.secondary} />
+                <Text style={styles.monthBadgeText}>
+                  {formatPackageMonthTr(activeMonthStr)}
                 </Text>
-              </>
-            )}
-          </TouchableOpacity>
-
-          <View style={styles.liveSecondaryRow}>
-            <TouchableOpacity
-              style={styles.liveReopenBtn}
-              onPress={reopenActiveCheckoutPage}
-              activeOpacity={0.85}
-            >
-              <Lock size={13} color={COLORS.primary} />
-              <Text style={styles.liveReopenBtnText}>Ödeme Sayfasını Aç</Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={styles.liveCancelBtn}
-              onPress={cancelActiveCheckoutSession}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.liveCancelBtnText}>İptal Et</Text>
-            </TouchableOpacity>
+              </View>
+            ) : null}
           </View>
-        </View>
-      )}
 
-      {/* İPTAL / HATA BİLDİRİMİ */}
-      {activeSession &&
-        (activeSession.status === 'cancelled' || activeSession.status === 'failed') &&
-        !verifiedReceipt && (
-          <View style={styles.errorNoticeCard}>
-            <View style={styles.errorNoticeTop}>
-              <AlertCircle size={17} color={COLORS.danger} />
-              <Text style={styles.errorNoticeTitle}>
-                {activeSession.status === 'failed'
-                  ? 'Ödeme Doğrulanamadı'
-                  : 'Ödeme Oturumu İptal Edildi'}
+          <Text style={styles.activePkgTitle}>{activePkg.package_name}</Text>
+
+          {/* Metrik Kutuları: Kalan / Kullanılan / Toplam */}
+          <View style={styles.metricsRow}>
+            <View style={[styles.metricBox, styles.metricBoxHighlight]}>
+              <Text style={[styles.metricValue, { color: COLORS.primary }]}>
+                {remaining}
               </Text>
+              <Text style={styles.metricLabel}>Kalan Ders</Text>
             </View>
-            <Text style={styles.errorNoticeBody}>
-              {activeSession.failure_reason ||
-                'Kartınızdan herhangi bir çekim yapılmadı. Aşağıdan paketinizi seçerek yeni bir güvenli ödeme başlatabilirsiniz.'}
+
+            <View style={styles.metricBox}>
+              <Text style={[styles.metricValue, { color: COLORS.secondary }]}>
+                {used}
+              </Text>
+              <Text style={styles.metricLabel}>Kullanılan</Text>
+            </View>
+
+            <View style={styles.metricBox}>
+              <Text style={styles.metricValue}>{total}</Text>
+              <Text style={styles.metricLabel}>Toplam Ders</Text>
+            </View>
+          </View>
+
+          {/* İlerleme Çubuğu */}
+          <View style={styles.progressHeaderRow}>
+            <Text style={styles.progressLabel}>Ders Hakkı Kullanım Durumu</Text>
+            <Text
+              style={[
+                styles.progressPercentText,
+                remaining <= 2 && { color: COLORS.warningText },
+              ]}
+            >
+              {remaining} / {total} Ders
             </Text>
-            <TouchableOpacity
-              style={styles.errorNoticeDismiss}
-              onPress={dismissSessionTracker}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.errorNoticeDismissText}>Kapat</Text>
-            </TouchableOpacity>
           </View>
-        )}
-
-      {/* DOĞRULANMIŞ DİJİTAL MAKBUZ ONAY KUTUSU */}
-      {verifiedReceipt && (
-        <View style={styles.confirmationCard}>
-          <View style={styles.confirmationTopRow}>
-            <View style={styles.confirmVerifiedPill}>
-              <CheckCircle2 size={16} color={COLORS.white} />
-              <Text style={styles.confirmVerifiedPillText}>
-                3D SECURE ÖDEME ONAYLANDI
-              </Text>
-            </View>
-            <View style={styles.confirmCodePill}>
-              <Receipt size={12} color={COLORS.primary} />
-              <Text style={styles.confirmCodeText}>
-                {verifiedReceipt.transaction_code}
-              </Text>
-            </View>
+          <View style={styles.progressTrack}>
+            <View
+              style={[
+                styles.progressFill,
+                {
+                  width: `${progressPct}%`,
+                  backgroundColor:
+                    remaining <= 2 ? COLORS.warning : COLORS.primary,
+                },
+              ]}
+            />
           </View>
 
-          <Text style={styles.confirmationTitle}>{verifiedReceipt.plan_name}</Text>
-          <Text style={styles.confirmationBody}>
-            +{verifiedReceipt.purchased_credits} yeni ders kredisi
-            {verifiedReceipt.carried_credits > 0
-              ? ` (+${verifiedReceipt.carried_credits} devreden krediyle birlikte)`
-              : ''}{' '}
-            hesabınıza tanımlandı. Yeni kullanılabilir bakiyeniz:{' '}
-            {verifiedReceipt.new_remaining_credits} ders.
-          </Text>
-
-          <View style={styles.confirmDetailsBox}>
-            <View style={styles.confirmDetailRow}>
-              <Text style={styles.confirmDetailKey}>Ödenen Tutar</Text>
-              <Text style={styles.confirmDetailVal}>
-                {formatTry(verifiedReceipt.amount_try)}
-                {verifiedReceipt.installment_count > 1
-                  ? ` (${verifiedReceipt.installment_count} x ${formatTry(
-                      verifiedReceipt.monthly_installment_try
-                    )})`
-                  : ' (Tek Çekim)'}
-              </Text>
-            </View>
-            <View style={styles.confirmDetailRow}>
-              <Text style={styles.confirmDetailKey}>Kart / Yöntem</Text>
-              <Text style={styles.confirmDetailVal}>
-                {verifiedReceipt.masked_payment_info}
-              </Text>
-            </View>
-            <View style={styles.confirmDetailRow}>
-              <Text style={styles.confirmDetailKey}>Son Geçerlilik</Text>
-              <Text style={styles.confirmDetailVal}>
-                {formatTurkishDateLabel(verifiedReceipt.expiry_date).full}
-              </Text>
-            </View>
-          </View>
-
-          <TouchableOpacity
-            style={styles.hideReceiptBtn}
-            onPress={() => setVerifiedReceipt(null)}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.hideReceiptBtnText}>Makbuzu Gizle</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {/* 1. MEVCUT AKTİF PAKET KARTI */}
-      <View style={styles.currentPackageCard}>
-        <View style={styles.currentTopRow}>
-          <View style={styles.activeStatusBadge}>
-            <ShieldCheck size={13} color={COLORS.primary} />
-            <Text style={styles.activeStatusText}>MEVCUT ÜYELİK PAKETİM</Text>
-          </View>
-
-          {activePkg && (
-            <Text style={styles.daysRemainingText}>
-              {daysLeft >= 0 ? `${daysLeft} Gün Kaldı` : 'Süresi Doldu'}
-            </Text>
-          )}
-        </View>
-
-        <Text style={styles.currentPkgTitle}>
-          {activePkg ? activePkg.package_name : 'Aktif Paketiniz Bulunmuyor'}
-        </Text>
-
-        <View style={styles.currentCreditsRow}>
-          <Text style={styles.currentCreditsHighlight}>
-            Kalan: {remaining} / {total} Ders
-          </Text>
-          {activePkg && (
-            <View style={styles.expiryInline}>
-              <Calendar size={12} color={COLORS.textSecondary} />
-              <Text style={styles.expiryText}>
-                Bitiş: {formatTurkishDateLabel(activePkg.expiry_date).full}
-              </Text>
-            </View>
-          )}
-        </View>
-
-        <View style={styles.progressTrack}>
-          <View
-            style={[
-              styles.progressFill,
-              {
-                width: `${progressPct}%`,
-                backgroundColor:
-                  remaining <= 2 ? COLORS.warning : COLORS.primary,
-              },
-            ]}
-          />
-        </View>
-
-        <Text style={styles.carryNoteText}>
-          Yeni bir paket satın aldığınızda mevcut kalan ders kredileriniz yanmaz; 3D Secure ödeme onayıyla birlikte yeni bakiyenize eklenir.
-        </Text>
-      </View>
-
-      {/* FİZİKSEL HİZMET ÖDEME BİLGİLENDİRME KARTI (APP STORE 3.1.3(e)) */}
-      <View style={styles.physicalServiceBanner}>
-        <View style={styles.physicalServiceHeader}>
-          <ShieldCheck size={16} color={COLORS.primary} />
-          <Text style={styles.physicalServiceTitle}>
-            Stüdyoda Yüz Yüze Yapılan Fiziksel Antrenman / PT / Pilates Dersleri
-          </Text>
-        </View>
-        <Text style={styles.physicalServiceDesc}>
-          Bu ödeme yalnızca stüdyoda yüz yüze gerçekleştirilen fiziksel antrenman, PT ve reformer pilates ders paketleri içindir. AI Beslenme Analizi, Vücut Haritası ve İlerleme Takibi gibi uygulama içi dijital araçlar tüm aktif kulüp üyelerine ücretsiz dahildir.
-        </Text>
-      </View>
-
-      {catalogError && (
-        <View style={styles.catalogRetryBox}>
-          <Text style={styles.catalogRetryText}>{catalogError}</Text>
-          <TouchableOpacity
-            style={styles.catalogRetryBtn}
-            onPress={loadCatalogAndHistory}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.catalogRetryBtnText}>Tekrar Dene</Text>
-          </TouchableOpacity>
-        </View>
-      )}
-
-      {checkoutError && !activeSession && (
-        <View style={styles.inlineErrBox}>
-          <Text style={styles.inlineErrText}>{checkoutError}</Text>
-        </View>
-      )}
-
-      {/* 2. YENİ PAKETLER & TAKSİT SEÇİCİ */}
-      <View style={styles.sectionHeader}>
-        <Text style={styles.sectionTitle}>Stüdyo Ders Paketi Satın Al / Yenile</Text>
-        <Text style={styles.sectionSub}>
-          Stüdyoda yüz yüze alacağınız ders paketini ve taksit tercihinizi seçin; 256-Bit SSL & 3D Secure banka ödeme sayfasına yönlendirileceksiniz.
-        </Text>
-      </View>
-
-      <View style={styles.installmentBarCard}>
-        <Text style={styles.installmentBarLabel}>Vade Farksız Taksit Tercihi:</Text>
-        <View style={styles.installmentPillsRow}>
-          {([1, 3, 6] as InstallmentCount[]).map((cnt) => {
-            const active = installmentCount === cnt;
-            return (
-              <TouchableOpacity
-                key={cnt}
-                style={[styles.instPill, active && styles.instPillActive]}
-                onPress={() => setInstallmentCount(cnt)}
-                activeOpacity={0.85}
-              >
-                <Text style={[styles.instPillText, active && styles.instPillTextActive]}>
-                  {cnt === 1 ? 'Tek Çekim' : `${cnt} Taksit`}
+          {/* Bitiş Tarihi & Kalan Gün */}
+          <View style={styles.expiryStrip}>
+            <View style={styles.expiryLeft}>
+              <Calendar size={14} color={COLORS.primary} />
+              <Text style={styles.expiryLabel}>
+                Son Geçerlilik:{' '}
+                <Text style={styles.expiryDateStrong}>
+                  {formatTurkishDateLabel(activePkg.expiry_date).full}
                 </Text>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      </View>
-
-      {/* 3. SATIN ALINABİLİR PAKET KARTLARI */}
-      {(catalogPlans ?? []).map((pkg, idx) => {
-        const isSubmitting =
-          creatingSession && submittingPlanCode === pkg.code;
-        const palette = resolvePlanPalette(pkg.code, idx);
-        const perClassPrice = Math.round(pkg.price_try / Math.max(1, pkg.credits));
-        const installmentPreview =
-          installmentCount > 1
-            ? `${installmentCount} x ${formatTry(pkg.price_try / installmentCount)} / ay (Vade Farksız)`
-            : 'Vade farksız 3 veya 6 taksit imkanı';
-
-        return (
-          <View
-            key={pkg.code}
-            style={[
-              styles.planCard,
-              pkg.popular_badge?.includes('En Çok')
-                ? { borderColor: palette.accentBorder, borderWidth: 1.5 }
-                : null,
-            ]}
-          >
-            <View style={styles.planTopRow}>
-              <View
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.daysPill,
+                daysLeft <= 7 && styles.daysPillWarn,
+              ]}
+            >
+              <Clock
+                size={11}
+                color={daysLeft <= 7 ? COLORS.warningText : COLORS.primary}
+              />
+              <Text
                 style={[
-                  styles.creditsPill,
-                  {
-                    backgroundColor: palette.accentBg,
-                    borderColor: palette.accentBorder,
-                  },
+                  styles.daysPillText,
+                  daysLeft <= 7 && { color: COLORS.warningText },
                 ]}
               >
-                <Sparkles size={12} color={palette.accentColor} />
-                <Text
-                  style={[styles.creditsPillText, { color: palette.accentColor }]}
-                >
-                  +{pkg.credits} Ders Kredisi
-                </Text>
-              </View>
-
-              {pkg.popular_badge ? (
-                <View style={styles.popularBadge}>
-                  <Star size={11} color={COLORS.warningText} fill={COLORS.warning} />
-                  <Text style={styles.popularBadgeText}>{pkg.popular_badge}</Text>
-                </View>
-              ) : (
-                <Text style={styles.durationText}>{pkg.duration_days} Gün Geçerli</Text>
-              )}
+                {daysLeft > 0
+                  ? `${daysLeft} Gün Kaldı`
+                  : daysLeft === 0
+                  ? 'Bugün Son Gün'
+                  : 'Süresi Doldu'}
+              </Text>
             </View>
+          </View>
 
-            <Text style={styles.planTitle}>{pkg.name}</Text>
-            <Text style={styles.planSubtitle}>
-              {pkg.duration_days} Gün Geçerli • {pkg.subtitle}
-            </Text>
-
-            <View style={styles.priceBox}>
+          {/* Admin Paket Notu */}
+          {activePkg.package_notes && activePkg.package_notes.trim().length > 0 ? (
+            <View style={styles.noteBox}>
+              <FileText size={14} color={COLORS.walnut} />
               <View style={{ flex: 1 }}>
-                <Text style={styles.priceAmount}>{formatTry(pkg.price_try)}</Text>
-                <Text style={styles.priceInstallment}>{installmentPreview}</Text>
-              </View>
-              <View style={styles.perLessonPill}>
-                <Text style={styles.perLessonText}>₺{perClassPrice} / ders</Text>
+                <Text style={styles.noteLabel}>STÜDYO PAKET NOTU</Text>
+                <Text style={styles.noteText}>{activePkg.package_notes.trim()}</Text>
               </View>
             </View>
-
-            <View style={styles.featureList}>
-              {(pkg.features ?? []).map((feat, fIdx) => (
-                <View key={`${pkg.code}-f-${fIdx}`} style={styles.featureRow}>
-                  <CheckCircle2 size={14} color={palette.accentColor} />
-                  <Text style={styles.featureText}>{feat}</Text>
-                </View>
-              ))}
-            </View>
-
-            <TouchableOpacity
-              style={[
-                styles.selectPlanBtn,
-                { backgroundColor: palette.accentColor },
-                creatingSession && { opacity: isSubmitting ? 0.8 : 0.55 },
-              ]}
-              disabled={creatingSession}
-              onPress={() => handleSelectAndRedirect(pkg)}
-              activeOpacity={0.86}
-            >
-              {isSubmitting ? (
-                <ActivityIndicator size="small" color={COLORS.white} />
-              ) : (
-                <>
-                  <Lock size={15} color={COLORS.white} />
-                  <Text style={styles.selectPlanBtnText}>
-                    Satın Al • Güvenli Ödemeye Git
-                  </Text>
-                  <ArrowRight size={15} color={COLORS.white} />
-                </>
-              )}
-            </TouchableOpacity>
+          ) : null}
+        </View>
+      ) : (
+        <View style={styles.emptyActiveCard}>
+          <View style={styles.emptyIconCircle}>
+            <Package size={28} color={COLORS.primary} />
           </View>
-        );
-      })}
-
-      {/* 4. SON ÖDEME GEÇMİŞİ */}
-      {(historyData?.transactions ?? []).length > 0 && (
-        <View style={styles.historySection}>
-          <View style={styles.historyHeaderRow}>
-            <History size={17} color={COLORS.secondary} />
-            <Text style={styles.historySectionTitle}>Son Ödeme İşlemlerim</Text>
-          </View>
-
-          {(historyData?.transactions ?? []).slice(0, 5).map((tx: PaymentHistoryItem) => (
-            <View key={tx.id} style={styles.historyRowCard}>
-              <View style={{ flex: 1, gap: 2 }}>
-                <Text style={styles.historyTxTitle}>{tx.plan_name}</Text>
-                <Text style={styles.historyTxMeta}>
-                  {tx.transaction_code} • {tx.masked_payment_info}
-                </Text>
-                <Text style={styles.historyTxDate}>
-                  {formatTurkishDateTime(tx.created_at)}
-                </Text>
-              </View>
-              <View style={{ alignItems: 'flex-end', gap: 2 }}>
-                <Text style={styles.historyTxAmount}>{formatTry(tx.amount_try)}</Text>
-                <Text style={styles.historyTxInst}>
-                  {tx.installment_count > 1
-                    ? `${tx.installment_count} Taksit`
-                    : 'Tek Çekim'}
-                </Text>
-              </View>
-            </View>
-          ))}
+          <Text style={styles.emptyActiveTitle}>Aktif Paketiniz Bulunmuyor</Text>
+          <Text style={styles.emptyActiveDesc}>
+            Henüz tanımlı aktif ders paketiniz bulunmuyor. Paket tanımlaması için stüdyo
+            yönetimiyle iletişime geçebilirsiniz.
+          </Text>
         </View>
       )}
+
+      {/* 2. BU AYKİ PAKET ÖZETİ */}
+      <View style={styles.monthSummaryCard}>
+        <View style={styles.monthSummaryHeader}>
+          <View style={styles.monthSummaryLeft}>
+            <View style={styles.monthSummaryIconBox}>
+              <Sparkles size={16} color={COLORS.secondary} />
+            </View>
+            <View>
+              <Text style={styles.monthSummaryTitle}>Bu Ayki Paket Özeti</Text>
+              <Text style={styles.monthSummarySub}>{currentMonthLabel} Dönemi</Text>
+            </View>
+          </View>
+          <View style={styles.monthTotalPill}>
+            <Text style={styles.monthTotalPillText}>
+              {thisMonthTotalCredits} Ders Hakkı
+            </Text>
+          </View>
+        </View>
+
+        {thisMonthPackages.length > 0 ? (
+          <View style={styles.monthSummaryBody}>
+            {thisMonthPackages.map((pkg) => (
+              <View key={`month-${pkg.id}`} style={styles.monthPkgRow}>
+                <CheckCircle2
+                  size={15}
+                  color={pkg.is_active ? COLORS.primary : COLORS.textMuted}
+                />
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.monthPkgName} numberOfLines={1}>
+                    {pkg.package_name}
+                  </Text>
+                  <Text style={styles.monthPkgMeta}>
+                    {pkg.remaining_credits} kalan / {pkg.total_credits} toplam ders
+                  </Text>
+                </View>
+                <View
+                  style={[
+                    styles.miniStatusBadge,
+                    pkg.is_active
+                      ? styles.miniStatusActive
+                      : styles.miniStatusCompleted,
+                  ]}
+                >
+                  <Text
+                    style={[
+                      styles.miniStatusText,
+                      {
+                        color: pkg.is_active
+                          ? COLORS.success
+                          : COLORS.textSecondary,
+                      },
+                    ]}
+                  >
+                    {pkg.is_active ? 'Aktif' : 'Tamamlandı'}
+                  </Text>
+                </View>
+              </View>
+            ))}
+            <Text style={styles.monthSummaryFoot}>
+              {currentMonthLabel} döneminde toplam {thisMonthTotalCredits} ders hakkı
+              tanımlandı, güncel kalan: {thisMonthRemainingCredits} ders.
+            </Text>
+          </View>
+        ) : (
+          <Text style={styles.monthEmptyText}>
+            {currentMonthLabel} ayı için henüz yeni tanımlanmış bir ders paketi görünmüyor.
+          </Text>
+        )}
+      </View>
+
+      {/* 3. TÜM PAKETLERİM LİSTESİ */}
+      <View style={styles.sectionHeader}>
+        <View style={styles.sectionHeaderLeft}>
+          <Layers size={17} color={COLORS.primary} />
+          <Text style={styles.sectionTitle}>Tüm Paketlerim ({allPackages.length})</Text>
+        </View>
+        <Text style={styles.sectionHint}>En güncel üstte</Text>
+      </View>
+
+      {allPackages.length === 0 ? (
+        <View style={styles.emptyListCard}>
+          <Package size={24} color={COLORS.textMuted} />
+          <Text style={styles.emptyListText}>
+            Henüz kayıtlı ders paketi geçmişiniz bulunmuyor.
+          </Text>
+        </View>
+      ) : (
+        allPackages.map((pkg) => {
+          const pkgMonth = resolvePackageMonth(pkg);
+          const pkgUsed = Math.max(0, pkg.total_credits - pkg.remaining_credits);
+          const pkgPct =
+            pkg.total_credits > 0
+              ? Math.max(0, Math.min(100, (pkg.remaining_credits / pkg.total_credits) * 100))
+              : 0;
+
+          return (
+            <View
+              key={pkg.id}
+              style={[
+                styles.pkgListCard,
+                pkg.is_active && styles.pkgListCardActive,
+              ]}
+            >
+              <View style={styles.pkgListTopRow}>
+                <View style={styles.pkgBadgesWrap}>
+                  <View
+                    style={[
+                      styles.statusBadge,
+                      pkg.is_active
+                        ? styles.statusBadgeActive
+                        : styles.statusBadgeDone,
+                    ]}
+                  >
+                    <Text
+                      style={[
+                        styles.statusBadgeText,
+                        {
+                          color: pkg.is_active
+                            ? COLORS.success
+                            : COLORS.textSecondary,
+                        },
+                      ]}
+                    >
+                      {pkg.is_active ? 'Aktif' : 'Tamamlandı'}
+                    </Text>
+                  </View>
+
+                  {pkgMonth ? (
+                    <View style={styles.periodTag}>
+                      <Calendar size={11} color={COLORS.secondary} />
+                      <Text style={styles.periodTagText}>
+                        {formatPackageMonthTr(pkgMonth)}
+                      </Text>
+                    </View>
+                  ) : null}
+                </View>
+
+                <Text style={styles.pkgListCredits}>
+                  {pkg.remaining_credits} / {pkg.total_credits} Ders
+                </Text>
+              </View>
+
+              <Text style={styles.pkgListTitle}>{pkg.package_name}</Text>
+
+              <View style={styles.pkgListMetaRow}>
+                <Text style={styles.pkgListMetaText}>
+                  Kullanılan: {pkgUsed} Ders
+                </Text>
+                <Text style={styles.pkgListMetaDot}>•</Text>
+                <Text style={styles.pkgListMetaText}>
+                  Bitiş: {formatTurkishDateLabel(pkg.expiry_date).full}
+                </Text>
+              </View>
+
+              <View style={styles.miniProgressTrack}>
+                <View
+                  style={[
+                    styles.miniProgressFill,
+                    {
+                      width: `${pkgPct}%`,
+                      backgroundColor: pkg.is_active
+                        ? COLORS.primary
+                        : COLORS.textMuted,
+                    },
+                  ]}
+                />
+              </View>
+
+              {pkg.package_notes && pkg.package_notes.trim().length > 0 ? (
+                <View style={styles.listNoteRow}>
+                  <FileText size={12} color={COLORS.walnut} />
+                  <Text style={styles.listNoteText}>{pkg.package_notes.trim()}</Text>
+                </View>
+              ) : null}
+            </View>
+          );
+        })
+      )}
+
+      {/* 4. ALT BİLGİLENDİRME KARTI */}
+      <View style={styles.studioInfoCard}>
+        <View style={styles.studioInfoIconBox}>
+          <Info size={16} color={COLORS.primary} />
+        </View>
+        <View style={{ flex: 1 }}>
+          <Text style={styles.studioInfoTitle}>Stüdyo Paket Yönetimi</Text>
+          <Text style={styles.studioInfoText}>
+            Paket tanımlamaları, aylık yenilemeler ve ders hakkı güncellemeleri stüdyo
+            yöneticiniz tarafından yapılmaktadır.
+          </Text>
+        </View>
+      </View>
     </ScrollView>
   );
 }
@@ -736,638 +450,540 @@ const styles = StyleSheet.create({
   content: {
     padding: 18,
     paddingBottom: 44,
+    gap: 14,
   },
-  liveSessionCard: {
-    backgroundColor: '#FFFDF7',
-    borderRadius: 22,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1.5,
-    borderColor: COLORS.primary,
-    gap: 11,
-    ...CARD_SHADOW,
-  },
-  liveTopRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 8,
-  },
-  liveBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: COLORS.warningBg,
-    borderWidth: 1,
-    borderColor: '#EDD092',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
-    flexShrink: 1,
-  },
-  liveBadgeText: {
-    color: COLORS.warningText,
-    fontSize: 10.5,
-    fontWeight: '800',
-    letterSpacing: 0.3,
-  },
-  liveTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 17.5,
-    fontWeight: '800',
-  },
-  liveDesc: {
-    color: COLORS.textSecondary,
-    fontSize: 12.5,
-    lineHeight: 18,
-    fontWeight: '500',
-  },
-  liveMetaStrip: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    backgroundColor: COLORS.surfaceElevated,
-    borderRadius: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  liveMetaLabel: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  liveMetaVal: {
-    color: COLORS.textPrimary,
-    fontSize: 13.5,
-    fontWeight: '800',
-  },
-  livePrimaryBtn: {
-    backgroundColor: COLORS.primary,
-    borderRadius: 13,
-    paddingVertical: 12,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-  },
-  livePrimaryBtnText: {
-    color: COLORS.white,
-    fontSize: 13.5,
-    fontWeight: '800',
-  },
-  liveSecondaryRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  liveReopenBtn: {
-    flex: 1,
-    backgroundColor: COLORS.primaryLight,
+  activePackageCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 24,
+    padding: 20,
     borderWidth: 1,
     borderColor: COLORS.primaryBorder,
-    borderRadius: 12,
-    paddingVertical: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  liveReopenBtnText: {
-    color: COLORS.primary,
-    fontSize: 12.5,
-    fontWeight: '800',
-  },
-  liveCancelBtn: {
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    borderRadius: 12,
-    paddingVertical: 10,
-    paddingHorizontal: 15,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  liveCancelBtnText: {
-    color: COLORS.textSecondary,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  errorNoticeCard: {
-    backgroundColor: COLORS.dangerBg,
-    borderRadius: 18,
-    padding: 16,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.dangerBorder,
-    gap: 8,
-  },
-  errorNoticeTop: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  errorNoticeTitle: {
-    color: COLORS.danger,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  errorNoticeBody: {
-    color: COLORS.textPrimary,
-    fontSize: 12.5,
-    lineHeight: 18,
-  },
-  errorNoticeDismiss: {
-    alignSelf: 'flex-start',
-    backgroundColor: COLORS.surface,
-    borderRadius: 9,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderWidth: 1,
-    borderColor: COLORS.dangerBorder,
-  },
-  errorNoticeDismissText: {
-    color: COLORS.danger,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  inlineErrBox: {
-    backgroundColor: COLORS.dangerBg,
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: COLORS.dangerBorder,
-  },
-  inlineErrText: {
-    color: COLORS.danger,
-    fontSize: 12.5,
-    fontWeight: '700',
-  },
-  currentPackageCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 22,
-    padding: 20,
-    marginBottom: 16,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: 11,
+    gap: 14,
     ...CARD_SHADOW,
   },
-  currentTopRow: {
+  topRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
   },
   activeStatusBadge: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 5,
     backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
     paddingHorizontal: 10,
-    paddingVertical: 4,
+    paddingVertical: 5,
     borderRadius: 999,
   },
   activeStatusText: {
+    fontFamily: FONTS.sans,
     color: COLORS.primary,
     fontSize: 10.5,
     fontWeight: '800',
-    letterSpacing: 0.3,
+    letterSpacing: 0.4,
   },
-  daysRemainingText: {
+  monthBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: COLORS.secondaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.secondaryBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  monthBadgeText: {
+    fontFamily: FONTS.sans,
     color: COLORS.secondary,
-    fontSize: 12,
+    fontSize: 11.5,
     fontWeight: '800',
   },
-  currentPkgTitle: {
+  activePkgTitle: {
+    fontFamily: FONTS.serif,
     color: COLORS.textPrimary,
-    fontSize: 19,
-    fontWeight: '800',
-    letterSpacing: -0.3,
+    fontSize: 24,
+    lineHeight: 29,
+    fontWeight: '700',
   },
-  currentCreditsRow: {
+  metricsRow: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  metricBox: {
+    flex: 1,
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 16,
+    paddingVertical: 13,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 3,
+  },
+  metricBoxHighlight: {
+    backgroundColor: COLORS.primarySurface,
+    borderColor: COLORS.primaryBorder,
+  },
+  metricValue: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 24,
+    fontWeight: '800',
+    letterSpacing: -0.5,
+  },
+  metricLabel: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '700',
+  },
+  progressHeaderRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    flexWrap: 'wrap',
-    gap: 8,
+    marginTop: 2,
   },
-  currentCreditsHighlight: {
-    color: COLORS.primary,
-    fontSize: 14.5,
-    fontWeight: '800',
-  },
-  expiryInline: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-  },
-  expiryText: {
+  progressLabel: {
+    fontFamily: FONTS.sans,
     color: COLORS.textSecondary,
     fontSize: 12,
     fontWeight: '600',
   },
+  progressPercentText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
+    fontSize: 12.5,
+    fontWeight: '800',
+  },
   progressTrack: {
     height: 9,
     borderRadius: 999,
-    backgroundColor: '#EAE0D0',
+    backgroundColor: COLORS.track,
     overflow: 'hidden',
+    marginTop: -6,
   },
   progressFill: {
     height: '100%',
     borderRadius: 999,
   },
-  carryNoteText: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    lineHeight: 17,
-    fontWeight: '500',
-  },
-  confirmationCard: {
-    backgroundColor: '#FCF7EA',
-    borderRadius: 20,
-    padding: 18,
-    marginBottom: 16,
-    borderWidth: 1.5,
-    borderColor: COLORS.success,
-    gap: 10,
-    ...CARD_SHADOW,
-  },
-  confirmationTopRow: {
+  expiryStrip: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     flexWrap: 'wrap',
     gap: 8,
+    backgroundColor: COLORS.backgroundAlt,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
-  confirmVerifiedPill: {
+  expiryLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    backgroundColor: COLORS.success,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 999,
+    gap: 7,
   },
-  confirmVerifiedPillText: {
-    color: COLORS.white,
-    fontSize: 10.5,
-    fontWeight: '800',
-    letterSpacing: 0.3,
+  expiryLabel: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12.5,
+    fontWeight: '600',
   },
-  confirmCodePill: {
+  expiryDateStrong: {
+    color: COLORS.textPrimary,
+    fontWeight: '700',
+  },
+  daysPill: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
+    backgroundColor: COLORS.primaryLight,
     paddingHorizontal: 9,
     paddingVertical: 4,
     borderRadius: 999,
   },
-  confirmCodeText: {
+  daysPillWarn: {
+    backgroundColor: COLORS.warningBg,
+  },
+  daysPillText: {
+    fontFamily: FONTS.sans,
     color: COLORS.primary,
-    fontSize: 11.5,
+    fontSize: 11,
     fontWeight: '800',
   },
-  confirmationTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 17,
-    fontWeight: '800',
-  },
-  confirmationBody: {
-    color: COLORS.textPrimary,
-    fontSize: 13,
-    lineHeight: 19,
-    fontWeight: '600',
-  },
-  confirmDetailsBox: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 12,
+  noteBox: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 9,
+    backgroundColor: COLORS.surfaceHalo,
+    borderRadius: 14,
     padding: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: 6,
+    borderColor: COLORS.primaryBorder,
   },
-  confirmDetailRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    gap: 8,
-  },
-  confirmDetailKey: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: '600',
-  },
-  confirmDetailVal: {
-    color: COLORS.textPrimary,
-    fontSize: 12,
+  noteLabel: {
+    fontFamily: FONTS.sans,
+    color: COLORS.walnut,
+    fontSize: 10,
     fontWeight: '800',
+    letterSpacing: 0.5,
+    marginBottom: 2,
   },
-  hideReceiptBtn: {
-    alignSelf: 'flex-end',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-  },
-  hideReceiptBtnText: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
-    fontWeight: '700',
-  },
-  sectionHeader: {
-    marginBottom: 12,
-    gap: 4,
-  },
-  sectionTitle: {
+  noteText: {
+    fontFamily: FONTS.sans,
     color: COLORS.textPrimary,
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  sectionSub: {
-    color: COLORS.textSecondary,
-    fontSize: 13,
+    fontSize: 12.8,
     lineHeight: 18,
     fontWeight: '500',
   },
-  installmentBarCard: {
+  emptyActiveCard: {
     backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    padding: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: 8,
-  },
-  installmentBarLabel: {
-    color: COLORS.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '700',
-  },
-  installmentPillsRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  instPill: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
-    backgroundColor: COLORS.surfaceElevated,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderRadius: 24,
+    padding: 24,
     alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 10,
+    ...CARD_SHADOW,
   },
-  instPillActive: {
+  emptyIconCircle: {
+    width: 58,
+    height: 58,
+    borderRadius: 20,
     backgroundColor: COLORS.primaryLight,
-    borderColor: COLORS.primary,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
-  instPillText: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
+  emptyActiveTitle: {
+    fontFamily: FONTS.serif,
+    color: COLORS.textPrimary,
+    fontSize: 22,
     fontWeight: '700',
+    textAlign: 'center',
   },
-  instPillTextActive: {
-    color: COLORS.primary,
-    fontWeight: '800',
+  emptyActiveDesc: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 13.5,
+    lineHeight: 20,
+    textAlign: 'center',
+    fontWeight: '500',
   },
-  planCard: {
+  monthSummaryCard: {
     backgroundColor: COLORS.surface,
     borderRadius: 22,
-    padding: 20,
-    marginBottom: 16,
+    padding: 18,
     borderWidth: 1,
     borderColor: COLORS.border,
     gap: 12,
     ...CARD_SHADOW,
   },
-  planTopRow: {
+  monthSummaryHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+  },
+  monthSummaryLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  monthSummaryIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: COLORS.secondaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.secondaryBorder,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  monthSummaryTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 15,
+    fontWeight: '800',
+  },
+  monthSummarySub: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  monthTotalPill: {
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  monthTotalPillText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  monthSummaryBody: {
+    gap: 8,
+  },
+  monthPkgRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 14,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  monthPkgName: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  monthPkgMeta: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '500',
+    marginTop: 1,
+  },
+  miniStatusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    borderWidth: 1,
+  },
+  miniStatusActive: {
+    backgroundColor: COLORS.successBg,
+    borderColor: COLORS.successBorder,
+  },
+  miniStatusCompleted: {
+    backgroundColor: COLORS.backgroundAlt,
+    borderColor: COLORS.border,
+  },
+  miniStatusText: {
+    fontFamily: FONTS.sans,
+    fontSize: 10.5,
+    fontWeight: '800',
+  },
+  monthSummaryFoot: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  monthEmptyText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    lineHeight: 19,
+    fontWeight: '500',
+  },
+  sectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginTop: 4,
+    paddingHorizontal: 2,
+  },
+  sectionHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  sectionTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  sectionHint: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textMuted,
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  emptyListCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 18,
+    padding: 20,
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 8,
+  },
+  emptyListText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 13,
+    fontWeight: '600',
+    textAlign: 'center',
+  },
+  pkgListCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 20,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 9,
+    ...CARD_SHADOW,
+  },
+  pkgListCardActive: {
+    borderColor: COLORS.primaryBorder,
+    backgroundColor: COLORS.surface,
+  },
+  pkgListTopRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
     gap: 8,
   },
-  creditsPill: {
+  pkgBadgesWrap: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 11,
-    paddingVertical: 5,
+    flexWrap: 'wrap',
+    gap: 6,
+    flex: 1,
+  },
+  statusBadge: {
+    paddingHorizontal: 9,
+    paddingVertical: 3.5,
     borderRadius: 999,
     borderWidth: 1,
   },
-  creditsPillText: {
-    fontSize: 11.5,
+  statusBadgeActive: {
+    backgroundColor: COLORS.successBg,
+    borderColor: COLORS.successBorder,
+  },
+  statusBadgeDone: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderColor: COLORS.border,
+  },
+  statusBadgeText: {
+    fontFamily: FONTS.sans,
+    fontSize: 11,
     fontWeight: '800',
   },
-  popularBadge: {
+  periodTag: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
-    backgroundColor: COLORS.warningBg,
+    backgroundColor: COLORS.secondaryLight,
     borderWidth: 1,
-    borderColor: '#EDD092',
-    paddingHorizontal: 10,
-    paddingVertical: 4,
+    borderColor: COLORS.secondaryBorder,
+    paddingHorizontal: 8,
+    paddingVertical: 3.5,
     borderRadius: 999,
   },
-  popularBadgeText: {
-    color: COLORS.warningText,
+  periodTagText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.secondary,
     fontSize: 11,
-    fontWeight: '800',
-  },
-  durationText: {
-    color: COLORS.textSecondary,
-    fontSize: 12,
     fontWeight: '700',
   },
-  planTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 18.5,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  planSubtitle: {
-    color: COLORS.textSecondary,
-    fontSize: 13,
-    fontWeight: '600',
-    marginTop: -4,
-    lineHeight: 18,
-  },
-  priceBox: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-    backgroundColor: COLORS.surfaceElevated,
-    borderRadius: 15,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  priceAmount: {
-    color: COLORS.textPrimary,
-    fontSize: 22,
-    fontWeight: '900',
-    letterSpacing: -0.5,
-  },
-  priceInstallment: {
-    color: COLORS.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '600',
-    marginTop: 1,
-  },
-  perLessonPill: {
-    backgroundColor: COLORS.surface,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    paddingHorizontal: 10,
-    paddingVertical: 5,
-    borderRadius: 10,
-  },
-  perLessonText: {
-    color: COLORS.textPrimary,
-    fontSize: 12,
-    fontWeight: '800',
-  },
-  featureList: {
-    gap: 8,
-  },
-  featureRow: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: 8,
-  },
-  featureText: {
-    flex: 1,
-    color: COLORS.textSecondary,
-    fontSize: 13,
-    lineHeight: 18,
-    fontWeight: '600',
-  },
-  selectPlanBtn: {
-    marginTop: 4,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 8,
-    borderRadius: 14,
-    paddingVertical: 14,
-    paddingHorizontal: 16,
-  },
-  selectPlanBtnText: {
-    color: COLORS.white,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  historySection: {
-    marginTop: 8,
-    gap: 10,
-  },
-  historyHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 7,
-    marginBottom: 2,
-  },
-  historySectionTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 16.5,
-    fontWeight: '800',
-  },
-  historyRowCard: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 16,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  historyTxTitle: {
-    color: COLORS.textPrimary,
-    fontSize: 14,
-    fontWeight: '800',
-  },
-  historyTxMeta: {
-    color: COLORS.textSecondary,
-    fontSize: 11.5,
-    fontWeight: '600',
-  },
-  historyTxDate: {
-    color: COLORS.textMuted,
-    fontSize: 11,
-  },
-  historyTxAmount: {
+  pkgListCredits: {
+    fontFamily: FONTS.sans,
     color: COLORS.primary,
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  pkgListTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
     fontSize: 15.5,
     fontWeight: '800',
   },
-  historyTxInst: {
-    color: COLORS.textSecondary,
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  physicalServiceBanner: {
-    backgroundColor: COLORS.surface,
-    borderRadius: 18,
-    padding: 15,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: COLORS.primaryBorder,
-    gap: 7,
-    ...CARD_SHADOW,
-  },
-  physicalServiceHeader: {
+  pkgListMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 8,
+    flexWrap: 'wrap',
+    gap: 6,
   },
-  physicalServiceTitle: {
+  pkgListMetaText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  pkgListMetaDot: {
+    color: COLORS.textMuted,
+    fontSize: 12,
+  },
+  miniProgressTrack: {
+    height: 6,
+    borderRadius: 999,
+    backgroundColor: COLORS.track,
+    overflow: 'hidden',
+  },
+  miniProgressFill: {
+    height: '100%',
+    borderRadius: 999,
+  },
+  listNoteRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 6,
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    marginTop: 2,
+  },
+  listNoteText: {
     flex: 1,
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '500',
+  },
+  studioInfoCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 12,
+    backgroundColor: COLORS.primarySurface,
+    borderRadius: 18,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    marginTop: 4,
+  },
+  studioInfoIconBox: {
+    width: 34,
+    height: 34,
+    borderRadius: 11,
+    backgroundColor: COLORS.primaryLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  studioInfoTitle: {
+    fontFamily: FONTS.sans,
     color: COLORS.textPrimary,
     fontSize: 13.5,
     fontWeight: '800',
-    lineHeight: 18,
+    marginBottom: 3,
   },
-  physicalServiceDesc: {
+  studioInfoText: {
+    fontFamily: FONTS.sans,
     color: COLORS.textSecondary,
     fontSize: 12.5,
     lineHeight: 18.5,
     fontWeight: '500',
-  },
-  catalogRetryBox: {
-    backgroundColor: COLORS.warningBg,
-    borderRadius: 14,
-    padding: 12,
-    marginBottom: 14,
-    borderWidth: 1,
-    borderColor: '#EDD092',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    gap: 10,
-  },
-  catalogRetryText: {
-    flex: 1,
-    color: COLORS.warningText,
-    fontSize: 12,
-    fontWeight: '700',
-    lineHeight: 17,
-  },
-  catalogRetryBtn: {
-    backgroundColor: COLORS.primary,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-    borderRadius: 10,
-  },
-  catalogRetryBtnText: {
-    color: COLORS.white,
-    fontSize: 12,
-    fontWeight: '800',
   },
 });

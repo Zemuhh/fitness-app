@@ -758,6 +758,21 @@ def get_active_package_for_member(db: Session, member_id: int) -> Optional[Membe
     )
 
 
+def _to_package_out(pkg: MemberPackage) -> PackageOut:
+    return PackageOut(
+        id=pkg.id,
+        member_id=pkg.member_id,
+        package_name=pkg.package_name,
+        total_credits=pkg.total_credits,
+        remaining_credits=pkg.remaining_credits,
+        expiry_date=pkg.expiry_date,
+        is_active=pkg.is_active,
+        package_month=getattr(pkg, "package_month", None),
+        package_notes=getattr(pkg, "package_notes", None) or "",
+        created_at=getattr(pkg, "created_at", None),
+    )
+
+
 def _build_member_booking_item(b: Booking) -> MemberBookingItemOut:
     s = b.session
     tr = s.trainer if s else None
@@ -2398,7 +2413,7 @@ def get_club_home(member_id: int, db: Session = Depends(get_db)):
     return ClubHomeOut(
         member=_to_user_out(member),
         streak_days=member.streak_days or 0,
-        active_package=PackageOut.model_validate(active_package) if active_package else None,
+        active_package=_to_package_out(active_package) if active_package else None,
         upcoming_booking=upcoming_booking,
         announcements=[AnnouncementOut.model_validate(a) for a in announcements],
         trainers=trainer_cards,
@@ -2553,7 +2568,7 @@ def get_dashboard_summary(member_id: int, db: Session = Depends(get_db)):
     return MemberDashboardSummaryOut(
         member=_to_user_out(member),
         streak_days=member.streak_days or 0,
-        active_package=PackageOut.model_validate(active_package) if active_package else None,
+        active_package=_to_package_out(active_package) if active_package else None,
         remaining_credits=remaining_credits,
         total_credits=total_credits,
         today_wellness=today_wellness,
@@ -2756,8 +2771,8 @@ def get_member_dashboard(member_id: int, db: Session = Depends(get_db)):
 
     return MemberDashboardOut(
         member=_to_user_out(member),
-        active_package=PackageOut.model_validate(active_package) if active_package else None,
-        all_packages=[PackageOut.model_validate(p) for p in all_member_packages],
+        active_package=_to_package_out(active_package) if active_package else None,
+        all_packages=[_to_package_out(p) for p in all_member_packages],
         my_bookings=my_bookings,
         available_sessions=available_sessions,
         waitlist_items=waitlist_items,

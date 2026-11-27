@@ -103,6 +103,14 @@ class PackageOut(BaseModel):
     remaining_credits: int
     expiry_date: str
     is_active: bool
+    package_month: Optional[str] = None
+    package_notes: Optional[str] = ""
+    created_at: Optional[str] = None
+
+    @field_validator("package_notes", mode="before")
+    @classmethod
+    def _parse_package_notes(cls, val: Any) -> str:
+        return str(val) if val is not None else ""
 
 
 MemberPackageOut = PackageOut

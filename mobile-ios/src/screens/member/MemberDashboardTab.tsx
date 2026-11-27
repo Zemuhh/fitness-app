@@ -450,7 +450,7 @@ export function MemberDashboardTab({
               <Text style={styles.pkgExpiryText}>
                 {pkg
                   ? `Son Geçerlilik: ${formatTurkishDateLabel(pkg.expiry_date).full}`
-                  : 'Reformer & Cadillac seansları için paket seçin'}
+                  : 'Paket tanımlaması için stüdyo yönetimiyle iletişime geçebilirsiniz'}
               </Text>
 
               <TouchableOpacity
@@ -458,9 +458,9 @@ export function MemberDashboardTab({
                 onPress={() => onNavigate('packages')}
                 activeOpacity={0.8}
                 accessibilityRole="button"
-                accessibilityLabel="Üyelik paketini yenile"
+                accessibilityLabel="Paket bilgilerimi ve ders haklarımı gör"
               >
-                <Text style={styles.renewInlineLinkText}>Paketi Yenile</Text>
+                <Text style={styles.renewInlineLinkText}>Paketimi Gör</Text>
                 <ArrowRight size={14} color={COLORS.primary} />
               </TouchableOpacity>
             </View>

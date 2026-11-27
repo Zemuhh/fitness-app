@@ -350,7 +350,7 @@ export function MemberQrTab({
             >
               {isActive
                 ? 'Turnike Geçişi İçin Hazır'
-                : 'Turnike Geçişi • Paket Yenileme Önerilir'}
+                : 'Turnike Geçişi • Ders Hakkı Kontrolü'}
             </Text>
           </View>
         </View>
@@ -371,7 +371,7 @@ export function MemberQrTab({
               activeOpacity={0.85}
             >
               <Zap size={12} color={COLORS.white} />
-              <Text style={styles.renewMiniBtnText}>Paket Yenile</Text>
+              <Text style={styles.renewMiniBtnText}>Paket Bilgilerim</Text>
             </TouchableOpacity>
           )}
         </View>

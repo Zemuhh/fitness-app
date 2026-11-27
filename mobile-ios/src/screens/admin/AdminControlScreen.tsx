@@ -20,13 +20,13 @@ import {
   Calendar,
   CalendarPlus,
   CheckCircle2,
-  CreditCard,
   Edit3,
   Eye,
   KeyRound,
   Layers,
   LogOut,
   Megaphone,
+  Package,
   Pin,
   Plus,
   RefreshCw,
@@ -47,12 +47,19 @@ import {
   AdminAnnouncementItem,
   AdminClassSessionItem,
   AdminMemberItem,
+  AdminMemberPackageItem,
   AdminPanelConfig,
-  AdminPaymentItem,
   AdminSystemOverview,
   AdminTrainerItem,
 } from '@/types/authAdmin';
-import { addMinutesToHhMm, getTodayIso, getUpcomingIsoDates } from '@/utils/dateHelpers';
+import {
+  addMinutesToHhMm,
+  formatPackageMonthTr,
+  getCurrentYearMonth,
+  getTodayIso,
+  getUpcomingIsoDates,
+  shiftYearMonth,
+} from '@/utils/dateHelpers';
 import {
   AdminCodesPoliciesView,
   AdminMonthlyAnalyticsView,
@@ -72,7 +79,14 @@ type AdminPrimaryTab =
   | 'sistem'
   | 'analitik'
   | 'kodlar';
-type SystemSubTab = 'musteriler' | 'dersler' | 'odemeler';
+type SystemSubTab = 'musteriler' | 'dersler' | 'paketler';
+
+const PACKAGE_PRESETS = [
+  { name: '8 Seans Grup Reformer', credits: 8, durationDays: 35 },
+  { name: '12 Seans Grup Reformer', credits: 12, durationDays: 45 },
+  { name: '8 Seans Bireysel PT', credits: 8, durationDays: 40 },
+  { name: '16 Seans VIP Reformer', credits: 16, durationDays: 60 },
+] as const;
 
 const UI = {
   bg: '#0B111E',
@@ -158,7 +172,7 @@ export function AdminControlScreen({
   const [trainers, setTrainers] = useState<AdminTrainerItem[]>([]);
   const [members, setMembers] = useState<AdminMemberItem[]>([]);
   const [sessions, setSessions] = useState<AdminClassSessionItem[]>([]);
-  const [payments, setPayments] = useState<AdminPaymentItem[]>([]);
+  const [memberPackages, setMemberPackages] = useState<AdminMemberPackageItem[]>([]);
 
   // Sekme 1: Panel Geçiş & Ayar State
   const [selectedPreviewTrainerId, setSelectedPreviewTrainerId] = useState<number | null>(null);
@@ -193,7 +207,8 @@ export function AdminControlScreen({
   const [memUsername, setMemUsername] = useState<string>('');
   const [memPassword, setMemPassword] = useState<string>('');
   const [memNotes, setMemNotes] = useState<string>('');
-  const [memPackageName, setMemPackageName] = useState<string>('8 Seans Grup Reformer Paketi');
+  const [memPackageName, setMemPackageName] = useState<string>('8 Seans Grup Reformer');
+  const [memPackageMonth, setMemPackageMonth] = useState<string>(() => getCurrentYearMonth());
   const [memCredits, setMemCredits] = useState<string>('8');
   const [savingMember, setSavingMember] = useState<boolean>(false);
 
@@ -202,6 +217,32 @@ export function AdminControlScreen({
   const [editMemberSetCredits, setEditMemberSetCredits] = useState<string>('');
   const [editMemberPkgName, setEditMemberPkgName] = useState<string>('');
   const [busyMemberActionId, setBusyMemberActionId] = useState<number | null>(null);
+
+  // Sekme 4C: Aylık Müşteri Paket Tanımlama & Yönetimi State
+  const currentYearMonth = useMemo(() => getCurrentYearMonth(), []);
+  const prevYearMonth = useMemo(() => shiftYearMonth(currentYearMonth, -1), [currentYearMonth]);
+  const nextYearMonth = useMemo(() => shiftYearMonth(currentYearMonth, 1), [currentYearMonth]);
+
+  const [pkgMemberId, setPkgMemberId] = useState<number | null>(null);
+  const [pkgMemberSearch, setPkgMemberSearch] = useState<string>('');
+  const [pkgName, setPkgName] = useState<string>('8 Seans Grup Reformer');
+  const [pkgTotalCredits, setPkgTotalCredits] = useState<string>('8');
+  const [pkgRemainingCredits, setPkgRemainingCredits] = useState<string>('8');
+  const [pkgRemainingTouched, setPkgRemainingTouched] = useState<boolean>(false);
+  const [pkgMonth, setPkgMonth] = useState<string>(currentYearMonth);
+  const [pkgDurationDays, setPkgDurationDays] = useState<string>('35');
+  const [pkgNotes, setPkgNotes] = useState<string>('');
+  const [savingPackage, setSavingPackage] = useState<boolean>(false);
+
+  const [pkgListFilter, setPkgListFilter] = useState<'all' | 'this_month'>('all');
+  const [editingPackageId, setEditingPackageId] = useState<number | null>(null);
+  const [editPkgName, setEditPkgName] = useState<string>('');
+  const [editPkgTotal, setEditPkgTotal] = useState<string>('');
+  const [editPkgRemaining, setEditPkgRemaining] = useState<string>('');
+  const [editPkgMonth, setEditPkgMonth] = useState<string>('');
+  const [editPkgNotes, setEditPkgNotes] = useState<string>('');
+  const [editPkgActive, setEditPkgActive] = useState<boolean>(true);
+  const [busyPackageActionId, setBusyPackageActionId] = useState<number | null>(null);
 
   // Sekme 4B: Ders Seansı Oluşturma State
   const upcomingDates = useMemo(() => getUpcomingIsoDates(10), []);
@@ -233,7 +274,7 @@ export function AdminControlScreen({
           trainersRes,
           membersRes,
           sessionsRes,
-          paymentsRes,
+          packagesRes,
         ] = await Promise.allSettled([
           authRequest<AdminSystemOverview>('/admin/overview'),
           authRequest<AdminPanelConfig>('/admin/panels'),
@@ -241,7 +282,7 @@ export function AdminControlScreen({
           authRequest<AdminTrainerItem[]>('/admin/trainers'),
           authRequest<AdminMemberItem[]>('/admin/members'),
           authRequest<AdminClassSessionItem[]>('/admin/sessions'),
-          authRequest<AdminPaymentItem[]>('/admin/payments'),
+          authRequest<AdminMemberPackageItem[]>('/admin/member-packages'),
         ]);
 
         if (overviewRes.status === 'fulfilled' && overviewRes.value) {
@@ -283,19 +324,17 @@ export function AdminControlScreen({
           setSelectedPreviewMemberId((prev) =>
             prev && list.some((m) => m.id === prev) ? prev : list[0]?.id ?? null
           );
+          setPkgMemberId((prev) =>
+            prev && list.some((m) => m.id === prev) ? prev : list[0]?.id ?? null
+          );
         }
 
         if (sessionsRes.status === 'fulfilled' && Array.isArray(sessionsRes.value)) {
           setSessions(sessionsRes.value);
         }
 
-        if (paymentsRes.status === 'fulfilled' && Array.isArray(paymentsRes.value)) {
-          setPayments(paymentsRes.value);
-        } else if (
-          overviewRes.status === 'fulfilled' &&
-          Array.isArray(overviewRes.value?.recent_payments)
-        ) {
-          setPayments(overviewRes.value.recent_payments);
+        if (packagesRes.status === 'fulfilled' && Array.isArray(packagesRes.value)) {
+          setMemberPackages(packagesRes.value);
         }
       } catch (err: any) {
         showNotice('error', err?.message || 'Yönetim verileri yüklenirken hata oluştu.');
@@ -604,9 +643,10 @@ export function AdminControlScreen({
           username: memUsername.trim() || undefined,
           password: memPassword.trim() || undefined,
           notes: memNotes.trim() || '',
-          package_name: memPackageName.trim() || '8 Seans Grup Reformer Paketi',
+          package_name: memPackageName.trim() || '8 Seans Grup Reformer',
+          package_month: memPackageMonth.trim() || currentYearMonth,
           credits: parsedCredits,
-          duration_days: 45,
+          duration_days: 35,
         }),
       });
       setMemFullName('');
@@ -631,7 +671,9 @@ export function AdminControlScreen({
     memEmail,
     memFullName,
     memNotes,
+    memPackageMonth,
     memPackageName,
+    currentYearMonth,
     memPassword,
     memPhone,
     memUsername,
@@ -790,6 +832,167 @@ export function AdminControlScreen({
     [authRequest, loadAllAdminData, notifySystemUpdated, showNotice]
   );
 
+  const handleAssignPackageToMember = useCallback(async () => {
+    const targetMemberId = pkgMemberId ?? members[0]?.id ?? null;
+    if (!targetMemberId) {
+      showNotice('error', 'Lütfen paket tanımlanacak bir müşteri seçin.');
+      return;
+    }
+    const cleanName = pkgName.trim();
+    if (!cleanName) {
+      showNotice('error', 'Paket adı zorunludur.');
+      return;
+    }
+    const totalNum = parseInt(pkgTotalCredits, 10);
+    if (Number.isNaN(totalNum) || totalNum <= 0) {
+      showNotice('error', 'Toplam ders sayısı 0’dan büyük olmalıdır.');
+      return;
+    }
+    const remRaw = parseInt(pkgRemainingCredits, 10);
+    const remainingNum = Number.isNaN(remRaw)
+      ? totalNum
+      : Math.max(0, Math.min(totalNum, remRaw));
+    const cleanMonth = pkgMonth.trim() || currentYearMonth;
+    const durationNum = Math.max(1, parseInt(pkgDurationDays || '35', 10) || 35);
+
+    setSavingPackage(true);
+    try {
+      await authRequest(`/admin/members/${targetMemberId}/packages`, {
+        method: 'POST',
+        body: JSON.stringify({
+          package_name: cleanName,
+          total_credits: totalNum,
+          remaining_credits: remainingNum,
+          package_month: cleanMonth,
+          duration_days: durationNum,
+          package_notes: pkgNotes.trim() || undefined,
+          deactivate_previous: true,
+        }),
+      });
+      const targetMember = members.find((m) => m.id === targetMemberId);
+      setPkgNotes('');
+      setPkgRemainingTouched(false);
+      await loadAllAdminData(true);
+      notifySystemUpdated();
+      showNotice(
+        'success',
+        `${targetMember?.full_name || 'Müşteri'} için ${formatPackageMonthTr(cleanMonth)} dönemine ${cleanName} (${remainingNum}/${totalNum} ders) tanımlandı.`
+      );
+    } catch (err: any) {
+      showNotice('error', err?.message || 'Paket tanımlanamadı.');
+    } finally {
+      setSavingPackage(false);
+    }
+  }, [
+    authRequest,
+    currentYearMonth,
+    loadAllAdminData,
+    members,
+    notifySystemUpdated,
+    pkgDurationDays,
+    pkgMemberId,
+    pkgMonth,
+    pkgName,
+    pkgNotes,
+    pkgRemainingCredits,
+    pkgTotalCredits,
+    showNotice,
+  ]);
+
+  const handleQuickAdjustPackageCredits = useCallback(
+    async (pkg: AdminMemberPackageItem, delta: number) => {
+      const nextRemaining = Math.max(0, (pkg.remaining_credits || 0) + delta);
+      const nextTotal = Math.max(pkg.total_credits || 0, nextRemaining);
+      setBusyPackageActionId(pkg.id);
+      try {
+        await authRequest<AdminMemberPackageItem>(`/admin/member-packages/${pkg.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            remaining_credits: nextRemaining,
+            total_credits: nextTotal,
+          }),
+        });
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice(
+          'success',
+          `${pkg.member_name} paketi güncellendi (Kalan: ${nextRemaining}/${nextTotal} ders).`
+        );
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Paket dersi güncellenemedi.');
+      } finally {
+        setBusyPackageActionId(null);
+      }
+    },
+    [authRequest, loadAllAdminData, notifySystemUpdated, showNotice]
+  );
+
+  const handleSavePackageEdit = useCallback(
+    async (pkg: AdminMemberPackageItem) => {
+      const parsedTotal = parseInt(editPkgTotal, 10);
+      const parsedRem = parseInt(editPkgRemaining, 10);
+      const totalVal =
+        Number.isNaN(parsedTotal) || parsedTotal < 1 ? pkg.total_credits : parsedTotal;
+      const remVal = Number.isNaN(parsedRem)
+        ? pkg.remaining_credits
+        : Math.max(0, parsedRem);
+
+      setBusyPackageActionId(pkg.id);
+      try {
+        await authRequest<AdminMemberPackageItem>(`/admin/member-packages/${pkg.id}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            package_name: editPkgName.trim() || pkg.package_name,
+            total_credits: Math.max(totalVal, remVal),
+            remaining_credits: remVal,
+            package_month: editPkgMonth.trim() || pkg.package_month || currentYearMonth,
+            package_notes: editPkgNotes.trim(),
+            is_active: editPkgActive,
+          }),
+        });
+        setEditingPackageId(null);
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', `${pkg.member_name} paket kaydı güncellendi.`);
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Paket güncellenemedi.');
+      } finally {
+        setBusyPackageActionId(null);
+      }
+    },
+    [
+      authRequest,
+      currentYearMonth,
+      editPkgActive,
+      editPkgMonth,
+      editPkgName,
+      editPkgNotes,
+      editPkgRemaining,
+      editPkgTotal,
+      loadAllAdminData,
+      notifySystemUpdated,
+      showNotice,
+    ]
+  );
+
+  const handleDeletePackage = useCallback(
+    async (pkg: AdminMemberPackageItem) => {
+      setBusyPackageActionId(pkg.id);
+      try {
+        await authRequest(`/admin/member-packages/${pkg.id}`, { method: 'DELETE' });
+        if (editingPackageId === pkg.id) setEditingPackageId(null);
+        await loadAllAdminData(true);
+        notifySystemUpdated();
+        showNotice('success', `${pkg.member_name} — ${pkg.package_name} kaydı silindi.`);
+      } catch (err: any) {
+        showNotice('error', err?.message || 'Paket silinemedi.');
+      } finally {
+        setBusyPackageActionId(null);
+      }
+    },
+    [authRequest, editingPackageId, loadAllAdminData, notifySystemUpdated, showNotice]
+  );
+
   const filteredMembers = useMemo(() => {
     const q = memberSearch.trim().toLocaleLowerCase('tr-TR');
     if (!q) return members;
@@ -802,6 +1005,39 @@ export function AdminControlScreen({
         (m.notes || '').toLocaleLowerCase('tr-TR').includes(q)
     );
   }, [memberSearch, members]);
+
+  const filteredPkgMembers = useMemo(() => {
+    const q = pkgMemberSearch.trim().toLocaleLowerCase('tr-TR');
+    if (!q) return members;
+    return members.filter(
+      (m) =>
+        m.full_name.toLocaleLowerCase('tr-TR').includes(q) ||
+        (m.phone || '').toLocaleLowerCase('tr-TR').includes(q) ||
+        (m.access_code || '').toLocaleLowerCase('tr-TR').includes(q)
+    );
+  }, [members, pkgMemberSearch]);
+
+  const filteredPackages = useMemo(() => {
+    const base =
+      pkgListFilter === 'this_month'
+        ? memberPackages.filter((p) => {
+            const m =
+              (p.package_month && p.package_month.trim()) ||
+              (p.created_at && /^\d{4}-\d{2}/.test(p.created_at)
+                ? p.created_at.slice(0, 7)
+                : '');
+            return m === currentYearMonth;
+          })
+        : memberPackages;
+
+    return [...base].sort((a, b) => {
+      if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+      const ma = a.package_month || '';
+      const mb = b.package_month || '';
+      if (ma !== mb) return mb.localeCompare(ma);
+      return b.id - a.id;
+    });
+  }, [currentYearMonth, memberPackages, pkgListFilter]);
 
   // ---------------------------------------------------------------------------
   // SEKME RENDER FONKSİYONLARI
@@ -938,7 +1174,7 @@ export function AdminControlScreen({
           <View style={{ flex: 1 }}>
             <Text style={styles.cardTitle}>Panel & Modül Yetki Ayarları</Text>
             <Text style={styles.cardSub}>
-              Uygulama genelindeki giriş, rezervasyon, satın alma ve duyuru bandı ayarlarını yönetin.
+              Uygulama genelindeki giriş, rezervasyon ve duyuru bandı ayarlarını yönetin.
             </Text>
           </View>
         </View>
@@ -963,11 +1199,6 @@ export function AdminControlScreen({
             key: 'allow_member_booking' as const,
             title: 'Online Ders Rezervasyonu',
             desc: 'Üyelerin uygulama içinden ders seçip kredi kullanabilmesi',
-          },
-          {
-            key: 'allow_package_purchase' as const,
-            title: 'Online Paket Satın Alma',
-            desc: 'Üyelerin ödeme sayfasına yönlendirilerek paket yenileyebilmesi',
           },
           {
             key: 'studio_banner_enabled' as const,
@@ -1427,19 +1658,21 @@ export function AdminControlScreen({
           </Text>
         </View>
         <View style={styles.kpiBox}>
-          <Text style={styles.kpiLabel}>PAKET SATIŞ CİROSU</Text>
+          <Text style={styles.kpiLabel}>AKTİF PAKETLER</Text>
           <Text style={[styles.kpiVal, { color: UI.goldBright }]}>
-            {(overview?.total_revenue_try ?? 0).toLocaleString('tr-TR')} TL
+            {overview?.active_packages_count ??
+              memberPackages.filter((p) => p.is_active).length}{' '}
+            Aktif • {memberPackages.length} Kayıt
           </Text>
         </View>
       </View>
 
-      {/* Alt Bölüm Seçici: Müşteriler | Ders Programı | Paket Ödemeleri */}
+      {/* Alt Bölüm Seçici: Müşteriler | Ders Programı | Aylık Paket Yönetimi */}
       <View style={styles.subSegmentBar}>
         {[
           { key: 'musteriler' as const, label: `Müşteriler (${members.length})`, Icon: Users },
           { key: 'dersler' as const, label: `Seanslar (${sessions.length})`, Icon: Calendar },
-          { key: 'odemeler' as const, label: `Ödemeler (${payments.length})`, Icon: CreditCard },
+          { key: 'paketler' as const, label: `Paketler (${memberPackages.length})`, Icon: Package },
         ].map((seg) => {
           const active = systemSubTab === seg.key;
           const SegIcon = seg.Icon;
@@ -1549,8 +1782,8 @@ export function AdminControlScreen({
                     style={styles.input}
                   />
                 </View>
-                <View style={{ width: 110 }}>
-                  <Text style={styles.inputLabel}>Ders Kredisi</Text>
+                <View style={{ width: 92 }}>
+                  <Text style={styles.inputLabel}>Ders Sayısı</Text>
                   <TextInput
                     value={memCredits}
                     onChangeText={setMemCredits}
@@ -1559,6 +1792,24 @@ export function AdminControlScreen({
                     placeholderTextColor={UI.textMuted}
                     style={styles.input}
                   />
+                </View>
+              </View>
+
+              <View style={[styles.twoCol, { marginTop: 8 }]}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.inputLabel}>Aldığı Ay / Dönem (YYYY-MM)</Text>
+                  <TextInput
+                    value={memPackageMonth}
+                    onChangeText={setMemPackageMonth}
+                    placeholder={currentYearMonth}
+                    placeholderTextColor={UI.textMuted}
+                    style={styles.input}
+                  />
+                </View>
+                <View style={{ flex: 1, justifyContent: 'flex-end', paddingBottom: 10 }}>
+                  <Text style={styles.dateMetaText}>
+                    Dönem: {formatPackageMonthTr(memPackageMonth)}
+                  </Text>
                 </View>
               </View>
 
@@ -1653,6 +1904,7 @@ export function AdminControlScreen({
 
                 <Text style={styles.packageMetaLine}>
                   Paket: {m.package_name || 'Aktif Paket Yok'}
+                  {m.package_month ? ` • Dönem: ${formatPackageMonthTr(m.package_month)}` : ''}
                   {m.expiry_date ? ` • Bitiş: ${m.expiry_date}` : ''} • Randevu:{' '}
                   {m.upcoming_bookings_count ?? 0}
                 </Text>
@@ -1663,8 +1915,22 @@ export function AdminControlScreen({
                   </View>
                 ) : null}
 
-                {/* Hızlı Kredi Artır / Azalt ve Paneli Aç Aksiyonları */}
+                {/* Hızlı Paket Tanımla, Kredi Artır / Azalt ve Paneli Aç Aksiyonları */}
                 <View style={styles.itemActionsRow}>
+                  <TouchableOpacity
+                    style={[styles.smallBtn, styles.smallBtnGold]}
+                    onPress={() => {
+                      setPkgMemberId(m.id);
+                      setPkgMemberSearch('');
+                      setSystemSubTab('paketler');
+                    }}
+                  >
+                    <Package size={12} color={UI.goldBright} />
+                    <Text style={[styles.smallBtnText, { color: UI.goldBright }]}>
+                      Paket Tanımla
+                    </Text>
+                  </TouchableOpacity>
+
                   <TouchableOpacity
                     style={styles.smallBtn}
                     disabled={isBusy}
@@ -1943,42 +2209,516 @@ export function AdminControlScreen({
         </View>
       )}
 
-      {/* 4C: SON PAKET ÖDEMELERİ */}
-      {systemSubTab === 'odemeler' && (
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Son Paket Ödemeleri ({payments.length})</Text>
-          <Text style={styles.cardSub}>
-            Online ödeme geçidi üzerinden veya stüdyodan gerçekleşen paket satın alımları.
-          </Text>
+      {/* 4C: MÜŞTERİ PAKET YÖNETİMİ (AYLIK PAKET TANIMLAMA) */}
+      {systemSubTab === 'paketler' && (
+        <View style={styles.sectionStack}>
+          {/* ÜST KART: MÜŞTERİYE PAKET TANIMLA FORMU */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={[styles.iconBox, { backgroundColor: UI.goldSoft }]}>
+                <Package size={18} color={UI.goldBright} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>Müşteriye Paket Tanımla</Text>
+                <Text style={styles.cardSub}>
+                  Müşterinin o ay aldığı ders paketini, ders adedini ve geçerlilik süresini
+                  buradan tanımlayın.
+                </Text>
+              </View>
+            </View>
 
-          {payments.length === 0 ? (
-            <Text style={styles.emptyListText}>Henüz ödeme hareketi bulunmuyor.</Text>
-          ) : (
-            payments.map((p) => {
-              const amountVal = p.amount_try ?? p.amount ?? 0;
-              return (
-                <View key={`${p.id}-${p.transaction_code || p.session_id}`} style={styles.listItemCard}>
-                  <View style={styles.listItemTopRow}>
-                    <View style={{ flex: 1 }}>
-                      <Text style={styles.listItemTitle}>
-                        {p.member_name || `Üye #${p.member_id}`}
-                      </Text>
-                      <Text style={styles.metaLine}>
-                        {p.package_name || p.plan_name || 'Ders Paketi'}
-                      </Text>
-                    </View>
-                    <Text style={[styles.listItemTitle, { color: UI.emerald }]}>
-                      {amountVal.toLocaleString('tr-TR')} TL
+            {/* Müşteri Seçici */}
+            <Text style={styles.inputLabel}>Müşteri Seçin *</Text>
+            <View style={[styles.searchBar, { marginBottom: 4 }]}>
+              <Search size={15} color={UI.textMuted} />
+              <TextInput
+                value={pkgMemberSearch}
+                onChangeText={setPkgMemberSearch}
+                placeholder="Müşteri adı, telefon veya kod ile filtrele..."
+                placeholderTextColor={UI.textMuted}
+                style={styles.searchInput}
+              />
+              {pkgMemberSearch ? (
+                <TouchableOpacity onPress={() => setPkgMemberSearch('')}>
+                  <X size={14} color={UI.textSec} />
+                </TouchableOpacity>
+              ) : null}
+            </View>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.pillsRow}
+            >
+              {filteredPkgMembers.map((m) => {
+                const selected = (pkgMemberId ?? members[0]?.id) === m.id;
+                return (
+                  <TouchableOpacity
+                    key={m.id}
+                    style={[styles.selectChip, selected && styles.selectChipGold]}
+                    onPress={() => setPkgMemberId(m.id)}
+                    activeOpacity={0.82}
+                  >
+                    <Text
+                      style={[
+                        styles.selectChipText,
+                        selected && { color: UI.goldBright, fontWeight: '800' },
+                      ]}
+                    >
+                      {m.full_name} ({m.remaining_credits}/{m.total_credits})
                     </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            {/* Hızlı Hazır Paket Seçenekleri */}
+            <Text style={[styles.inputLabel, { marginTop: 6 }]}>Hızlı Paket Şablonları</Text>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.pillsRow}
+            >
+              {PACKAGE_PRESETS.map((preset) => {
+                const active = pkgName.trim() === preset.name;
+                return (
+                  <TouchableOpacity
+                    key={preset.name}
+                    style={[styles.selectChip, active && styles.selectChipIndigo]}
+                    onPress={() => {
+                      setPkgName(preset.name);
+                      setPkgTotalCredits(String(preset.credits));
+                      setPkgRemainingCredits(String(preset.credits));
+                      setPkgRemainingTouched(false);
+                      setPkgDurationDays(String(preset.durationDays));
+                    }}
+                    activeOpacity={0.82}
+                  >
+                    <Text
+                      style={[
+                        styles.selectChipText,
+                        active && { color: UI.indigo, fontWeight: '800' },
+                      ]}
+                    >
+                      {preset.name}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <Text style={[styles.inputLabel, { marginTop: 6 }]}>Paket Adı *</Text>
+            <TextInput
+              value={pkgName}
+              onChangeText={setPkgName}
+              placeholder="Örn: 8 Seans Grup Reformer"
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+
+            {/* Ders Sayısı & Geçerlilik */}
+            <View style={[styles.twoCol, { marginTop: 10 }]}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Toplam Ders *</Text>
+                <TextInput
+                  value={pkgTotalCredits}
+                  onChangeText={(val) => {
+                    setPkgTotalCredits(val);
+                    if (!pkgRemainingTouched) {
+                      setPkgRemainingCredits(val);
+                    }
+                  }}
+                  keyboardType="number-pad"
+                  placeholder="8"
+                  placeholderTextColor={UI.textMuted}
+                  style={styles.input}
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.inputLabel}>Kalan Ders</Text>
+                <TextInput
+                  value={pkgRemainingCredits}
+                  onChangeText={(val) => {
+                    setPkgRemainingCredits(val);
+                    setPkgRemainingTouched(true);
+                  }}
+                  keyboardType="number-pad"
+                  placeholder="8"
+                  placeholderTextColor={UI.textMuted}
+                  style={styles.input}
+                />
+              </View>
+              <View style={{ width: 92 }}>
+                <Text style={styles.inputLabel}>Süre (Gün)</Text>
+                <TextInput
+                  value={pkgDurationDays}
+                  onChangeText={setPkgDurationDays}
+                  keyboardType="number-pad"
+                  placeholder="35"
+                  placeholderTextColor={UI.textMuted}
+                  style={styles.input}
+                />
+              </View>
+            </View>
+
+            {/* Aldığı Ay / Dönem */}
+            <View style={[styles.monthLabelRow, { marginTop: 12 }]}>
+              <Text style={[styles.inputLabel, { marginBottom: 0 }]}>
+                Aldığı Ay / Dönem (YYYY-MM)
+              </Text>
+              <Text style={styles.monthPreviewBadge}>
+                {formatPackageMonthTr(pkgMonth)}
+              </Text>
+            </View>
+
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.pillsRow}
+            >
+              {[
+                { label: `Önceki Ay (${formatPackageMonthTr(prevYearMonth)})`, value: prevYearMonth },
+                { label: `Bu Ay (${formatPackageMonthTr(currentYearMonth)})`, value: currentYearMonth },
+                { label: `Gelecek Ay (${formatPackageMonthTr(nextYearMonth)})`, value: nextYearMonth },
+              ].map((opt) => {
+                const active = pkgMonth.trim() === opt.value;
+                return (
+                  <TouchableOpacity
+                    key={opt.value}
+                    style={[styles.selectChip, active && styles.selectChipGold]}
+                    onPress={() => setPkgMonth(opt.value)}
+                    activeOpacity={0.82}
+                  >
+                    <Text
+                      style={[
+                        styles.selectChipText,
+                        active && { color: UI.goldBright, fontWeight: '800' },
+                      ]}
+                    >
+                      {opt.label}
+                    </Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+
+            <TextInput
+              value={pkgMonth}
+              onChangeText={setPkgMonth}
+              placeholder={currentYearMonth}
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+
+            {/* Paket Notu */}
+            <Text style={[styles.inputLabel, { marginTop: 10 }]}>
+              Paket Notu / Bilgisi (Opsiyonel)
+            </Text>
+            <TextInput
+              value={pkgNotes}
+              onChangeText={setPkgNotes}
+              placeholder="Örn: Kasım ayı haftada 2 gün Reformer"
+              placeholderTextColor={UI.textMuted}
+              style={styles.input}
+            />
+
+            <TouchableOpacity
+              style={[styles.actionBtn, { marginTop: 16 }]}
+              onPress={handleAssignPackageToMember}
+              disabled={savingPackage}
+              activeOpacity={0.86}
+            >
+              {savingPackage ? (
+                <ActivityIndicator size="small" color={UI.darkInk} />
+              ) : (
+                <>
+                  <Package size={16} color={UI.darkInk} />
+                  <Text style={styles.actionBtnText}>Paketi Müşteriye Tanımla</Text>
+                </>
+              )}
+            </TouchableOpacity>
+          </View>
+
+          {/* ALT KART: AY FİLTRELİ TANIMLI MÜŞTERİ PAKETLERİ LİSTESİ */}
+          <View style={styles.card}>
+            <View style={styles.cardHeader}>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.cardTitle}>
+                  Tanımlı Müşteri Paketleri ({filteredPackages.length})
+                </Text>
+                <Text style={styles.cardSub}>
+                  Müşterilere tanımlanan tüm aylık paketleri görüntüleyin, kalan dersleri
+                  güncelleyin veya kaldırın.
+                </Text>
+              </View>
+            </View>
+
+            {/* Ay Filtre Çipleri */}
+            <View style={styles.filterPillsRow}>
+              <TouchableOpacity
+                style={[
+                  styles.selectChip,
+                  pkgListFilter === 'all' && styles.selectChipGold,
+                ]}
+                onPress={() => setPkgListFilter('all')}
+                activeOpacity={0.82}
+              >
+                <Text
+                  style={[
+                    styles.selectChipText,
+                    pkgListFilter === 'all' && {
+                      color: UI.goldBright,
+                      fontWeight: '800',
+                    },
+                  ]}
+                >
+                  Tümü ({memberPackages.length})
+                </Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.selectChip,
+                  pkgListFilter === 'this_month' && styles.selectChipGold,
+                ]}
+                onPress={() => setPkgListFilter('this_month')}
+                activeOpacity={0.82}
+              >
+                <Text
+                  style={[
+                    styles.selectChipText,
+                    pkgListFilter === 'this_month' && {
+                      color: UI.goldBright,
+                      fontWeight: '800',
+                    },
+                  ]}
+                >
+                  Bu Ay • {formatPackageMonthTr(currentYearMonth)}
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {filteredPackages.length === 0 ? (
+              <Text style={styles.emptyListText}>
+                {pkgListFilter === 'this_month'
+                  ? `${formatPackageMonthTr(currentYearMonth)} ayı için tanımlanmış paket kaydı bulunmuyor.`
+                  : 'Henüz tanımlanmış müşteri paketi bulunmuyor.'}
+              </Text>
+            ) : (
+              filteredPackages.map((pkg) => {
+                const isEditingPkg = editingPackageId === pkg.id;
+                const isBusyPkg = busyPackageActionId === pkg.id;
+                const usedCount =
+                  typeof pkg.used_credits === 'number'
+                    ? pkg.used_credits
+                    : Math.max(0, pkg.total_credits - pkg.remaining_credits);
+
+                return (
+                  <View
+                    key={pkg.id}
+                    style={[
+                      styles.listItemCard,
+                      pkg.is_active && { borderColor: UI.goldBorder },
+                    ]}
+                  >
+                    <View style={styles.listItemTopRow}>
+                      <View style={{ flex: 1 }}>
+                        <View style={styles.rowWrap}>
+                          <Text style={styles.listItemTitle}>
+                            {pkg.member_name || `Üye #${pkg.member_id}`}
+                          </Text>
+                          <View
+                            style={[
+                              styles.statusPill,
+                              pkg.is_active
+                                ? styles.statusPillActive
+                                : styles.statusPillInactive,
+                            ]}
+                          >
+                            <Text
+                              style={[
+                                styles.statusPillText,
+                                {
+                                  color: pkg.is_active ? UI.emerald : UI.textMuted,
+                                },
+                              ]}
+                            >
+                              {pkg.is_active ? 'Aktif' : 'Pasif'}
+                            </Text>
+                          </View>
+                          {pkg.package_month ? (
+                            <View style={styles.pinnedPill}>
+                              <Calendar size={10} color={UI.goldBright} />
+                              <Text style={styles.pinnedPillText}>
+                                {formatPackageMonthTr(pkg.package_month)}
+                              </Text>
+                            </View>
+                          ) : null}
+                        </View>
+
+                        <Text style={styles.metaLine}>{pkg.package_name}</Text>
+                      </View>
+
+                      <View style={styles.creditCountBadge}>
+                        <Text
+                          style={[
+                            styles.creditCountValue,
+                            pkg.remaining_credits <= 2 && { color: UI.amber },
+                          ]}
+                        >
+                          {pkg.remaining_credits}/{pkg.total_credits}
+                        </Text>
+                        <Text style={styles.creditCountLabel}>DERS</Text>
+                      </View>
+                    </View>
+
+                    <Text style={styles.dateMetaText}>
+                      Kullanılan: {usedCount} Ders • Bitiş: {pkg.expiry_date}
+                    </Text>
+
+                    {pkg.package_notes && pkg.package_notes.trim().length > 0 ? (
+                      <View style={styles.healthNoteBox}>
+                        <Text style={styles.healthNoteText}>
+                          Paket Notu: {pkg.package_notes}
+                        </Text>
+                      </View>
+                    ) : null}
+
+                    <View style={styles.itemActionsRow}>
+                      <TouchableOpacity
+                        style={styles.smallBtn}
+                        disabled={isBusyPkg}
+                        onPress={() => handleQuickAdjustPackageCredits(pkg, 1)}
+                      >
+                        <Text style={[styles.smallBtnText, { color: UI.emerald }]}>
+                          +1 Ders
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.smallBtn}
+                        disabled={isBusyPkg}
+                        onPress={() => handleQuickAdjustPackageCredits(pkg, -1)}
+                      >
+                        <Text style={[styles.smallBtnText, { color: UI.amber }]}>
+                          -1 Ders
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={styles.smallBtn}
+                        onPress={() => {
+                          if (isEditingPkg) {
+                            setEditingPackageId(null);
+                          } else {
+                            setEditingPackageId(pkg.id);
+                            setEditPkgName(pkg.package_name);
+                            setEditPkgTotal(String(pkg.total_credits));
+                            setEditPkgRemaining(String(pkg.remaining_credits));
+                            setEditPkgMonth(pkg.package_month || currentYearMonth);
+                            setEditPkgNotes(pkg.package_notes || '');
+                            setEditPkgActive(Boolean(pkg.is_active));
+                          }
+                        }}
+                      >
+                        <Edit3 size={12} color={UI.indigo} />
+                        <Text style={[styles.smallBtnText, { color: UI.indigo }]}>
+                          {isEditingPkg ? 'Kapat' : 'Düzenle'}
+                        </Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity
+                        style={[styles.smallBtn, styles.smallBtnDanger]}
+                        disabled={isBusyPkg}
+                        onPress={() => handleDeletePackage(pkg)}
+                      >
+                        <Trash2 size={12} color={UI.danger} />
+                        <Text style={[styles.smallBtnText, { color: UI.danger }]}>Sil</Text>
+                      </TouchableOpacity>
+                    </View>
+
+                    {isEditingPkg && (
+                      <View style={styles.memberEditDrawer}>
+                        <Text style={styles.inputLabel}>Paket Adı</Text>
+                        <TextInput
+                          value={editPkgName}
+                          onChangeText={setEditPkgName}
+                          style={styles.input}
+                        />
+
+                        <View style={[styles.twoCol, { marginTop: 8 }]}>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.inputLabel}>Kalan Ders</Text>
+                            <TextInput
+                              value={editPkgRemaining}
+                              onChangeText={setEditPkgRemaining}
+                              keyboardType="number-pad"
+                              style={styles.input}
+                            />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.inputLabel}>Toplam Ders</Text>
+                            <TextInput
+                              value={editPkgTotal}
+                              onChangeText={setEditPkgTotal}
+                              keyboardType="number-pad"
+                              style={styles.input}
+                            />
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.inputLabel}>Ay (YYYY-MM)</Text>
+                            <TextInput
+                              value={editPkgMonth}
+                              onChangeText={setEditPkgMonth}
+                              placeholder={currentYearMonth}
+                              placeholderTextColor={UI.textMuted}
+                              style={styles.input}
+                            />
+                          </View>
+                        </View>
+
+                        <Text style={[styles.inputLabel, { marginTop: 8 }]}>Paket Notu</Text>
+                        <TextInput
+                          value={editPkgNotes}
+                          onChangeText={setEditPkgNotes}
+                          placeholder="Paket notu..."
+                          placeholderTextColor={UI.textMuted}
+                          style={styles.input}
+                        />
+
+                        <View
+                          style={[
+                            styles.toggleRow,
+                            { borderBottomWidth: 0, paddingVertical: 8 },
+                          ]}
+                        >
+                          <Text style={styles.toggleTitle}>Aktif Paket</Text>
+                          <Switch
+                            value={editPkgActive}
+                            onValueChange={setEditPkgActive}
+                            trackColor={{ false: '#26344E', true: UI.gold }}
+                            thumbColor="#FFFFFF"
+                          />
+                        </View>
+
+                        <TouchableOpacity
+                          style={[styles.actionBtn, { marginTop: 6, minHeight: 42 }]}
+                          onPress={() => handleSavePackageEdit(pkg)}
+                          disabled={isBusyPkg}
+                        >
+                          {isBusyPkg ? (
+                            <ActivityIndicator size="small" color={UI.darkInk} />
+                          ) : (
+                            <Text style={styles.actionBtnText}>Değişiklikleri Kaydet</Text>
+                          )}
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
-                  <Text style={styles.dateMetaText}>
-                    Durum: {p.status} • Kod: {p.transaction_code || p.session_id || `#${p.id}`} •{' '}
-                    {p.created_at}
-                  </Text>
-                </View>
-              );
-            })
-          )}
+                );
+              })
+            )}
+          </View>
         </View>
       )}
     </View>
@@ -2613,9 +3353,50 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 9,
   },
+  smallBtnGold: {
+    backgroundColor: UI.goldSoft,
+    borderColor: UI.goldBorder,
+  },
   smallBtnDanger: {
     backgroundColor: UI.dangerSoft,
     borderColor: 'rgba(248, 113, 113, 0.25)',
+  },
+  monthLabelRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+  },
+  monthPreviewBadge: {
+    fontFamily: FONTS.sans,
+    color: UI.goldBright,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  filterPillsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 4,
+  },
+  statusPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+    borderWidth: 1,
+  },
+  statusPillActive: {
+    backgroundColor: UI.emeraldSoft,
+    borderColor: 'rgba(52, 211, 153, 0.35)',
+  },
+  statusPillInactive: {
+    backgroundColor: UI.input,
+    borderColor: UI.border,
+  },
+  statusPillText: {
+    fontFamily: FONTS.sans,
+    fontSize: 10.5,
+    fontWeight: '800',
   },
   smallBtnText: {
     fontFamily: FONTS.sans,

@@ -3,7 +3,39 @@ const MONTHS_TR = [
   'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara',
 ];
 
+const MONTHS_FULL_TR = [
+  'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
+  'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık',
+];
+
 const DAYS_TR = ['Paz', 'Pzt', 'Sal', 'Çar', 'Per', 'Cum', 'Cmt'];
+
+export function getCurrentYearMonth(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
+export function shiftYearMonth(ym: string, deltaMonths: number): string {
+  const parts = (ym || '').split('-');
+  const year = parseInt(parts[0] || '', 10) || new Date().getFullYear();
+  const monthIdx = (parseInt(parts[1] || '', 10) || 1) - 1;
+  const date = new Date(year, monthIdx + deltaMonths, 1);
+  const nextY = date.getFullYear();
+  const nextM = String(date.getMonth() + 1).padStart(2, '0');
+  return `${nextY}-${nextM}`;
+}
+
+export function formatPackageMonthTr(ym?: string | null): string {
+  if (!ym) return 'Dönem Belirtilmedi';
+  const match = /^(\d{4})-(\d{2})$/.exec(ym.trim());
+  if (!match) return ym;
+  const year = parseInt(match[1], 10);
+  const monthNum = parseInt(match[2], 10);
+  if (!year || monthNum < 1 || monthNum > 12) return ym;
+  return `${MONTHS_FULL_TR[monthNum - 1]} ${year}`;
+}
 
 function toLocalMidnight(dateStr: string): Date {
   const [y, m, d] = dateStr.split('-').map(Number);

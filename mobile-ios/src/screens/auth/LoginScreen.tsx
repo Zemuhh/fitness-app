@@ -13,14 +13,8 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
   AlertCircle,
-  ArrowLeft,
   ArrowRight,
-  Eye,
-  EyeOff,
   KeyRound,
-  Lock,
-  ShieldCheck,
-  User,
   X,
 } from 'lucide-react-native';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
@@ -55,28 +49,14 @@ const PALETTE = {
   dangerBorder: 'rgba(224, 122, 116, 0.28)',
 };
 
-type LoginMode = 'code' | 'admin';
-type FocusField = 'accessCode' | 'identifier' | 'password' | null;
-
 export function LoginScreen() {
-  const { loginWithAccessCode, loginWithPassword, panelConfig } = useAuthDemo();
+  const { loginWithAccessCode, panelConfig } = useAuthDemo();
 
-  const [mode, setMode] = useState<LoginMode>('code');
   const [accessCode, setAccessCode] = useState<string>('');
-  const [identifier, setIdentifier] = useState<string>('');
-  const [password, setPassword] = useState<string>('');
-  const [showPassword, setShowPassword] = useState<boolean>(false);
-
-  const [focusedField, setFocusedField] = useState<FocusField>(null);
+  const [isFocused, setIsFocused] = useState<boolean>(false);
   const [submitting, setSubmitting] = useState<boolean>(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [legalModalTab, setLegalModalTab] = useState<LegalDocumentTab | null>(null);
-
-  const switchMode = useCallback((nextMode: LoginMode) => {
-    setMode(nextMode);
-    setErrorMessage(null);
-    setFocusedField(null);
-  }, []);
 
   const handleCodeLogin = useCallback(async () => {
     const cleanCode = accessCode.trim().toUpperCase();
@@ -98,30 +78,6 @@ export function LoginScreen() {
     }
   }, [accessCode, loginWithAccessCode]);
 
-  const handleAdminLogin = useCallback(async () => {
-    const cleanId = identifier.trim();
-    if (!cleanId) {
-      setErrorMessage('Lütfen yönetici kullanıcı adınızı veya e-posta adresinizi girin.');
-      return;
-    }
-    if (!password) {
-      setErrorMessage('Lütfen yönetici şifrenizi girin.');
-      return;
-    }
-
-    setSubmitting(true);
-    setErrorMessage(null);
-    try {
-      await loginWithPassword(cleanId, password);
-    } catch (err: any) {
-      setErrorMessage(
-        err?.message || 'Yönetici girişi yapılamadı. Bilgilerinizi kontrol edin.'
-      );
-    } finally {
-      setSubmitting(false);
-    }
-  }, [identifier, password, loginWithPassword]);
-
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'left', 'right', 'bottom']}>
       <KeyboardAvoidingView
@@ -137,13 +93,9 @@ export function LoginScreen() {
             <View style={styles.headerBlock}>
               <EryaBrandLogo size={44} showWordmark lightText />
 
-              <Text style={styles.title}>
-                {mode === 'code' ? 'Üye ve Eğitmen Girişi' : 'Stüdyo Yöneticisi Girişi'}
-              </Text>
+              <Text style={styles.title}>Stüdyo Girişi</Text>
               <Text style={styles.subtitle}>
-                {mode === 'code'
-                  ? 'Stüdyo yöneticiniz tarafından size özel oluşturulan erişim koduyla giriş yapın'
-                  : 'Müşteri erişim kodları ve stüdyo yönetim paneli için yönetici hesabınızla oturum açın'}
+                Stüdyo yöneticiniz tarafından size özel oluşturulan erişim koduyla giriş yapın
               </Text>
             </View>
 
@@ -162,234 +114,84 @@ export function LoginScreen() {
             ) : null}
 
             <View style={styles.card}>
-              {mode === 'code' ? (
-                <>
-                  <Text style={styles.fieldLabel}>Erişim kodu</Text>
-                  <View
-                    style={[
-                      styles.codeInputRow,
-                      focusedField === 'accessCode' && styles.inputRowFocused,
-                    ]}
-                  >
-                    <KeyRound
-                      size={18}
-                      strokeWidth={1.5}
-                      color={
-                        focusedField === 'accessCode'
-                          ? PALETTE.accent
-                          : PALETTE.textMuted
-                      }
-                    />
-                    <TextInput
-                      value={accessCode}
-                      onChangeText={(val) => {
-                        setAccessCode(val.toUpperCase());
-                        if (errorMessage) setErrorMessage(null);
-                      }}
-                      onFocus={() => setFocusedField('accessCode')}
-                      onBlur={() => setFocusedField(null)}
-                      placeholder="ERYA-4821"
-                      placeholderTextColor={PALETTE.textMuted}
-                      autoCapitalize="characters"
-                      autoCorrect={false}
-                      spellCheck={false}
-                      returnKeyType="go"
-                      onSubmitEditing={handleCodeLogin}
-                      style={styles.codeInput}
-                      accessibilityLabel="Erişim kodu"
-                    />
-                    {accessCode.length > 0 ? (
-                      <TouchableOpacity
-                        onPress={() => {
-                          setAccessCode('');
-                          if (errorMessage) setErrorMessage(null);
-                        }}
-                        hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                        accessibilityRole="button"
-                        accessibilityLabel="Kodu temizle"
-                      >
-                        <X size={16} strokeWidth={1.5} color={PALETTE.textMuted} />
-                      </TouchableOpacity>
-                    ) : null}
-                  </View>
-
-                  <Text style={styles.helperText}>
-                    Kodunuzu bilmiyorsanız stüdyo resepsiyonu veya yöneticinizden talep
-                    edebilirsiniz.
-                  </Text>
-
-                  {errorMessage ? (
-                    <View style={styles.errorBox}>
-                      <AlertCircle size={16} strokeWidth={1.5} color={PALETTE.danger} />
-                      <Text style={styles.errorText}>{errorMessage}</Text>
-                    </View>
-                  ) : null}
-
+              <Text style={styles.fieldLabel}>Erişim kodu</Text>
+              <View
+                style={[
+                  styles.codeInputRow,
+                  isFocused && styles.inputRowFocused,
+                ]}
+              >
+                <KeyRound
+                  size={18}
+                  strokeWidth={1.5}
+                  color={isFocused ? PALETTE.accent : PALETTE.textMuted}
+                />
+                <TextInput
+                  value={accessCode}
+                  onChangeText={(val) => {
+                    setAccessCode(val.toUpperCase());
+                    if (errorMessage) setErrorMessage(null);
+                  }}
+                  onFocus={() => setIsFocused(true)}
+                  onBlur={() => setIsFocused(false)}
+                  placeholder="ERYA-4821"
+                  placeholderTextColor={PALETTE.textMuted}
+                  autoCapitalize="characters"
+                  autoCorrect={false}
+                  spellCheck={false}
+                  returnKeyType="go"
+                  onSubmitEditing={handleCodeLogin}
+                  style={styles.codeInput}
+                  accessibilityLabel="Erişim kodu"
+                />
+                {accessCode.length > 0 ? (
                   <TouchableOpacity
-                    style={[styles.primaryButton, submitting && styles.buttonDisabled]}
-                    onPress={handleCodeLogin}
-                    disabled={submitting}
-                    activeOpacity={0.85}
+                    onPress={() => {
+                      setAccessCode('');
+                      if (errorMessage) setErrorMessage(null);
+                    }}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                     accessibilityRole="button"
-                    accessibilityLabel="Giriş Yap"
+                    accessibilityLabel="Kodu temizle"
                   >
-                    {submitting ? (
-                      <ActivityIndicator size="small" color={PALETTE.accentInk} />
-                    ) : (
-                      <>
-                        <Text style={styles.primaryButtonText}>Giriş Yap</Text>
-                        <ArrowRight
-                          size={18}
-                          strokeWidth={1.75}
-                          color={PALETTE.accentInk}
-                        />
-                      </>
-                    )}
+                    <X size={16} strokeWidth={1.5} color={PALETTE.textMuted} />
                   </TouchableOpacity>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.fieldLabel}>Kullanıcı adı veya e-posta</Text>
-                  <View
-                    style={[
-                      styles.inputRow,
-                      focusedField === 'identifier' && styles.inputRowFocused,
-                    ]}
-                  >
-                    <User
+                ) : null}
+              </View>
+
+              <Text style={styles.helperText}>
+                Kodunuzu bilmiyorsanız stüdyo resepsiyonu veya yöneticinizden talep
+                edebilirsiniz.
+              </Text>
+
+              {errorMessage ? (
+                <View style={styles.errorBox}>
+                  <AlertCircle size={16} strokeWidth={1.5} color={PALETTE.danger} />
+                  <Text style={styles.errorText}>{errorMessage}</Text>
+                </View>
+              ) : null}
+
+              <TouchableOpacity
+                style={[styles.primaryButton, submitting && styles.buttonDisabled]}
+                onPress={handleCodeLogin}
+                disabled={submitting}
+                activeOpacity={0.85}
+                accessibilityRole="button"
+                accessibilityLabel="Giriş Yap"
+              >
+                {submitting ? (
+                  <ActivityIndicator size="small" color={PALETTE.accentInk} />
+                ) : (
+                  <>
+                    <Text style={styles.primaryButtonText}>Giriş Yap</Text>
+                    <ArrowRight
                       size={18}
-                      strokeWidth={1.5}
-                      color={
-                        focusedField === 'identifier'
-                          ? PALETTE.accent
-                          : PALETTE.textMuted
-                      }
+                      strokeWidth={1.75}
+                      color={PALETTE.accentInk}
                     />
-                    <TextInput
-                      value={identifier}
-                      onChangeText={(val) => {
-                        setIdentifier(val);
-                        if (errorMessage) setErrorMessage(null);
-                      }}
-                      onFocus={() => setFocusedField('identifier')}
-                      onBlur={() => setFocusedField(null)}
-                      placeholder="yonetici veya ornek@erya.com"
-                      placeholderTextColor={PALETTE.textMuted}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      keyboardType="email-address"
-                      returnKeyType="next"
-                      style={styles.textInput}
-                      accessibilityLabel="Kullanıcı adı veya e-posta"
-                    />
-                  </View>
-
-                  <Text style={[styles.fieldLabel, styles.fieldLabelSpacing]}>Şifre</Text>
-                  <View
-                    style={[
-                      styles.inputRow,
-                      focusedField === 'password' && styles.inputRowFocused,
-                    ]}
-                  >
-                    <Lock
-                      size={18}
-                      strokeWidth={1.5}
-                      color={
-                        focusedField === 'password'
-                          ? PALETTE.accent
-                          : PALETTE.textMuted
-                      }
-                    />
-                    <TextInput
-                      value={password}
-                      onChangeText={(val) => {
-                        setPassword(val);
-                        if (errorMessage) setErrorMessage(null);
-                      }}
-                      onFocus={() => setFocusedField('password')}
-                      onBlur={() => setFocusedField(null)}
-                      placeholder="Şifreniz"
-                      placeholderTextColor={PALETTE.textMuted}
-                      secureTextEntry={!showPassword}
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      returnKeyType="go"
-                      onSubmitEditing={handleAdminLogin}
-                      style={styles.textInput}
-                      accessibilityLabel="Şifre"
-                    />
-                    <TouchableOpacity
-                      onPress={() => setShowPassword((prev) => !prev)}
-                      hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-                      accessibilityRole="button"
-                      accessibilityLabel={
-                        showPassword ? 'Şifreyi gizle' : 'Şifreyi göster'
-                      }
-                    >
-                      {showPassword ? (
-                        <EyeOff size={18} strokeWidth={1.5} color={PALETTE.textSecondary} />
-                      ) : (
-                        <Eye size={18} strokeWidth={1.5} color={PALETTE.textSecondary} />
-                      )}
-                    </TouchableOpacity>
-                  </View>
-
-                  {errorMessage ? (
-                    <View style={styles.errorBox}>
-                      <AlertCircle size={16} strokeWidth={1.5} color={PALETTE.danger} />
-                      <Text style={styles.errorText}>{errorMessage}</Text>
-                    </View>
-                  ) : null}
-
-                  <TouchableOpacity
-                    style={[styles.primaryButton, submitting && styles.buttonDisabled]}
-                    onPress={handleAdminLogin}
-                    disabled={submitting}
-                    activeOpacity={0.85}
-                    accessibilityRole="button"
-                    accessibilityLabel="Giriş Yap"
-                  >
-                    {submitting ? (
-                      <ActivityIndicator size="small" color={PALETTE.accentInk} />
-                    ) : (
-                      <>
-                        <Text style={styles.primaryButtonText}>Giriş Yap</Text>
-                        <ArrowRight
-                          size={18}
-                          strokeWidth={1.75}
-                          color={PALETTE.accentInk}
-                        />
-                      </>
-                    )}
-                  </TouchableOpacity>
-                </>
-              )}
-            </View>
-
-            <View style={styles.modeSwitchContainer}>
-              {mode === 'code' ? (
-                <TouchableOpacity
-                  style={styles.modeSwitchLink}
-                  onPress={() => switchMode('admin')}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel="Stüdyo Yöneticisi Girişi"
-                >
-                  <ShieldCheck size={16} strokeWidth={1.5} color={PALETTE.textMuted} />
-                  <Text style={styles.modeSwitchText}>Stüdyo Yöneticisi Girişi</Text>
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity
-                  style={styles.modeSwitchLink}
-                  onPress={() => switchMode('code')}
-                  activeOpacity={0.75}
-                  accessibilityRole="button"
-                  accessibilityLabel="Erişim Kodu ile Girişe Dön"
-                >
-                  <ArrowLeft size={16} strokeWidth={1.5} color={PALETTE.textSecondary} />
-                  <Text style={styles.modeSwitchText}>Erişim Kodu ile Girişe Dön</Text>
-                </TouchableOpacity>
-              )}
+                  </>
+                )}
+              </TouchableOpacity>
             </View>
 
             <View style={styles.legalLinksRow}>
@@ -508,9 +310,6 @@ const styles = StyleSheet.create({
     fontWeight: '500',
     marginBottom: 8,
   },
-  fieldLabelSpacing: {
-    marginTop: 16,
-  },
   codeInputRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -531,27 +330,8 @@ const styles = StyleSheet.create({
     letterSpacing: 1.6,
     paddingVertical: 0,
   },
-  inputRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: PALETTE.inputBg,
-    borderWidth: 1,
-    borderColor: PALETTE.borderStrong,
-    borderRadius: 10,
-    height: 48,
-    paddingHorizontal: 14,
-    gap: 10,
-  },
   inputRowFocused: {
     borderColor: PALETTE.accentBorder,
-  },
-  textInput: {
-    flex: 1,
-    fontFamily: FONTS.sans,
-    color: PALETTE.textPrimary,
-    fontSize: 15,
-    fontWeight: '400',
-    paddingVertical: 0,
   },
   helperText: {
     fontFamily: FONTS.sans,
@@ -600,32 +380,13 @@ const styles = StyleSheet.create({
   buttonDisabled: {
     opacity: 0.65,
   },
-  modeSwitchContainer: {
-    alignItems: 'center',
-    marginTop: 20,
-  },
-  modeSwitchLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 8,
-    gap: 8,
-  },
-  modeSwitchText: {
-    fontFamily: FONTS.sans,
-    color: PALETTE.textSecondary,
-    fontSize: 13,
-    fontWeight: '500',
-  },
   legalLinksRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
     flexWrap: 'wrap',
     gap: 8,
-    marginTop: 14,
+    marginTop: 20,
   },
   legalLinkBtn: {
     paddingHorizontal: 6,
