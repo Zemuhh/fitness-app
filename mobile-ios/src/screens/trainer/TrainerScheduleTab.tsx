@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -62,12 +62,17 @@ import {
   WaitlistEntry,
 } from '@/types/fitness';
 import { MemberAvatar, getCategoryVisuals } from '@/screens/member/MemberAvatar';
-import { TrainerMemberCrmModal } from '@/screens/trainer/TrainerMemberCrmModal';
 import {
   formatTurkishDateLabel,
   getTodayIso,
   getTomorrowIso,
 } from '@/utils/dateHelpers';
+
+const TrainerMemberCrmModal = React.lazy(() =>
+  import('@/screens/trainer/TrainerMemberCrmModal').then((m) => ({
+    default: m.TrainerMemberCrmModal,
+  }))
+);
 
 interface Props {
   data: TrainerScheduleData;
@@ -2989,27 +2994,31 @@ export function TrainerScheduleTab({
       </Modal>
 
       {/* İnteraktif Vücut Haritası & Öğrenci CRM Detay Modalı */}
-      <TrainerMemberCrmModal
-        visible={Boolean(selectedCrmMember)}
-        member={selectedCrmMember}
-        onClose={() => setSelectedCrmMember(null)}
-        onMemberMutated={async () => {
-          onRefresh();
-          fetchLiveAttendance(true);
-        }}
-        onZonesMutated={(mid, updatedZones) => {
-          setMemberSnapshots((prev) => ({
-            ...prev,
-            [mid]: {
-              ...prev[mid],
-              zones: updatedZones,
-            },
-          }));
-          setSelectedCrmMember((prev) =>
-            prev && prev.id === mid ? { ...prev, body_zones: updatedZones } : prev
-          );
-        }}
-      />
+      {selectedCrmMember ? (
+        <Suspense fallback={null}>
+          <TrainerMemberCrmModal
+            visible={Boolean(selectedCrmMember)}
+            member={selectedCrmMember}
+            onClose={() => setSelectedCrmMember(null)}
+            onMemberMutated={async () => {
+              onRefresh();
+              fetchLiveAttendance(true);
+            }}
+            onZonesMutated={(mid, updatedZones) => {
+              setMemberSnapshots((prev) => ({
+                ...prev,
+                [mid]: {
+                  ...prev[mid],
+                  zones: updatedZones,
+                },
+              }));
+              setSelectedCrmMember((prev) =>
+                prev && prev.id === mid ? { ...prev, body_zones: updatedZones } : prev
+              );
+            }}
+          />
+        </Suspense>
+      ) : null}
     </View>
   );
 }

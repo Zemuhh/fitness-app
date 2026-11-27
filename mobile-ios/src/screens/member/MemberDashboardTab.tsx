@@ -27,25 +27,28 @@ import {
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
 import { ActivityRing } from '@/components/ActivityRing';
+import { DashboardSkeleton } from '@/components/DashboardSkeleton';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
 import { LiveGymOccupancyCard } from '@/components/LiveGymOccupancyCard';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
 import {
   AppUser,
+  ClubHomeData,
   DailyWellness,
   EnergyStatus,
   MemberBookingItem,
   MemberDashboardData,
+  MemberDashboardSummary,
   MemberDrawerRoute,
-  MemberReferralInfo,
 } from '@/types/fitness';
 import { formatTurkishDateLabel, getDaysRemaining } from '@/utils/dateHelpers';
 import { getCategoryVisuals } from '@/screens/member/MemberAvatar';
 
 export interface MemberDashboardTabProps {
   member: AppUser;
-  dashboard: MemberDashboardData;
+  dashboard?: MemberDashboardData | null;
+  summary?: MemberDashboardSummary | null;
   onRefreshParent: () => Promise<void> | void;
   onNavigate: (route: MemberDrawerRoute) => void;
   onOpenQr: () => void;
@@ -110,6 +113,7 @@ function deriveInviteCode(fullName: string, id: number): string {
 export function MemberDashboardTab({
   member,
   dashboard,
+  summary,
   onRefreshParent,
   onNavigate,
   onOpenQr,
@@ -120,33 +124,45 @@ export function MemberDashboardTab({
 
   const [refreshing, setRefreshing] = useState<boolean>(false);
   const [liveRefreshCount, setLiveRefreshCount] = useState<number>(0);
+  const [localSummary, setLocalSummary] = useState<MemberDashboardSummary | null>(
+    summary ?? null
+  );
+  const [loadingSummary, setLoadingSummary] = useState<boolean>(
+    !summary && !dashboard
+  );
 
-  const [wellness, setWellness] = useState<DailyWellness>(() => ({
-    member_id: member.id,
-    date: new Date().toISOString().slice(0, 10),
-    water_ml: 1500,
-    water_goal_ml: 3000,
-    sleep_hours: 7.5,
-    energy_status: 'normal',
-    calories_intake: 0,
-    calories_goal: 2100,
-    protein_g: 0,
-    protein_goal_g: 140,
-    carbs_g: 0,
-    carbs_goal_g: 220,
-    fat_g: 0,
-    fat_goal_g: 65,
-  }));
+  const effectiveSummary = summary ?? localSummary;
+  const effectiveMember =
+    effectiveSummary?.member ?? dashboard?.member ?? member;
+
+  const [wellness, setWellness] = useState<DailyWellness>(() =>
+    summary?.today_wellness ?? {
+      member_id: member.id,
+      date: new Date().toISOString().slice(0, 10),
+      water_ml: 0,
+      water_goal_ml: 3000,
+      sleep_hours: 7.5,
+      energy_status: 'normal',
+      calories_intake: 0,
+      calories_goal: 2100,
+      protein_g: 0,
+      protein_goal_g: 140,
+      carbs_g: 0,
+      carbs_goal_g: 220,
+      fat_g: 0,
+      fat_goal_g: 65,
+    }
+  );
   const [addingWater, setAddingWater] = useState<boolean>(false);
 
   const fallbackInviteCode = useMemo(
     () =>
-      dashboard.member?.referral_code ||
+      effectiveMember?.referral_code ||
       member.referral_code ||
-      deriveInviteCode(dashboard.member?.full_name || member.full_name, member.id),
+      deriveInviteCode(effectiveMember?.full_name || member.full_name, member.id),
     [
-      dashboard.member?.full_name,
-      dashboard.member?.referral_code,
+      effectiveMember?.full_name,
+      effectiveMember?.referral_code,
       member.full_name,
       member.id,
       member.referral_code,
@@ -155,7 +171,7 @@ export function MemberDashboardTab({
 
   const [inviteCode, setInviteCode] = useState<string>(fallbackInviteCode);
   const [referralCount, setReferralCount] = useState<number>(
-    dashboard.member?.referral_count ?? member.referral_count ?? 0
+    effectiveMember?.referral_count ?? member.referral_count ?? 0
   );
 
   const fadeAnim = useRef(new Animated.Value(0)).current;
@@ -176,37 +192,73 @@ export function MemberDashboardTab({
     ]).start();
   }, [fadeAnim, slideAnim]);
 
-  const fetchHomeExtras = useCallback(async () => {
+  // Üst bileşenden tekil özet API verisi geldiğinde tüm alt state'leri sıfır ekstra istekle senkronize et
+  useEffect(() => {
+    if (!effectiveSummary) return;
+    if (
+      effectiveSummary.today_wellness &&
+      typeof effectiveSummary.today_wellness.water_ml === 'number'
+    ) {
+      setWellness(effectiveSummary.today_wellness);
+    }
+    if (effectiveSummary.member?.referral_code) {
+      setInviteCode(effectiveSummary.member.referral_code);
+    }
+    if (typeof effectiveSummary.member?.referral_count === 'number') {
+      setReferralCount(effectiveSummary.member.referral_count);
+    }
+    setLoadingSummary(false);
+  }, [effectiveSummary]);
+
+  // Eğer üst bileşen summary sağlamadıysa tekil GET /dashboard/{member_id}/summary (fallback /club/home/{id}) isteği at
+  const fetchUnifiedSummary = useCallback(async () => {
+    if (summary) return;
     try {
-      const [wellRes, refRes] = await Promise.all([
-        apiRequest<DailyWellness>(`/wellness/${member.id}/today`).catch(() => null),
-        apiRequest<MemberReferralInfo>(`/referral/${member.id}`).catch(() => null),
-      ]);
-      if (wellRes && typeof wellRes.water_ml === 'number') {
-        setWellness(wellRes);
-      }
-      if (refRes && refRes.referral_code) {
-        setInviteCode(refRes.referral_code);
-        setReferralCount(refRes.referral_count ?? 0);
+      const res = await apiRequest<MemberDashboardSummary>(
+        `/dashboard/${member.id}/summary`
+      );
+      if (res && res.member) {
+        setLocalSummary(res);
       }
     } catch {
-      // Yedek değerlerle kesintisiz devam et
+      try {
+        const homeFallback = await apiRequest<ClubHomeData>(
+          `/club/home/${member.id}`
+        );
+        if (homeFallback?.member) {
+          setInviteCode(
+            homeFallback.member.referral_code ||
+              deriveInviteCode(homeFallback.member.full_name, member.id)
+          );
+          setReferralCount(homeFallback.member.referral_count ?? 0);
+        }
+      } catch {
+        // Yedek değerlerle kesintisiz devam et
+      }
+    } finally {
+      setLoadingSummary(false);
     }
-  }, [member.id]);
+  }, [member.id, summary]);
 
   useEffect(() => {
-    fetchHomeExtras();
-  }, [fetchHomeExtras, refreshSignal]);
+    if (!summary) {
+      fetchUnifiedSummary();
+    }
+  }, [fetchUnifiedSummary, refreshSignal, summary]);
 
   const handlePullRefresh = useCallback(async () => {
     setRefreshing(true);
-    setLiveRefreshCount((c) => c + 1);
-    await Promise.all([
-      Promise.resolve(onRefreshParent()),
-      fetchHomeExtras(),
-    ]);
+    if (!summary) {
+      setLiveRefreshCount((c) => c + 1);
+      await Promise.all([
+        Promise.resolve(onRefreshParent()),
+        fetchUnifiedSummary(),
+      ]);
+    } else {
+      await Promise.resolve(onRefreshParent());
+    }
     setRefreshing(false);
-  }, [fetchHomeExtras, onRefreshParent]);
+  }, [fetchUnifiedSummary, onRefreshParent, summary]);
 
   const handleQuickAddWater = useCallback(async () => {
     if (addingWater) return;
@@ -261,9 +313,9 @@ export function MemberDashboardTab({
   );
 
   const firstName = useMemo(() => {
-    const clean = (dashboard.member?.full_name || member.full_name || '').trim();
+    const clean = (effectiveMember?.full_name || member.full_name || '').trim();
     return clean.split(/\s+/)[0] || 'Üyemiz';
-  }, [dashboard.member?.full_name, member.full_name]);
+  }, [effectiveMember?.full_name, member.full_name]);
 
   const greetingWord = useMemo(() => {
     const hour = new Date().getHours();
@@ -272,16 +324,33 @@ export function MemberDashboardTab({
     return 'İyi akşamlar';
   }, []);
 
-  const streakDays = dashboard.member?.streak_days ?? member.streak_days ?? 0;
-  const pkg = dashboard.active_package;
-  const remainingCredits = pkg?.remaining_credits ?? 0;
-  const totalCredits = pkg?.total_credits ?? 0;
+  const streakDays =
+    effectiveSummary?.streak_days ??
+    effectiveMember?.streak_days ??
+    member.streak_days ??
+    0;
+  const pkg = effectiveSummary?.active_package ?? dashboard?.active_package ?? null;
+  const remainingCredits =
+    effectiveSummary?.remaining_credits ?? pkg?.remaining_credits ?? 0;
+  const totalCredits =
+    effectiveSummary?.total_credits ?? pkg?.total_credits ?? 0;
   const isLowCredits = remainingCredits <= 2;
   const daysLeft = getDaysRemaining(pkg?.expiry_date);
 
   const upcomingBooking = useMemo(() => {
+    if (effectiveSummary) {
+      return effectiveSummary.upcoming_booking ?? null;
+    }
     return (dashboard?.my_bookings ?? []).find((b) => b.status === 'booked') ?? null;
-  }, [dashboard?.my_bookings]);
+  }, [dashboard?.my_bookings, effectiveSummary]);
+
+  const upcomingSessionsPreview = useMemo(() => {
+    return (effectiveSummary?.upcoming_sessions ?? []).slice(0, 3);
+  }, [effectiveSummary?.upcoming_sessions]);
+
+  const recentAnnouncementsPreview = useMemo(() => {
+    return (effectiveSummary?.announcements ?? []).slice(0, 2);
+  }, [effectiveSummary?.announcements]);
 
   const upcomingCatVis = upcomingBooking
     ? getCategoryVisuals(upcomingBooking.category)
@@ -299,6 +368,10 @@ export function MemberDashboardTab({
   const waterGoal = wellness.water_goal_ml > 0 ? wellness.water_goal_ml : 3000;
   const waterRatio = Math.max(0, Math.min(1, wellness.water_ml / waterGoal));
   const waterDashOffset = waterCircumference * (1 - waterRatio);
+
+  if (loadingSummary && !effectiveSummary && !dashboard) {
+    return <DashboardSkeleton />;
+  }
 
   return (
     <ScrollView
@@ -320,7 +393,10 @@ export function MemberDashboardTab({
         }}
       >
         {/* 0. CANLI SALON YOĞUNLUK RADARI BENTO KARTI (EN ÜSTTE) */}
-        <LiveGymOccupancyCard refreshTrigger={liveRefreshCount + refreshSignal} />
+        <LiveGymOccupancyCard
+          initialStatus={effectiveSummary?.live_status ?? null}
+          refreshTrigger={liveRefreshCount}
+        />
 
         {/* 1. ZARİF KARŞILAMA BAŞLIĞI & DÜZENLİ SERİ ROZETİ */}
         <View style={styles.greetingSection}>
@@ -749,12 +825,155 @@ export function MemberDashboardTab({
             <Text style={styles.shortcutSub}>Dijital Üyelik Kartım</Text>
           </TouchableOpacity>
         </View>
+
+        {/* 8. YAKLAŞAN İLK 3 SEANS ÖZETİ (TEKİL ÖZET API) */}
+        {upcomingSessionsPreview.length > 0 && (
+          <View style={styles.summaryListCard}>
+            <View style={styles.summaryCardHeader}>
+              <Text style={styles.cardSectionTitle}>Yaklaşan Açık Dersler</Text>
+              <TouchableOpacity
+                onPress={() => onNavigate('schedule')}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+              >
+                <Text style={styles.summarySeeAllText}>Tüm Program →</Text>
+              </TouchableOpacity>
+            </View>
+            {upcomingSessionsPreview.map((sess) => (
+              <TouchableOpacity
+                key={sess.id}
+                style={styles.summarySessionRow}
+                onPress={() => onNavigate('schedule')}
+                activeOpacity={0.82}
+              >
+                <View style={styles.summaryTimePill}>
+                  <Text style={styles.summaryTimeText}>{sess.start_time}</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.summaryRowTitle} numberOfLines={1}>
+                    {sess.title}
+                  </Text>
+                  <Text style={styles.summaryRowSub} numberOfLines={1}>
+                    {formatTurkishDateLabel(sess.date).primary} • {sess.trainer_name}
+                  </Text>
+                </View>
+                <Text style={styles.summarySpotsText}>
+                  {sess.is_full
+                    ? 'Yedek'
+                    : `${Math.max(0, sess.remaining_spots)} yer`}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
+
+        {/* 9. STÜDYO DUYURULARI ÖZETİ (TEKİL ÖZET API) */}
+        {recentAnnouncementsPreview.length > 0 && (
+          <View style={styles.summaryListCard}>
+            <View style={styles.summaryCardHeader}>
+              <Text style={styles.cardSectionTitle}>Stüdyo Duyuruları</Text>
+              <TouchableOpacity
+                onPress={() => onNavigate('news')}
+                activeOpacity={0.8}
+                accessibilityRole="button"
+              >
+                <Text style={styles.summarySeeAllText}>Tümü →</Text>
+              </TouchableOpacity>
+            </View>
+            {recentAnnouncementsPreview.map((ann) => (
+              <TouchableOpacity
+                key={ann.id}
+                style={styles.summaryAnnRow}
+                onPress={() => onNavigate('news')}
+                activeOpacity={0.82}
+              >
+                <Text style={styles.summaryRowTitle} numberOfLines={1}>
+                  {ann.title}
+                </Text>
+                <Text style={styles.summaryRowSub} numberOfLines={2}>
+                  {ann.content}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+        )}
       </Animated.View>
     </ScrollView>
   );
 }
 
 const styles = StyleSheet.create({
+  summaryListCard: {
+    backgroundColor: COLORS.surface,
+    borderRadius: 22,
+    padding: 16,
+    marginTop: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 10,
+    ...CARD_SHADOW,
+  },
+  summaryCardHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  summarySeeAllText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  summarySessionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 14,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  summaryTimePill: {
+    backgroundColor: COLORS.primaryLight,
+    borderWidth: 1,
+    borderColor: COLORS.primaryBorder,
+    borderRadius: 10,
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+  },
+  summaryTimeText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  summaryRowTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  summaryRowSub: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textSecondary,
+    fontSize: 11.5,
+    fontWeight: '500',
+    marginTop: 2,
+  },
+  summarySpotsText: {
+    fontFamily: FONTS.sans,
+    color: COLORS.secondary,
+    fontSize: 11.5,
+    fontWeight: '800',
+  },
+  summaryAnnRow: {
+    backgroundColor: COLORS.surfaceElevated,
+    borderRadius: 14,
+    padding: 11,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.background,

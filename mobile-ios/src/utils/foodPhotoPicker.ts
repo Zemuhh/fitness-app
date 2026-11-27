@@ -1,6 +1,9 @@
 import { Platform } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 
+export const MAX_DIMENSION = 1024;
+export const JPEG_QUALITY = 0.65;
+
 export interface NativeFormDataImage {
   uri: string;
   name: string;
@@ -49,7 +52,7 @@ export async function pickNativeFoodPhoto(
       const result = await ImagePicker.launchCameraAsync({
         mediaTypes: ['images'],
         allowsEditing: false,
-        quality: 0.7,
+        quality: JPEG_QUALITY,
         exif: false,
       });
 
@@ -87,7 +90,7 @@ export async function pickNativeFoodPhoto(
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ['images'],
       allowsEditing: false,
-      quality: 0.7,
+      quality: JPEG_QUALITY,
       exif: false,
     });
 
@@ -177,12 +180,12 @@ function wrapBlobAsFile(blob: Blob, fileName: string): Blob {
 
 /**
  * Web / PWA tarayıcısında seçilen fotoğrafı HTML <canvas> ile
- * maksimum 1280px & JPEG 0.7 kalitesinde sıkıştırıp Blob/File üretir.
+ * maksimum 1024px & JPEG 0.65 kalitesinde sıkıştırıp Blob/File üretir.
  */
 export function compressWebImageForUpload(
   file: any,
-  maxDim = 1280,
-  quality = 0.7
+  maxDim = MAX_DIMENSION,
+  quality = JPEG_QUALITY
 ): Promise<PickedFoodPhoto> {
   return new Promise((resolve, reject) => {
     const fileName = sanitizeJpegFileName(file?.name || 'tabak-fotografi');

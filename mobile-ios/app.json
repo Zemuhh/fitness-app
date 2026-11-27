@@ -3,6 +3,7 @@
     "name": "ERYA Pilates Reformer",
     "slug": "erya-pilates-reformer",
     "version": "1.0.0",
+    "jsEngine": "hermes",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "eryapilates",

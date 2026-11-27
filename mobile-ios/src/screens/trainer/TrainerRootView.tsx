@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -15,6 +15,7 @@ import {
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
 import { CleanAppHeader } from '@/components/CleanAppHeader';
+import { LazyScreenFallback } from '@/components/DashboardSkeleton';
 import {
   DrawerMenuItemConfig,
   SlideOverDrawer,
@@ -29,10 +30,27 @@ import {
 } from '@/types/fitness';
 import { TrainerDrawerRoute } from '@/types/navigation';
 import { TrainerScheduleTab } from '@/screens/trainer/TrainerScheduleTab';
-import { TrainerStudentsCrmTab } from '@/screens/trainer/TrainerStudentsCrmTab';
-import { TrainerCreateSessionTab } from '@/screens/trainer/TrainerCreateSessionTab';
-import { InstagramDmSimulatorTab } from '@/screens/trainer/InstagramDmSimulatorTab';
-import { TrainerAnnouncementsProfileTab } from '@/screens/trainer/TrainerAnnouncementsProfileTab';
+
+const TrainerStudentsCrmTab = React.lazy(() =>
+  import('@/screens/trainer/TrainerStudentsCrmTab').then((m) => ({
+    default: m.TrainerStudentsCrmTab,
+  }))
+);
+const TrainerCreateSessionTab = React.lazy(() =>
+  import('@/screens/trainer/TrainerCreateSessionTab').then((m) => ({
+    default: m.TrainerCreateSessionTab,
+  }))
+);
+const InstagramDmSimulatorTab = React.lazy(() =>
+  import('@/screens/trainer/InstagramDmSimulatorTab').then((m) => ({
+    default: m.InstagramDmSimulatorTab,
+  }))
+);
+const TrainerAnnouncementsProfileTab = React.lazy(() =>
+  import('@/screens/trainer/TrainerAnnouncementsProfileTab').then((m) => ({
+    default: m.TrainerAnnouncementsProfileTab,
+  }))
+);
 
 export const TRAINER_DRAWER_MENU: DrawerMenuItemConfig<TrainerDrawerRoute>[] = [
   { key: 'schedule', Icon: Calendar, label: 'Ders Programı' },
@@ -247,31 +265,39 @@ export function TrainerRootView({
 
       <View style={styles.body}>
         {currentRoute === 'crm' ? (
-          <TrainerStudentsCrmTab
-            onShowBanner={showBanner}
-            onScheduleSyncNeeded={() => fetchSchedule(true)}
-          />
+          <Suspense fallback={<LazyScreenFallback label="Üye CRM ekranı yükleniyor..." />}>
+            <TrainerStudentsCrmTab
+              onShowBanner={showBanner}
+              onScheduleSyncNeeded={() => fetchSchedule(true)}
+            />
+          </Suspense>
         ) : currentRoute === 'create_session' ? (
-          <TrainerCreateSessionTab
-            trainer={trainer}
-            existingSessions={schedule?.sessions ?? []}
-            onSessionCreated={handleSessionCreated}
-            onViewInSchedule={handleJumpToScheduleDate}
-            onShowBanner={showBanner}
-          />
+          <Suspense fallback={<LazyScreenFallback label="Yeni ders ekranı yükleniyor..." />}>
+            <TrainerCreateSessionTab
+              trainer={trainer}
+              existingSessions={schedule?.sessions ?? []}
+              onSessionCreated={handleSessionCreated}
+              onViewInSchedule={handleJumpToScheduleDate}
+              onShowBanner={showBanner}
+            />
+          </Suspense>
         ) : __DEV__ && currentRoute === 'instagram_ai' ? (
-          <InstagramDmSimulatorTab
-            onBookingMutated={() => fetchSchedule(true)}
-            onNavigateRoute={navigateRoute}
-          />
+          <Suspense fallback={<LazyScreenFallback label="DM asistanı yükleniyor..." />}>
+            <InstagramDmSimulatorTab
+              onBookingMutated={() => fetchSchedule(true)}
+              onNavigateRoute={navigateRoute}
+            />
+          </Suspense>
         ) : currentRoute === 'announcements_profile' ? (
-          <TrainerAnnouncementsProfileTab
-            trainer={trainer}
-            schedule={schedule}
-            onGoToCreateSession={() => navigateRoute('create_session')}
-            onViewDateInSchedule={handleJumpToScheduleDate}
-            onShowBanner={showBanner}
-          />
+          <Suspense fallback={<LazyScreenFallback label="Duyurular ve profil yükleniyor..." />}>
+            <TrainerAnnouncementsProfileTab
+              trainer={trainer}
+              schedule={schedule}
+              onGoToCreateSession={() => navigateRoute('create_session')}
+              onViewDateInSchedule={handleJumpToScheduleDate}
+              onShowBanner={showBanner}
+            />
+          </Suspense>
         ) : loading && !schedule ? (
           <View style={styles.centerLoader}>
             <ActivityIndicator size="large" color={COLORS.secondary} />

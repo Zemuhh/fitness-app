@@ -105,6 +105,9 @@ class PackageOut(BaseModel):
     is_active: bool
 
 
+MemberPackageOut = PackageOut
+
+
 class PackageRenewRequest(BaseModel):
     package_name: str
     credits: int = Field(..., gt=0)
@@ -311,6 +314,27 @@ class DailyWellnessOut(BaseModel):
     carbs_goal_g: int = 220
     fat_g: int = 0
     fat_goal_g: int = 65
+
+
+class MemberDashboardSummaryOut(BaseModel):
+    member: UserOut
+    streak_days: int
+    active_package: Optional[MemberPackageOut] = None
+    remaining_credits: int = 0
+    total_credits: int = 0
+    today_wellness: DailyWellnessOut
+    live_status: ClubLiveStatusOut
+    upcoming_booking: Optional[MemberBookingItemOut] = None
+    upcoming_sessions: List[AvailableSessionOut] = Field(default_factory=list)
+    announcements: List[AnnouncementOut] = Field(default_factory=list)
+    trainers: List[TrainerCardOut] = Field(default_factory=list)
+    wod_title: str
+    wod_focus: str
+    wod_duration_min: int
+    wod_calories: int
+    wod_movements: List[str]
+    motivation_quote: str
+    recent_checkins: List[CheckInLogOut] = Field(default_factory=list)
 
 
 class WellnessWaterRequest(BaseModel):

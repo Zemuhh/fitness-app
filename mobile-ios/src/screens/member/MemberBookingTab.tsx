@@ -1,7 +1,9 @@
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  FlatList,
   LayoutAnimation,
+  Platform,
   RefreshControl,
   ScrollView,
   StyleSheet,
@@ -61,6 +63,260 @@ interface Props {
   onOpenTrainerDetail: (trainerId: number) => void;
   busySessionId: number | null;
 }
+
+interface SessionCardItemProps {
+  session: AvailableSession;
+  isBusy: boolean;
+  remainingCredits: number;
+  onBookSession: (session: AvailableSession) => Promise<void>;
+  onCancelBySession: (session: AvailableSession) => Promise<void>;
+  onJoinWaitlist: (session: AvailableSession) => Promise<void>;
+  onCancelWaitlist: (session: AvailableSession) => Promise<void>;
+  onOpenPackageRenew: () => void;
+  onOpenTrainerDetail: (trainerId: number) => void;
+}
+
+const SessionCardItem = React.memo(function SessionCardItem({
+  session,
+  isBusy,
+  remainingCredits,
+  onBookSession,
+  onCancelBySession,
+  onJoinWaitlist,
+  onCancelWaitlist,
+  onOpenPackageRenew,
+  onOpenTrainerDetail,
+}: SessionCardItemProps) {
+  const computedSpots =
+    typeof session.remaining_spots === 'number'
+      ? session.remaining_spots
+      : Math.max(0, session.capacity - session.current_enrolled);
+  const isFull =
+    session.is_full ||
+    session.current_enrolled >= session.capacity ||
+    computedSpots <= 0;
+  const isLastSpot = !isFull && computedSpots === 1;
+  const isBooked = session.is_booked_by_member;
+  const isWaitlisted = Boolean(session.is_waitlisted_by_member);
+
+  const fillRatio =
+    session.capacity > 0
+      ? Math.max(0, Math.min(1, session.current_enrolled / session.capacity))
+      : 1;
+
+  const statusColor = isBooked
+    ? COLORS.primary
+    : isFull || isLastSpot || isWaitlisted
+    ? COLORS.warningText
+    : COLORS.primary;
+
+  const barFillColor = isBooked
+    ? COLORS.primary
+    : isFull || isLastSpot || isWaitlisted
+    ? COLORS.warning
+    : COLORS.primary;
+
+  const catVis = getCategoryVisuals(session.category);
+  const dateLabel = formatTurkishDateLabel(session.date);
+
+  return (
+    <View style={styles.sessionCard}>
+      {/* Üst Satır: Saat & Kategori Rozeti */}
+      <View style={styles.topRow}>
+        <View style={styles.timeBadge}>
+          <Clock size={14} color={COLORS.primary} />
+          <Text style={styles.timeText}>{session.start_time}</Text>
+          <Text style={styles.timeEndText}>- {session.end_time}</Text>
+        </View>
+
+        <View
+          style={[
+            styles.categoryBadge,
+            { backgroundColor: catVis.bg, borderColor: catVis.border },
+          ]}
+        >
+          <Text style={[styles.categoryBadgeText, { color: catVis.color }]}>
+            {catVis.label}
+          </Text>
+        </View>
+      </View>
+
+      {/* Son 1 Kişilik Yer veya Yedek Liste Bilgi Rozeti */}
+      {isLastSpot && !isBooked ? (
+        <View style={styles.lastSpotBadge}>
+          <Flame size={13} color={COLORS.warningText} />
+          <Text style={styles.lastSpotBadgeText}>🔥 Son 1 Kişilik Yer!</Text>
+        </View>
+      ) : isFull && !isBooked ? (
+        <View style={styles.waitlistInfoBadge}>
+          <Hourglass size={12} color={COLORS.warningText} />
+          <Text style={styles.waitlistInfoBadgeText}>
+            Kontenjan Dolu
+            {(session.waitlist_count ?? 0) > 0
+              ? ` • ${session.waitlist_count} kişi yedek listede`
+              : ' • Yedek liste açık'}
+          </Text>
+        </View>
+      ) : null}
+
+      {/* Ders Başlığı */}
+      <Text style={styles.sessionTitle}>{session.title}</Text>
+
+      {/* Eğitmen & Stüdyo & Tarih Satırı */}
+      <View style={styles.detailsGrid}>
+        <TouchableOpacity
+          style={styles.trainerChipBtn}
+          onPress={() => onOpenTrainerDetail(session.trainer_id)}
+          activeOpacity={0.8}
+        >
+          <MemberAvatar
+            uri={session.trainer_avatar_url}
+            name={session.trainer_name}
+            size={28}
+            borderRadius={9}
+            accentColor={COLORS.secondary}
+          />
+          <Text style={styles.trainerText}>{session.trainer_name}</Text>
+        </TouchableOpacity>
+
+        <View style={styles.roomDateRight}>
+          <View style={styles.roomInline}>
+            <MapPin size={12} color={COLORS.secondary} />
+            <Text style={styles.roomText} numberOfLines={1}>
+              {session.room || 'Ana Stüdyo'}
+            </Text>
+          </View>
+          <Text style={styles.dateSubText}>{dateLabel.full}</Text>
+        </View>
+      </View>
+
+      {/* Görsel Doluluk Çubuğu */}
+      <View style={styles.occupancyWrap}>
+        <View style={styles.occupancyTopRow}>
+          <View style={styles.occupancyLabelLeft}>
+            <Users size={13} color={statusColor} />
+            <Text style={[styles.occupancyText, { color: statusColor }]}>
+              {session.current_enrolled}/{session.capacity}{' '}
+              {isFull ? 'Dolu' : 'Kayıtlı'}
+            </Text>
+          </View>
+          <Text style={styles.spotsRemainText}>
+            {isFull ? 'Yedek Liste Aktif' : `${computedSpots} boş kontenjan`}
+          </Text>
+        </View>
+        <View style={styles.scarcityTrack}>
+          <View
+            style={[
+              styles.scarcityFill,
+              {
+                width: `${fillRatio * 100}%`,
+                backgroundColor: barFillColor,
+              },
+            ]}
+          />
+        </View>
+      </View>
+
+      {/* AKSİYON BUTONLARI */}
+      {isBooked ? (
+        <TouchableOpacity
+          style={[styles.bookedCancelBtn, isBusy && styles.disabledBtn]}
+          disabled={isBusy}
+          onPress={async () => {
+            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+            await onCancelBySession(session);
+          }}
+          activeOpacity={0.82}
+        >
+          {isBusy ? (
+            <ActivityIndicator size="small" color={COLORS.danger} />
+          ) : (
+            <>
+              <CheckCircle2 size={15} color={COLORS.danger} />
+              <Text style={styles.bookedCancelBtnText}>
+                ✓ Kayıtlısın (İptal Et)
+              </Text>
+            </>
+          )}
+        </TouchableOpacity>
+      ) : isFull ? (
+        isWaitlisted ? (
+          <TouchableOpacity
+            style={[styles.waitlistedLeaveBtn, isBusy && styles.disabledBtn]}
+            disabled={isBusy}
+            onPress={async () => {
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              await onCancelWaitlist(session);
+            }}
+            activeOpacity={0.84}
+          >
+            {isBusy ? (
+              <ActivityIndicator size="small" color={COLORS.warningText} />
+            ) : (
+              <Text style={styles.waitlistedLeaveBtnText}>
+                ⏳ Yedek Listedesin (#{session.waitlist_position ?? 1} • Çık)
+              </Text>
+            )}
+          </TouchableOpacity>
+        ) : remainingCredits <= 0 ? (
+          <TouchableOpacity
+            style={styles.waitlistJoinBtn}
+            onPress={onOpenPackageRenew}
+            activeOpacity={0.86}
+          >
+            <Text style={styles.waitlistJoinBtnText}>
+              ⏳ Paket Yenile & Yedek Listeye Yazıl
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <TouchableOpacity
+            style={[styles.waitlistJoinBtn, isBusy && styles.disabledBtn]}
+            disabled={isBusy}
+            onPress={async () => {
+              LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+              await onJoinWaitlist(session);
+            }}
+            activeOpacity={0.86}
+          >
+            {isBusy ? (
+              <ActivityIndicator size="small" color={COLORS.warningText} />
+            ) : (
+              <Text style={styles.waitlistJoinBtnText}>
+                ⏳ Yedek Listeye Yazıl
+              </Text>
+            )}
+          </TouchableOpacity>
+        )
+      ) : remainingCredits <= 0 ? (
+        <TouchableOpacity
+          style={styles.topUpActionBtn}
+          onPress={onOpenPackageRenew}
+          activeOpacity={0.86}
+        >
+          <Text style={styles.topUpActionBtnText}>
+            Kredi Yetersiz • Paket Yenile
+          </Text>
+        </TouchableOpacity>
+      ) : (
+        <TouchableOpacity
+          style={[styles.bookNowBtn, isBusy && styles.disabledBtn]}
+          disabled={isBusy}
+          onPress={async () => {
+            LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+            await onBookSession(session);
+          }}
+          activeOpacity={0.86}
+        >
+          {isBusy ? (
+            <ActivityIndicator size="small" color={COLORS.white} />
+          ) : (
+            <Text style={styles.bookNowBtnText}>Hemen Kayıt Ol</Text>
+          )}
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+});
 
 export function MemberBookingTab({
   data,
@@ -162,12 +418,40 @@ export function MemberBookingTab({
     setSelectedTrainerId(id);
   };
 
-  const handleResetFilters = () => {
+  const handleResetFilters = useCallback(() => {
     LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
     setSelectedDateKey('all');
     setSelectedCategory('Tümü');
     setSelectedTrainerId('all');
-  };
+  }, []);
+
+  const renderSessionItem = useCallback(
+    ({ item }: { item: AvailableSession }) => (
+      <SessionCardItem
+        session={item}
+        isBusy={busySessionId === item.id}
+        remainingCredits={remainingCredits}
+        onBookSession={onBookSession}
+        onCancelBySession={onCancelBySession}
+        onJoinWaitlist={onJoinWaitlist}
+        onCancelWaitlist={onCancelWaitlist}
+        onOpenPackageRenew={onOpenPackageRenew}
+        onOpenTrainerDetail={onOpenTrainerDetail}
+      />
+    ),
+    [
+      busySessionId,
+      onBookSession,
+      onCancelBySession,
+      onCancelWaitlist,
+      onJoinWaitlist,
+      onOpenPackageRenew,
+      onOpenTrainerDetail,
+      remainingCredits,
+    ]
+  );
+
+  const keyExtractor = useCallback((item: AvailableSession) => String(item.id), []);
 
   return (
     <View style={styles.container}>
@@ -331,11 +615,18 @@ export function MemberBookingTab({
         )}
       </View>
 
-      {/* 4. FERAH BEYAZ DERS KARTLARI LİSTESİ */}
-      <ScrollView
+      {/* 4. FERAH BEYAZ DERS KARTLARI LİSTESİ (FlatList + React.memo) */}
+      <FlatList
+        data={filteredSessions}
+        keyExtractor={keyExtractor}
+        renderItem={renderSessionItem}
         style={styles.list}
         contentContainerStyle={styles.listContent}
         showsVerticalScrollIndicator={false}
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS !== 'web'}
         refreshControl={
           <RefreshControl
             refreshing={refreshing}
@@ -343,8 +634,7 @@ export function MemberBookingTab({
             tintColor={COLORS.primary}
           />
         }
-      >
-        {filteredSessions.length === 0 ? (
+        ListEmptyComponent={
           <View style={styles.emptyCard}>
             <Calendar size={30} color={COLORS.textMuted} />
             <Text style={styles.emptyTitle}>Bu filtrede açık ders bulunamadı</Text>
@@ -362,249 +652,8 @@ export function MemberBookingTab({
               <Text style={styles.resetFiltersBtnText}>Tüm Dersleri Göster</Text>
             </TouchableOpacity>
           </View>
-        ) : (
-          filteredSessions.map((session) => {
-            const computedSpots =
-              typeof session.remaining_spots === 'number'
-                ? session.remaining_spots
-                : Math.max(0, session.capacity - session.current_enrolled);
-            const isFull =
-              session.is_full ||
-              session.current_enrolled >= session.capacity ||
-              computedSpots <= 0;
-            const isLastSpot = !isFull && computedSpots === 1;
-            const isBooked = session.is_booked_by_member;
-            const isWaitlisted = Boolean(session.is_waitlisted_by_member);
-            const isBusy = busySessionId === session.id;
-
-            const fillRatio =
-              session.capacity > 0
-                ? Math.max(0, Math.min(1, session.current_enrolled / session.capacity))
-                : 1;
-
-            const statusColor = isBooked
-              ? COLORS.primary
-              : isFull || isLastSpot || isWaitlisted
-              ? COLORS.warningText
-              : COLORS.primary;
-
-            const barFillColor = isBooked
-              ? COLORS.primary
-              : isFull || isLastSpot || isWaitlisted
-              ? COLORS.warning
-              : COLORS.primary;
-
-            const catVis = getCategoryVisuals(session.category);
-            const dateLabel = formatTurkishDateLabel(session.date);
-
-            return (
-              <View key={session.id} style={styles.sessionCard}>
-                {/* Üst Satır: Saat & Kategori Rozeti */}
-                <View style={styles.topRow}>
-                  <View style={styles.timeBadge}>
-                    <Clock size={14} color={COLORS.primary} />
-                    <Text style={styles.timeText}>{session.start_time}</Text>
-                    <Text style={styles.timeEndText}>- {session.end_time}</Text>
-                  </View>
-
-                  <View
-                    style={[
-                      styles.categoryBadge,
-                      { backgroundColor: catVis.bg, borderColor: catVis.border },
-                    ]}
-                  >
-                    <Text style={[styles.categoryBadgeText, { color: catVis.color }]}>
-                      {catVis.label}
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Son 1 Kişilik Yer veya Yedek Liste Bilgi Rozeti */}
-                {isLastSpot && !isBooked ? (
-                  <View style={styles.lastSpotBadge}>
-                    <Flame size={13} color={COLORS.warningText} />
-                    <Text style={styles.lastSpotBadgeText}>🔥 Son 1 Kişilik Yer!</Text>
-                  </View>
-                ) : isFull && !isBooked ? (
-                  <View style={styles.waitlistInfoBadge}>
-                    <Hourglass size={12} color={COLORS.warningText} />
-                    <Text style={styles.waitlistInfoBadgeText}>
-                      Kontenjan Dolu
-                      {(session.waitlist_count ?? 0) > 0
-                        ? ` • ${session.waitlist_count} kişi yedek listede`
-                        : ' • Yedek liste açık'}
-                    </Text>
-                  </View>
-                ) : null}
-
-                {/* Ders Başlığı */}
-                <Text style={styles.sessionTitle}>{session.title}</Text>
-
-                {/* Eğitmen & Stüdyo & Tarih Satırı */}
-                <View style={styles.detailsGrid}>
-                  <TouchableOpacity
-                    style={styles.trainerChipBtn}
-                    onPress={() => onOpenTrainerDetail(session.trainer_id)}
-                    activeOpacity={0.8}
-                  >
-                    <MemberAvatar
-                      uri={session.trainer_avatar_url}
-                      name={session.trainer_name}
-                      size={28}
-                      borderRadius={9}
-                      accentColor={COLORS.secondary}
-                    />
-                    <Text style={styles.trainerText}>{session.trainer_name}</Text>
-                  </TouchableOpacity>
-
-                  <View style={styles.roomDateRight}>
-                    <View style={styles.roomInline}>
-                      <MapPin size={12} color={COLORS.secondary} />
-                      <Text style={styles.roomText} numberOfLines={1}>
-                        {session.room || 'Ana Stüdyo'}
-                      </Text>
-                    </View>
-                    <Text style={styles.dateSubText}>{dateLabel.full}</Text>
-                  </View>
-                </View>
-
-                {/* Görsel Doluluk Çubuğu */}
-                <View style={styles.occupancyWrap}>
-                  <View style={styles.occupancyTopRow}>
-                    <View style={styles.occupancyLabelLeft}>
-                      <Users size={13} color={statusColor} />
-                      <Text style={[styles.occupancyText, { color: statusColor }]}>
-                        {session.current_enrolled}/{session.capacity}{' '}
-                        {isFull ? 'Dolu' : 'Kayıtlı'}
-                      </Text>
-                    </View>
-                    <Text style={styles.spotsRemainText}>
-                      {isFull ? 'Yedek Liste Aktif' : `${computedSpots} boş kontenjan`}
-                    </Text>
-                  </View>
-                  <View style={styles.scarcityTrack}>
-                    <View
-                      style={[
-                        styles.scarcityFill,
-                        {
-                          width: `${fillRatio * 100}%`,
-                          backgroundColor: barFillColor,
-                        },
-                      ]}
-                    />
-                  </View>
-                </View>
-
-                {/* AKSİYON BUTONLARI */}
-                {isBooked ? (
-                  <TouchableOpacity
-                    style={[styles.bookedCancelBtn, isBusy && styles.disabledBtn]}
-                    disabled={isBusy}
-                    onPress={async () => {
-                      LayoutAnimation.configureNext(
-                        LayoutAnimation.Presets.easeInEaseOut
-                      );
-                      await onCancelBySession(session);
-                    }}
-                    activeOpacity={0.82}
-                  >
-                    {isBusy ? (
-                      <ActivityIndicator size="small" color={COLORS.danger} />
-                    ) : (
-                      <>
-                        <CheckCircle2 size={15} color={COLORS.danger} />
-                        <Text style={styles.bookedCancelBtnText}>
-                          ✓ Kayıtlısın (İptal Et)
-                        </Text>
-                      </>
-                    )}
-                  </TouchableOpacity>
-                ) : isFull ? (
-                  isWaitlisted ? (
-                    <TouchableOpacity
-                      style={[styles.waitlistedLeaveBtn, isBusy && styles.disabledBtn]}
-                      disabled={isBusy}
-                      onPress={async () => {
-                        LayoutAnimation.configureNext(
-                          LayoutAnimation.Presets.easeInEaseOut
-                        );
-                        await onCancelWaitlist(session);
-                      }}
-                      activeOpacity={0.84}
-                    >
-                      {isBusy ? (
-                        <ActivityIndicator size="small" color={COLORS.warningText} />
-                      ) : (
-                        <Text style={styles.waitlistedLeaveBtnText}>
-                          ⏳ Yedek Listedesin (#{session.waitlist_position ?? 1} • Çık)
-                        </Text>
-                      )}
-                    </TouchableOpacity>
-                  ) : remainingCredits <= 0 ? (
-                    <TouchableOpacity
-                      style={styles.waitlistJoinBtn}
-                      onPress={onOpenPackageRenew}
-                      activeOpacity={0.86}
-                    >
-                      <Text style={styles.waitlistJoinBtnText}>
-                        ⏳ Paket Yenile & Yedek Listeye Yazıl
-                      </Text>
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity
-                      style={[styles.waitlistJoinBtn, isBusy && styles.disabledBtn]}
-                      disabled={isBusy}
-                      onPress={async () => {
-                        LayoutAnimation.configureNext(
-                          LayoutAnimation.Presets.easeInEaseOut
-                        );
-                        await onJoinWaitlist(session);
-                      }}
-                      activeOpacity={0.86}
-                    >
-                      {isBusy ? (
-                        <ActivityIndicator size="small" color={COLORS.warningText} />
-                      ) : (
-                        <Text style={styles.waitlistJoinBtnText}>
-                          ⏳ Yedek Listeye Yazıl
-                        </Text>
-                      )}
-                    </TouchableOpacity>
-                  )
-                ) : remainingCredits <= 0 ? (
-                  <TouchableOpacity
-                    style={styles.topUpActionBtn}
-                    onPress={onOpenPackageRenew}
-                    activeOpacity={0.86}
-                  >
-                    <Text style={styles.topUpActionBtnText}>
-                      Kredi Yetersiz • Paket Yenile
-                    </Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity
-                    style={[styles.bookNowBtn, isBusy && styles.disabledBtn]}
-                    disabled={isBusy}
-                    onPress={async () => {
-                      LayoutAnimation.configureNext(
-                        LayoutAnimation.Presets.easeInEaseOut
-                      );
-                      await onBookSession(session);
-                    }}
-                    activeOpacity={0.86}
-                  >
-                    {isBusy ? (
-                      <ActivityIndicator size="small" color={COLORS.white} />
-                    ) : (
-                      <Text style={styles.bookNowBtnText}>Hemen Kayıt Ol</Text>
-                    )}
-                  </TouchableOpacity>
-                )}
-              </View>
-            );
-          })
-        )}
-      </ScrollView>
+        }
+      />
     </View>
   );
 }

@@ -1,13 +1,13 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   Animated,
   Easing,
+  FlatList,
   Image,
   KeyboardAvoidingView,
   Platform,
   RefreshControl,
-  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -38,7 +38,6 @@ import {
   Utensils,
   Zap,
 } from 'lucide-react-native';
-import { FoodVisionResultModal } from '@/components/FoodVisionResultModal';
 import { apiRequest } from '@/config/api';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
@@ -57,9 +56,17 @@ import {
   buildFoodVisionFormData,
   buildPickedPhotoFromDataUri,
   compressWebImageForUpload,
+  JPEG_QUALITY,
+  MAX_DIMENSION,
   PickedFoodPhoto,
   pickNativeFoodPhoto,
 } from '@/utils/foodPhotoPicker';
+
+const FoodVisionResultModal = React.lazy(() =>
+  import('@/components/FoodVisionResultModal').then((m) => ({
+    default: m.FoodVisionResultModal,
+  }))
+);
 
 export interface MemberNutritionScreenProps {
   member: AppUser;
@@ -366,6 +373,167 @@ function getDefaultMealTypeByHour(): MealType {
   if (hour >= 16 && hour < 22) return 'Akşam';
   return 'Ara Öğün';
 }
+
+interface MealLogCardItemProps {
+  log: NutritionMealLog;
+  index: number;
+  isLast: boolean;
+  isExpanded: boolean;
+  onToggleExpand: (logId: number) => void;
+}
+
+const MealLogCardItem = React.memo(function MealLogCardItem({
+  log,
+  index,
+  isLast,
+  isExpanded,
+  onToggleExpand,
+}: MealLogCardItemProps) {
+  const thumbUri = normalizeImageUri(log.photo_thumbnail);
+  const scoreTone = getHealthScoreTone(Number(log.health_score || 0));
+  const items = Array.isArray(log.detected_items)
+    ? log.detected_items
+    : Array.isArray(log.items)
+    ? log.items
+    : [];
+  const coachText = log.coach_note || log.coach_tip || '';
+
+  return (
+    <View style={[styles.logCardShell, isLast && styles.logCardShellLast]}>
+      <View
+        style={[
+          styles.logCardInner,
+          index === 0 && styles.logCardInnerFirst,
+          isLast && styles.logCardInnerLast,
+          index > 0 && styles.logCardTopBorder,
+        ]}
+      >
+        <TouchableOpacity
+          style={styles.logHeaderTouch}
+          onPress={() => onToggleExpand(log.id)}
+          activeOpacity={0.78}
+          accessibilityRole="button"
+        >
+          {thumbUri ? (
+            <Image
+              source={{ uri: thumbUri }}
+              style={styles.logThumb}
+              resizeMode="cover"
+            />
+          ) : (
+            <View style={styles.logThumbFallback}>
+              {log.source === 'photo' ? (
+                <Camera size={16} color={COLORS.textMuted} strokeWidth={1.5} />
+              ) : (
+                <FileText size={16} color={COLORS.textMuted} strokeWidth={1.5} />
+              )}
+            </View>
+          )}
+
+          <View style={styles.logMainCol}>
+            <View style={styles.logTopLine}>
+              <Text style={styles.logTitle} numberOfLines={1}>
+                {log.meal_description || 'Kayıtlı öğün'}
+              </Text>
+              <Text style={styles.logCalories}>
+                {formatNumber(log.calories)} kcal
+              </Text>
+            </View>
+
+            <View style={styles.logMetaRow}>
+              <Text style={styles.logMetaText}>
+                {formatLogTime(log.created_at)} · {log.meal_type || 'Öğün'}
+                {log.portion_size ? ` · ${log.portion_size}` : ''}
+              </Text>
+              {Number(log.health_score) > 0 && (
+                <Text style={[styles.logScoreText, { color: scoreTone.text }]}>
+                  {Math.round(Number(log.health_score || 0))}/100
+                </Text>
+              )}
+            </View>
+
+            <View style={styles.logMacroRow}>
+              <Text style={styles.logMacroSummary}>
+                P {formatDecimalGram(log.protein_g)}g · K{' '}
+                {formatDecimalGram(log.carbs_g)}g · Y{' '}
+                {formatDecimalGram(log.fat_g)}g
+                {Number(log.fiber_g) > 0
+                  ? ` · Lif ${formatDecimalGram(Number(log.fiber_g || 0))}g`
+                  : ''}
+              </Text>
+              {isExpanded ? (
+                <ChevronUp
+                  size={15}
+                  color={COLORS.textMuted}
+                  strokeWidth={1.6}
+                />
+              ) : (
+                <ChevronDown
+                  size={15}
+                  color={COLORS.textMuted}
+                  strokeWidth={1.6}
+                />
+              )}
+            </View>
+          </View>
+        </TouchableOpacity>
+
+        {isExpanded && (
+          <View style={styles.logExpandedBody}>
+            {(log.glycemic_load || log.burn_equivalent) && (
+              <View style={styles.logExpandedMetaRow}>
+                {log.glycemic_load ? (
+                  <Text style={styles.logExpandedMetaItem}>
+                    Glisemik yük: {log.glycemic_load}
+                  </Text>
+                ) : null}
+                {log.burn_equivalent ? (
+                  <Text style={styles.logExpandedMetaItem}>
+                    Yakım: {log.burn_equivalent}
+                  </Text>
+                ) : null}
+              </View>
+            )}
+
+            {items.length > 0 && (
+              <View style={styles.logDetectedList}>
+                {items.map((dItem, dIdx) => {
+                  const portionLabel =
+                    'portion' in dItem && dItem.portion
+                      ? dItem.portion
+                      : dItem.estimated_grams
+                      ? `~${Math.round(dItem.estimated_grams)}g`
+                      : '';
+                  return (
+                    <View
+                      key={`${dItem.name}-${dIdx}`}
+                      style={styles.logDetectedItemRow}
+                    >
+                      <Text style={styles.logDetectedName}>
+                        {dItem.name}
+                        {portionLabel ? ` (${portionLabel})` : ''}
+                      </Text>
+                      <Text style={styles.logDetectedCal}>
+                        {formatNumber(dItem.calories)} kcal ·{' '}
+                        {formatDecimalGram(dItem.protein_g)}g P
+                      </Text>
+                    </View>
+                  );
+                })}
+              </View>
+            )}
+
+            {coachText ? (
+              <Text style={styles.logCoachNote}>
+                {normalizeCoachNote(coachText)}
+              </Text>
+            ) : null}
+          </View>
+        )}
+      </View>
+    </View>
+  );
+});
 
 export function MemberNutritionScreen({
   member,
@@ -755,7 +923,11 @@ export function MemberNutritionScreen({
       setPreparingPhoto(true);
       setPhotoError(null);
       try {
-        const compressed = await compressWebImageForUpload(file, 1280, 0.7);
+        const compressed = await compressWebImageForUpload(
+          file,
+          MAX_DIMENSION,
+          JPEG_QUALITY
+        );
         setSelectedPhoto(compressed);
         setVisionResult(null);
         setPreparingPhoto(false);
@@ -947,25 +1119,30 @@ export function MemberNutritionScreen({
 
   const todayDateLabel = useMemo(() => formatTodayTurkishDate(), []);
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.container}
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
-    >
-      <ScrollView
-        style={styles.container}
-        contentContainerStyle={styles.content}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-        refreshControl={
-          <RefreshControl
-            refreshing={refreshing}
-            onRefresh={handlePullRefresh}
-            tintColor={COLORS.primary}
-          />
-        }
-      >
+  const handleToggleExpandLog = useCallback((logId: number) => {
+    setExpandedLogId((prev) => (prev === logId ? null : logId));
+  }, []);
+
+  const renderMealLogItem = useCallback(
+    ({ item, index }: { item: NutritionMealLog; index: number }) => (
+      <MealLogCardItem
+        log={item}
+        index={index}
+        isLast={index === mealLogs.length - 1}
+        isExpanded={expandedLogId === item.id}
+        onToggleExpand={handleToggleExpandLog}
+      />
+    ),
+    [expandedLogId, handleToggleExpandLog, mealLogs.length]
+  );
+
+  const keyExtractor = useCallback(
+    (item: NutritionMealLog, index: number) => `${item.id}-${index}`,
+    []
+  );
+
+  const nutritionHeaderElement = (
+    <View style={styles.headerStack}>
       {/* Web gizli dosya ve kamera girişleri */}
       {Platform.OS === 'web'
         ? React.createElement('input', {
@@ -1627,8 +1804,8 @@ export function MemberNutritionScreen({
         )}
       </View>
 
-      {/* 5. BUGÜNKÜ ÖĞÜN GEÇMİŞİ */}
-      <View style={styles.card}>
+      {/* 5. BUGÜNKÜ ÖĞÜN GEÇMİŞİ BAŞLIK KARTI (FlatList Öğelerinin Üst Parçası) */}
+      <View style={styles.logsSectionHeaderCard}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
             <Clock size={18} color={COLORS.textSecondary} strokeWidth={1.6} />
@@ -1638,183 +1815,25 @@ export function MemberNutritionScreen({
             {logsLoading ? 'Yükleniyor' : `${mealLogs.length} kayıt`}
           </Text>
         </View>
-
-        {(mealLogs ?? []).length === 0 ? (
-          <View style={styles.emptyLogsBox}>
-            <Utensils size={18} color={COLORS.textMuted} strokeWidth={1.5} />
-            <Text style={styles.emptyLogsTitle}>Henüz öğün kaydı yok</Text>
-            <Text style={styles.emptyLogsSub}>
-              Yukarıdan tabak fotoğrafı analiz ettiğinizde öğünleriniz saat
-              sırasıyla burada listelenir
-            </Text>
-          </View>
-        ) : (
-          <View style={styles.logsTimeline}>
-            {(mealLogs ?? []).map((log, index) => {
-              const thumbUri = normalizeImageUri(log.photo_thumbnail);
-              const isExpanded = expandedLogId === log.id;
-              const scoreTone = getHealthScoreTone(Number(log.health_score || 0));
-              const items = Array.isArray(log.detected_items)
-                ? log.detected_items
-                : Array.isArray(log.items)
-                ? log.items
-                : [];
-              const coachText = log.coach_note || log.coach_tip || '';
-
-              return (
-                <View
-                  key={`${log.id}-${index}`}
-                  style={[
-                    styles.logCard,
-                    index > 0 && styles.logCardTopBorder,
-                  ]}
-                >
-                  <TouchableOpacity
-                    style={styles.logHeaderTouch}
-                    onPress={() =>
-                      setExpandedLogId((prev) =>
-                        prev === log.id ? null : log.id
-                      )
-                    }
-                    activeOpacity={0.78}
-                    accessibilityRole="button"
-                  >
-                    {thumbUri ? (
-                      <Image
-                        source={{ uri: thumbUri }}
-                        style={styles.logThumb}
-                        resizeMode="cover"
-                      />
-                    ) : (
-                      <View style={styles.logThumbFallback}>
-                        {log.source === 'photo' ? (
-                          <Camera
-                            size={16}
-                            color={COLORS.textMuted}
-                            strokeWidth={1.5}
-                          />
-                        ) : (
-                          <FileText
-                            size={16}
-                            color={COLORS.textMuted}
-                            strokeWidth={1.5}
-                          />
-                        )}
-                      </View>
-                    )}
-
-                    <View style={styles.logMainCol}>
-                      <View style={styles.logTopLine}>
-                        <Text style={styles.logTitle} numberOfLines={1}>
-                          {log.meal_description || 'Kayıtlı öğün'}
-                        </Text>
-                        <Text style={styles.logCalories}>
-                          {formatNumber(log.calories)} kcal
-                        </Text>
-                      </View>
-
-                      <View style={styles.logMetaRow}>
-                        <Text style={styles.logMetaText}>
-                          {formatLogTime(log.created_at)} · {log.meal_type || 'Öğün'}
-                          {log.portion_size ? ` · ${log.portion_size}` : ''}
-                        </Text>
-                        {Number(log.health_score) > 0 && (
-                          <Text
-                            style={[
-                              styles.logScoreText,
-                              { color: scoreTone.text },
-                            ]}
-                          >
-                            {Math.round(Number(log.health_score || 0))}/100
-                          </Text>
-                        )}
-                      </View>
-
-                      <View style={styles.logMacroRow}>
-                        <Text style={styles.logMacroSummary}>
-                          P {formatDecimalGram(log.protein_g)}g · K{' '}
-                          {formatDecimalGram(log.carbs_g)}g · Y{' '}
-                          {formatDecimalGram(log.fat_g)}g
-                          {Number(log.fiber_g) > 0
-                            ? ` · Lif ${formatDecimalGram(Number(log.fiber_g || 0))}g`
-                            : ''}
-                        </Text>
-                        {isExpanded ? (
-                          <ChevronUp
-                            size={15}
-                            color={COLORS.textMuted}
-                            strokeWidth={1.6}
-                          />
-                        ) : (
-                          <ChevronDown
-                            size={15}
-                            color={COLORS.textMuted}
-                            strokeWidth={1.6}
-                          />
-                        )}
-                      </View>
-                    </View>
-                  </TouchableOpacity>
-
-                  {isExpanded && (
-                    <View style={styles.logExpandedBody}>
-                      {(log.glycemic_load || log.burn_equivalent) && (
-                        <View style={styles.logExpandedMetaRow}>
-                          {log.glycemic_load ? (
-                            <Text style={styles.logExpandedMetaItem}>
-                              Glisemik yük: {log.glycemic_load}
-                            </Text>
-                          ) : null}
-                          {log.burn_equivalent ? (
-                            <Text style={styles.logExpandedMetaItem}>
-                              Yakım: {log.burn_equivalent}
-                            </Text>
-                          ) : null}
-                        </View>
-                      )}
-
-                      {items.length > 0 && (
-                        <View style={styles.logDetectedList}>
-                          {items.map((dItem, dIdx) => {
-                            const portionLabel =
-                              'portion' in dItem && dItem.portion
-                                ? dItem.portion
-                                : dItem.estimated_grams
-                                ? `~${Math.round(dItem.estimated_grams)}g`
-                                : '';
-                            return (
-                              <View
-                                key={`${dItem.name}-${dIdx}`}
-                                style={styles.logDetectedItemRow}
-                              >
-                                <Text style={styles.logDetectedName}>
-                                  {dItem.name}
-                                  {portionLabel ? ` (${portionLabel})` : ''}
-                                </Text>
-                                <Text style={styles.logDetectedCal}>
-                                  {formatNumber(dItem.calories)} kcal ·{' '}
-                                  {formatDecimalGram(dItem.protein_g)}g P
-                                </Text>
-                              </View>
-                            );
-                          })}
-                        </View>
-                      )}
-
-                      {coachText ? (
-                        <Text style={styles.logCoachNote}>
-                          {normalizeCoachNote(coachText)}
-                        </Text>
-                      ) : null}
-                    </View>
-                  )}
-                </View>
-              );
-            })}
-          </View>
-        )}
       </View>
+    </View>
+  );
 
+  const emptyLogsElement = (
+    <View style={[styles.logCardShell, styles.logCardShellLast]}>
+      <View style={styles.emptyLogsBox}>
+        <Utensils size={18} color={COLORS.textMuted} strokeWidth={1.5} />
+        <Text style={styles.emptyLogsTitle}>Henüz öğün kaydı yok</Text>
+        <Text style={styles.emptyLogsSub}>
+          Yukarıdan tabak fotoğrafı analiz ettiğinizde öğünleriniz saat
+          sırasıyla burada listelenir
+        </Text>
+      </View>
+    </View>
+  );
+
+  const footerElement = (
+    <View style={styles.footerWrap}>
       {/* SAĞLIK & BESLENME SORUMLULUK REDDİ (APP STORE 1.4.1) */}
       <View style={styles.medicalDisclaimerBox}>
         <Info size={16} color={COLORS.textSecondary} strokeWidth={1.7} />
@@ -1824,26 +1843,61 @@ export function MemberNutritionScreen({
           geçmez.
         </Text>
       </View>
-      </ScrollView>
+    </View>
+  );
 
-      {/* AI FOOD VISION DÜZENLENEBİLİR ANALİZ SONUÇ MODALI */}
-      <FoodVisionResultModal
-        visible={visionModalVisible}
-        memberId={member.id}
-        photoUri={selectedPhoto?.previewUri ?? null}
-        photoThumbnail={selectedPhoto?.thumbnailDataUri ?? null}
-        defaultMealType={mealType}
-        analysis={visionResult}
-        submitting={loggingVisionMeal}
-        submitError={visionLogError}
-        onClose={() => {
-          if (!loggingVisionMeal) {
-            setVisionModalVisible(false);
-            setVisionLogError(null);
-          }
-        }}
-        onConfirm={handleConfirmVisionMeal}
+  return (
+    <KeyboardAvoidingView
+      style={styles.container}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      keyboardVerticalOffset={Platform.OS === 'ios' ? 88 : 0}
+    >
+      <FlatList
+        data={mealLogs}
+        keyExtractor={keyExtractor}
+        renderItem={renderMealLogItem}
+        ListHeaderComponent={nutritionHeaderElement}
+        ListEmptyComponent={emptyLogsElement}
+        ListFooterComponent={footerElement}
+        style={styles.container}
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        initialNumToRender={8}
+        maxToRenderPerBatch={8}
+        windowSize={7}
+        removeClippedSubviews={Platform.OS !== 'web'}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={handlePullRefresh}
+            tintColor={COLORS.primary}
+          />
+        }
       />
+
+      {/* AI FOOD VISION DÜZENLENEBİLİR ANALİZ SONUÇ MODALI (Lazy) */}
+      {visionModalVisible ? (
+        <Suspense fallback={null}>
+          <FoodVisionResultModal
+            visible={visionModalVisible}
+            memberId={member.id}
+            photoUri={selectedPhoto?.previewUri ?? null}
+            photoThumbnail={selectedPhoto?.thumbnailDataUri ?? null}
+            defaultMealType={mealType}
+            analysis={visionResult}
+            submitting={loggingVisionMeal}
+            submitError={visionLogError}
+            onClose={() => {
+              if (!loggingVisionMeal) {
+                setVisionModalVisible(false);
+                setVisionLogError(null);
+              }
+            }}
+            onConfirm={handleConfirmVisionMeal}
+          />
+        </Suspense>
+      ) : null}
     </KeyboardAvoidingView>
   );
 }
@@ -1856,7 +1910,57 @@ const styles = StyleSheet.create({
   content: {
     padding: 20,
     paddingBottom: 40,
+  },
+  headerStack: {
     gap: 16,
+  },
+  logsSectionHeaderCard: {
+    backgroundColor: COLORS.surface,
+    borderTopLeftRadius: 16,
+    borderTopRightRadius: 16,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: 14,
+    borderTopWidth: 1,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: COLORS.border,
+  },
+  logCardShell: {
+    backgroundColor: COLORS.surface,
+    paddingHorizontal: 20,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: COLORS.border,
+  },
+  logCardShellLast: {
+    paddingBottom: 20,
+    borderBottomLeftRadius: 16,
+    borderBottomRightRadius: 16,
+    borderBottomWidth: 1,
+    ...CARD_SHADOW,
+  },
+  logCardInner: {
+    backgroundColor: COLORS.backgroundAlt,
+    borderLeftWidth: 1,
+    borderRightWidth: 1,
+    borderColor: COLORS.border,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    gap: 10,
+  },
+  logCardInnerFirst: {
+    borderTopWidth: 1,
+    borderTopLeftRadius: 12,
+    borderTopRightRadius: 12,
+  },
+  logCardInnerLast: {
+    borderBottomWidth: 1,
+    borderBottomLeftRadius: 12,
+    borderBottomRightRadius: 12,
+  },
+  footerWrap: {
+    marginTop: 16,
   },
   pageHeader: {
     gap: 4,

@@ -351,6 +351,27 @@ export interface ClubHomeData {
   recent_checkins: CheckInLogItem[];
 }
 
+export interface MemberDashboardSummary {
+  member: AppUser;
+  streak_days: number;
+  active_package: MemberPackage | null;
+  remaining_credits: number;
+  total_credits: number;
+  today_wellness: DailyWellness;
+  live_status: ClubLiveStatus;
+  upcoming_booking: MemberBookingItem | null;
+  upcoming_sessions: AvailableSession[]; // max 3
+  announcements: AnnouncementItem[]; // max 5
+  trainers: TrainerCard[];
+  wod_title: string;
+  wod_focus: string;
+  wod_duration_min: number;
+  wod_calories: number;
+  wod_movements: string[];
+  motivation_quote: string;
+  recent_checkins: CheckInLogItem[];
+}
+
 export interface BookingCreateRequest {
   member_id: number;
   session_id: number;

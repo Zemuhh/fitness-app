@@ -277,7 +277,7 @@ class MemberPackage(Base):
     total_credits = Column(Integer, nullable=False)
     remaining_credits = Column(Integer, nullable=False)
     expiry_date = Column(String(20), nullable=False)  # YYYY-MM-DD
-    is_active = Column(Boolean, default=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
 
     member = relationship("User", back_populates="packages")
     bookings = relationship("Booking", back_populates="package")
@@ -299,7 +299,7 @@ class ClassSession(Base):
     started_at = Column(String(40), nullable=True)
     ended_at = Column(String(40), nullable=True)
     actual_duration_minutes = Column(Integer, nullable=True)
-    session_status = Column(String(30), nullable=False, default="scheduled")  # 'scheduled' | 'in_progress' | 'completed'
+    session_status = Column(String(30), nullable=False, default="scheduled", index=True)  # 'scheduled' | 'in_progress' | 'completed'
 
     trainer = relationship("User", back_populates="trained_sessions")
     bookings = relationship(
@@ -320,8 +320,8 @@ class Booking(Base):
     id = Column(Integer, primary_key=True, index=True)
     session_id = Column(Integer, ForeignKey("class_sessions.id"), nullable=False, index=True)
     member_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
-    package_id = Column(Integer, ForeignKey("member_packages.id"), nullable=False)
-    status = Column(String(20), default="booked", nullable=False)  # 'booked' | 'attended' | 'cancelled' | 'no_show'
+    package_id = Column(Integer, ForeignKey("member_packages.id"), nullable=False, index=True)
+    status = Column(String(20), default="booked", nullable=False, index=True)  # 'booked' | 'attended' | 'cancelled' | 'no_show'
     checked_in_at = Column(String(40), nullable=True)
 
     session = relationship("ClassSession", back_populates="bookings")
@@ -362,8 +362,8 @@ class Announcement(Base):
     title = Column(String(180), nullable=False)
     content = Column(Text, nullable=False)
     tag = Column(String(60), nullable=False)  # 'Kulüp Haberleri' | 'Kurallar & Bilgilendirme' | 'Kampanyalar'
-    date = Column(String(20), nullable=False)  # YYYY-MM-DD
-    is_pinned = Column(Boolean, default=False, nullable=False)
+    date = Column(String(20), nullable=False, index=True)  # YYYY-MM-DD
+    is_pinned = Column(Boolean, default=False, nullable=False, index=True)
 
 
 class DailyWellness(Base):

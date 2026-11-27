@@ -16,7 +16,7 @@ class PackageCatalogPlan(Base):
     price_try = Column(Float, nullable=False)
     popular_badge = Column(String(100), nullable=True)
     features_json = Column(Text, nullable=False, default="[]")
-    is_active = Column(Boolean, default=True, nullable=False)
+    is_active = Column(Boolean, default=True, nullable=False, index=True)
 
 
 class PaymentTransaction(Base):
@@ -32,7 +32,7 @@ class PaymentTransaction(Base):
     card_holder_name = Column(String(120), nullable=True)
     card_last4 = Column(String(10), nullable=True)
     installment_count = Column(Integer, default=1, nullable=False)
-    status = Column(String(20), default="completed", nullable=False)  # 'completed' | 'failed'
+    status = Column(String(20), default="completed", nullable=False, index=True)  # 'completed' | 'failed'
     created_at = Column(String(40), nullable=False)  # ISO 8601 timestamp
 
     member = relationship("User")
@@ -80,8 +80,8 @@ class PaymentCheckoutSession(Base):
     return_url = Column(String(700), nullable=True)
     cancel_url = Column(String(700), nullable=True)
 
-    transaction_id = Column(Integer, ForeignKey("payment_transactions.id"), nullable=True)
-    credited_package_id = Column(Integer, ForeignKey("member_packages.id"), nullable=True)
+    transaction_id = Column(Integer, ForeignKey("payment_transactions.id"), nullable=True, index=True)
+    credited_package_id = Column(Integer, ForeignKey("member_packages.id"), nullable=True, index=True)
     purchased_credits = Column(Integer, nullable=False, default=0)
     carried_credits = Column(Integer, nullable=False, default=0)
     booked_hold_count = Column(Integer, nullable=False, default=0)

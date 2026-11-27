@@ -58,7 +58,7 @@ class AuthSession(Base):
     auth_provider = Column(String(30), nullable=False, default="password")  # "password" | "google"
     created_at = Column(String(40), nullable=False, default=_now_iso)
     expires_at = Column(String(40), nullable=False)
-    is_revoked = Column(Boolean, nullable=False, default=False)
+    is_revoked = Column(Boolean, nullable=False, default=False, index=True)
 
 
 class GoogleOAuthState(Base):
@@ -69,7 +69,7 @@ class GoogleOAuthState(Base):
     code = Column(String(120), unique=True, nullable=True, index=True)
     session_token = Column(String(140), nullable=True)
     redirect_uri = Column(String(600), nullable=True)
-    email = Column(String(150), nullable=True)
+    email = Column(String(150), nullable=True, index=True)
     full_name = Column(String(140), nullable=True)
     google_sub = Column(String(150), nullable=True)
     avatar_url = Column(String(500), nullable=True)
@@ -155,12 +155,78 @@ def run_sqlite_schema_migrations(db_engine: Engine) -> None:
     inspector = inspect(db_engine)
     existing_tables = set(inspector.get_table_names())
 
+    index_migrations = [
+        ("ix_users_email", "users", ("email",)),
+        ("ix_users_role", "users", ("role",)),
+        ("ix_users_instagram_handle", "users", ("instagram_handle",)),
+        ("ix_users_referral_code", "users", ("referral_code",)),
+        ("ix_member_packages_member_id", "member_packages", ("member_id",)),
+        ("ix_member_packages_is_active", "member_packages", ("is_active",)),
+        ("ix_member_packages_member_active", "member_packages", ("member_id", "is_active")),
+        ("ix_class_sessions_trainer_id", "class_sessions", ("trainer_id",)),
+        ("ix_class_sessions_date", "class_sessions", ("date",)),
+        ("ix_class_sessions_session_status", "class_sessions", ("session_status",)),
+        ("ix_class_sessions_date_start", "class_sessions", ("date", "start_time")),
+        ("ix_bookings_session_id", "bookings", ("session_id",)),
+        ("ix_bookings_member_id", "bookings", ("member_id",)),
+        ("ix_bookings_package_id", "bookings", ("package_id",)),
+        ("ix_bookings_status", "bookings", ("status",)),
+        ("ix_bookings_member_status", "bookings", ("member_id", "status")),
+        ("ix_bookings_session_status", "bookings", ("session_id", "status")),
+        ("ix_body_metrics_member_id", "body_metrics", ("member_id",)),
+        ("ix_body_metrics_date", "body_metrics", ("date",)),
+        ("ix_body_metrics_member_date", "body_metrics", ("member_id", "date")),
+        ("ix_waitlist_session_id", "waitlist", ("session_id",)),
+        ("ix_waitlist_member_id", "waitlist", ("member_id",)),
+        ("ix_announcements_date", "announcements", ("date",)),
+        ("ix_announcements_is_pinned", "announcements", ("is_pinned",)),
+        ("ix_daily_wellness_member_id", "daily_wellness", ("member_id",)),
+        ("ix_daily_wellness_date", "daily_wellness", ("date",)),
+        ("ix_daily_wellness_member_date", "daily_wellness", ("member_id", "date")),
+        ("ix_nutrition_meal_logs_member_id", "nutrition_meal_logs", ("member_id",)),
+        ("ix_nutrition_meal_logs_date", "nutrition_meal_logs", ("date",)),
+        ("ix_nutrition_meal_logs_member_date", "nutrition_meal_logs", ("member_id", "date")),
+        ("ix_admin_accounts_email", "admin_accounts", ("email",)),
+        ("ix_auth_sessions_user_id", "auth_sessions", ("user_id",)),
+        ("ix_auth_sessions_is_revoked", "auth_sessions", ("is_revoked",)),
+        ("ix_google_oauth_states_email", "google_oauth_states", ("email",)),
+        ("ix_package_catalog_plans_is_active", "package_catalog_plans", ("is_active",)),
+        ("ix_payment_transactions_member_id", "payment_transactions", ("member_id",)),
+        ("ix_payment_transactions_plan_id", "payment_transactions", ("plan_id",)),
+        ("ix_payment_transactions_member_package_id", "payment_transactions", ("member_package_id",)),
+        ("ix_payment_transactions_status", "payment_transactions", ("status",)),
+        ("ix_payment_checkout_sessions_session_id", "payment_checkout_sessions", ("session_id",)),
+        ("ix_payment_checkout_sessions_member_id", "payment_checkout_sessions", ("member_id",)),
+        ("ix_payment_checkout_sessions_plan_id", "payment_checkout_sessions", ("plan_id",)),
+        ("ix_payment_checkout_sessions_status", "payment_checkout_sessions", ("status",)),
+        ("ix_payment_checkout_sessions_transaction_id", "payment_checkout_sessions", ("transaction_id",)),
+        ("ix_payment_checkout_sessions_credited_package_id", "payment_checkout_sessions", ("credited_package_id",)),
+    ]
+
     with db_engine.begin() as conn:
+        table_cols_cache = {}
         for table_name, col_name, col_ddl in column_migrations:
             if table_name not in existing_tables:
                 continue
-            cols = {col["name"] for col in inspector.get_columns(table_name)}
-            if col_name not in cols:
+            if table_name not in table_cols_cache:
+                table_cols_cache[table_name] = {
+                    col["name"] for col in inspector.get_columns(table_name)
+                }
+            if col_name not in table_cols_cache[table_name]:
                 conn.execute(
                     text(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_ddl}")
+                )
+                table_cols_cache[table_name].add(col_name)
+
+        for idx_name, table_name, col_names in index_migrations:
+            if table_name not in existing_tables:
+                continue
+            if table_name not in table_cols_cache:
+                table_cols_cache[table_name] = {
+                    col["name"] for col in inspector.get_columns(table_name)
+                }
+            if all(c in table_cols_cache[table_name] for c in col_names):
+                cols_sql = ", ".join(col_names)
+                conn.execute(
+                    text(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table_name} ({cols_sql})")
                 )

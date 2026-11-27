@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
   RefreshControl,
@@ -26,12 +26,18 @@ import {
   User,
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
-import { BodyHeatmapCard } from '@/components/BodyHeatmapCard';
+import { LazyScreenFallback } from '@/components/DashboardSkeleton';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS } from '@/theme/colors';
 import { AppUser, BodyMetric, MemberMetricsSummary } from '@/types/fitness';
 import { formatTurkishDateLabel } from '@/utils/dateHelpers';
 import { getCategoryVisuals } from '@/screens/member/MemberAvatar';
+
+const BodyHeatmapCard = React.lazy(() =>
+  import('@/components/BodyHeatmapCard').then((m) => ({
+    default: m.BodyHeatmapCard,
+  }))
+);
 
 interface Props {
   member: AppUser;
@@ -257,14 +263,16 @@ export function MemberProgressTab({
       </View>
 
       {/* İNTERAKTİF KAS & SAKATLIK HARİTASI */}
-      <BodyHeatmapCard
-        userId={member.id}
-        userName={member.full_name}
-        title="İnteraktif Kas & Sakatlık Haritam"
-        subtitle="Bölgelere dokunarak sağlam, hassasiyet veya sakatlık durumunuzu eğitmeninizle anında paylaşın"
-        refreshKey={refreshSignal + heatmapRefreshTick}
-        onZonesSaved={() => triggerGlobalRefresh()}
-      />
+      <Suspense fallback={<LazyScreenFallback label="Vücut haritası yükleniyor..." />}>
+        <BodyHeatmapCard
+          userId={member.id}
+          userName={member.full_name}
+          title="İnteraktif Kas & Sakatlık Haritam"
+          subtitle="Bölgelere dokunarak sağlam, hassasiyet veya sakatlık durumunuzu eğitmeninizle anında paylaşın"
+          refreshKey={refreshSignal + heatmapRefreshTick}
+          onZonesSaved={() => triggerGlobalRefresh()}
+        />
+      </Suspense>
 
       {/* 2. EĞİTMENİN SON ANTRENMAN & BESLENME TAVSİYESİ */}
       {summary?.latest_trainer_comment ? (

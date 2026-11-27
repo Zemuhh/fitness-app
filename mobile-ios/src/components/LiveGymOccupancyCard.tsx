@@ -7,6 +7,7 @@ import { ClubLiveStatus, HourlyForecastItem } from '@/types/fitness';
 
 export interface LiveGymOccupancyCardProps {
   refreshTrigger?: number;
+  initialStatus?: ClubLiveStatus | null;
 }
 
 const FALLBACK_LIVE_STATUS: ClubLiveStatus = {
@@ -63,11 +64,37 @@ function getBarColor(pct: number): string {
   return '#10B981';
 }
 
-export function LiveGymOccupancyCard({ refreshTrigger = 0 }: LiveGymOccupancyCardProps) {
-  const [liveStatus, setLiveStatus] = useState<ClubLiveStatus>(FALLBACK_LIVE_STATUS);
+function normalizeLiveStatus(res?: ClubLiveStatus | null): ClubLiveStatus {
+  if (!res || typeof res.occupancy_pct !== 'number') {
+    return FALLBACK_LIVE_STATUS;
+  }
+  return {
+    ...FALLBACK_LIVE_STATUS,
+    ...res,
+    hourly_forecast:
+      Array.isArray(res.hourly_forecast) && res.hourly_forecast.length > 0
+        ? res.hourly_forecast
+        : FALLBACK_LIVE_STATUS.hourly_forecast,
+  };
+}
+
+export const LiveGymOccupancyCard = React.memo(function LiveGymOccupancyCard({
+  refreshTrigger = 0,
+  initialStatus,
+}: LiveGymOccupancyCardProps) {
+  const [liveStatus, setLiveStatus] = useState<ClubLiveStatus>(() =>
+    normalizeLiveStatus(initialStatus)
+  );
+  const initialRefreshRef = useRef<number>(refreshTrigger);
 
   const pulseScale = useRef(new Animated.Value(1)).current;
   const pulseOpacity = useRef(new Animated.Value(0.75)).current;
+
+  useEffect(() => {
+    if (initialStatus && typeof initialStatus.occupancy_pct === 'number') {
+      setLiveStatus(normalizeLiveStatus(initialStatus));
+    }
+  }, [initialStatus]);
 
   useEffect(() => {
     const loop = Animated.loop(
@@ -123,8 +150,12 @@ export function LiveGymOccupancyCard({ refreshTrigger = 0 }: LiveGymOccupancyCar
   }, []);
 
   useEffect(() => {
+    // initialStatus tekil özet API'den geldiyse ilk açılışta ekstra /club/live-status isteği atma
+    if (initialStatus && refreshTrigger === initialRefreshRef.current) {
+      return;
+    }
     fetchLiveStatus();
-  }, [fetchLiveStatus, refreshTrigger]);
+  }, [fetchLiveStatus, initialStatus, refreshTrigger]);
 
   const clampedPct = Math.max(0, Math.min(100, Math.round(liveStatus.occupancy_pct)));
   const palette = useMemo(() => getOccupancyPalette(clampedPct), [clampedPct]);
@@ -281,7 +312,7 @@ export function LiveGymOccupancyCard({ refreshTrigger = 0 }: LiveGymOccupancyCar
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

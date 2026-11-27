@@ -243,7 +243,7 @@ interface BodyHeatmapCardProps {
   onZonesSaved?: (zones: BodyZonesRecord) => void;
 }
 
-export function BodyHeatmapCard({
+export const BodyHeatmapCard = React.memo(function BodyHeatmapCard({
   userId,
   userName,
   initialZones,
@@ -787,7 +787,7 @@ export function BodyHeatmapCard({
       </View>
     </View>
   );
-}
+});
 
 const styles = StyleSheet.create({
   card: {

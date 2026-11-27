@@ -14,6 +14,7 @@ import httpx
 from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
@@ -87,6 +88,7 @@ from schemas import (
     LiveParticipantOut,
     MemberBookingItemOut,
     MemberDashboardOut,
+    MemberDashboardSummaryOut,
     MemberMetricsSummaryOut,
     MemberNotesUpdateRequest,
     MemberProfileUpdateRequest,
@@ -382,6 +384,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=500)
 configure_cors(app)
 
 app.include_router(auth_router)
@@ -1067,14 +1070,12 @@ def health_check():
     return HealthOut(status="ok")
 
 
-@app.get("/club/live-status", response_model=ClubLiveStatusOut)
-def get_club_live_status(db: Session = Depends(get_db)):
+def _compute_club_live_status_from_sessions(
+    today_sessions: List[ClassSession],
+) -> ClubLiveStatusOut:
     capacity = 40
-    today_str = _today_iso()
     now_dt = datetime.now()
     now_hour = now_dt.hour
-
-    today_sessions = db.query(ClassSession).filter(ClassSession.date == today_str).all()
 
     base_curve = {
         7: 22,
@@ -1144,6 +1145,13 @@ def get_club_live_status(db: Session = Depends(get_db)):
         status_badge=status_badge,
         hourly_forecast=hourly_forecast,
     )
+
+
+@app.get("/club/live-status", response_model=ClubLiveStatusOut)
+def get_club_live_status(db: Session = Depends(get_db)):
+    today_str = _today_iso()
+    today_sessions = db.query(ClassSession).filter(ClassSession.date == today_str).all()
+    return _compute_club_live_status_from_sessions(today_sessions)
 
 
 @app.get("/users/{user_id}/body-zones", response_model=BodyZonesOut)
@@ -2392,6 +2400,166 @@ def get_club_home(member_id: int, db: Session = Depends(get_db)):
         streak_days=member.streak_days or 0,
         active_package=PackageOut.model_validate(active_package) if active_package else None,
         upcoming_booking=upcoming_booking,
+        announcements=[AnnouncementOut.model_validate(a) for a in announcements],
+        trainers=trainer_cards,
+        wod_title=wod["wod_title"],
+        wod_focus=wod["wod_focus"],
+        wod_duration_min=wod["wod_duration_min"],
+        wod_calories=wod["wod_calories"],
+        wod_movements=wod["wod_movements"],
+        motivation_quote=wod["motivation_quote"],
+        recent_checkins=recent_checkins,
+    )
+
+
+@app.get("/dashboard/{member_id}/summary", response_model=MemberDashboardSummaryOut)
+def get_dashboard_summary(member_id: int, db: Session = Depends(get_db)):
+    """
+    Üye ana sayfasının ihtiyaç duyduğu tüm verileri (profil, paket/kredi, günlük wellness,
+    canlı salon yoğunluğu, yaklaşan rezervasyon, ilk 3 uygun ders, en güncel 5 duyuru,
+    eğitmen kadrosu, WOD ve son check-in kayıtları) N+1 sorgusuz tek JSON'da döndürür.
+    """
+    member = db.query(User).filter(User.id == member_id, User.role == "member").first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Müşteri bulunamadı.")
+
+    today_iso = _today_iso()
+    window_start_iso = (date.today() - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    active_package = get_active_package_for_member(db, member_id)
+    remaining_credits = active_package.remaining_credits if active_package else 0
+    total_credits = active_package.total_credits if active_package else 0
+
+    wellness_row = (
+        db.query(DailyWellness)
+        .filter(DailyWellness.member_id == member_id, DailyWellness.date == today_iso)
+        .first()
+    )
+    if wellness_row:
+        today_wellness = _to_daily_wellness_out(wellness_row)
+    else:
+        today_wellness = DailyWellnessOut(
+            id=0,
+            member_id=member_id,
+            date=today_iso,
+            water_ml=0,
+            water_goal_ml=WATER_GOAL_ML,
+            sleep_hours=7.5,
+            energy_status="normal",
+            calories_intake=0,
+            calories_goal=CALORIES_GOAL,
+            protein_g=0,
+            protein_goal_g=PROTEIN_GOAL_G,
+            carbs_g=0,
+            carbs_goal_g=CARBS_GOAL_G,
+            fat_g=0,
+            fat_goal_g=FAT_GOAL_G,
+        )
+
+    member_bookings = (
+        db.query(Booking)
+        .options(joinedload(Booking.session).joinedload(ClassSession.trainer))
+        .filter(Booking.member_id == member_id, Booking.status != "cancelled")
+        .all()
+    )
+
+    booked_session_map: Dict[int, int] = {}
+    future_booked: List[Booking] = []
+    attended_bookings: List[Booking] = []
+    for b in member_bookings:
+        if b.session is None:
+            continue
+        booked_session_map[b.session.id] = b.id
+        if b.status == "booked" and b.session.date >= today_iso:
+            future_booked.append(b)
+        elif b.status == "attended":
+            attended_bookings.append(b)
+
+    future_booked.sort(key=lambda b: (b.session.date, b.session.start_time))
+    upcoming_booking = _build_member_booking_item(future_booked[0]) if future_booked else None
+
+    attended_bookings.sort(
+        key=lambda b: (b.session.date, b.session.start_time, b.id),
+        reverse=True,
+    )
+    recent_checkins: List[CheckInLogOut] = []
+    for b in attended_bookings[:8]:
+        s = b.session
+        recent_checkins.append(
+            CheckInLogOut(
+                id=b.id,
+                date=s.date,
+                time=_compute_checkin_time(s.start_time),
+                session_title=s.title,
+                trainer_name=s.trainer.full_name if s.trainer else "Eğitmen",
+                location=s.room or "Ana Stüdyo",
+                category=s.category or "Fonksiyonel",
+            )
+        )
+
+    trainers = db.query(User).filter(User.role == "trainer").order_by(User.id.asc()).all()
+    recent_and_upcoming_sessions = (
+        db.query(ClassSession)
+        .options(joinedload(ClassSession.trainer))
+        .filter(ClassSession.date >= window_start_iso)
+        .order_by(ClassSession.date.asc(), ClassSession.start_time.asc())
+        .all()
+    )
+
+    sessions_by_trainer: Dict[int, List[ClassSession]] = {}
+    today_sessions: List[ClassSession] = []
+    future_open_sessions: List[ClassSession] = []
+    for s in recent_and_upcoming_sessions:
+        sessions_by_trainer.setdefault(s.trainer_id, []).append(s)
+        if s.date == today_iso:
+            today_sessions.append(s)
+        if s.date >= today_iso and (getattr(s, "session_status", None) or "scheduled") != "completed":
+            future_open_sessions.append(s)
+
+    trainer_cards = [
+        _build_trainer_card(t, sessions_by_trainer.get(t.id, []), today_iso, window_start_iso)
+        for t in trainers
+    ]
+
+    live_status = _compute_club_live_status_from_sessions(today_sessions)
+
+    selected_upcoming = future_open_sessions[:3]
+    waitlist_by_session: Dict[int, List[Waitlist]] = {}
+    if selected_upcoming:
+        upcoming_ids = [s.id for s in selected_upcoming]
+        waitlist_rows = (
+            db.query(Waitlist)
+            .filter(Waitlist.session_id.in_(upcoming_ids))
+            .order_by(Waitlist.id.asc())
+            .all()
+        )
+        for w in waitlist_rows:
+            waitlist_by_session.setdefault(w.session_id, []).append(w)
+
+    upcoming_sessions_out = [
+        _build_available_session_out(s, booked_session_map, waitlist_by_session, member_id)
+        for s in selected_upcoming
+    ]
+
+    announcements = (
+        db.query(Announcement)
+        .order_by(Announcement.is_pinned.desc(), Announcement.date.desc(), Announcement.id.desc())
+        .limit(5)
+        .all()
+    )
+
+    wod = DAILY_WOD_CATALOG[date.today().toordinal() % len(DAILY_WOD_CATALOG)]
+
+    return MemberDashboardSummaryOut(
+        member=_to_user_out(member),
+        streak_days=member.streak_days or 0,
+        active_package=PackageOut.model_validate(active_package) if active_package else None,
+        remaining_credits=remaining_credits,
+        total_credits=total_credits,
+        today_wellness=today_wellness,
+        live_status=live_status,
+        upcoming_booking=upcoming_booking,
+        upcoming_sessions=upcoming_sessions_out,
         announcements=[AnnouncementOut.model_validate(a) for a in announcements],
         trainers=trainer_cards,
         wod_title=wod["wod_title"],
@@ -3745,8 +3913,21 @@ def _resolve_active_static_dir() -> Path:
     return STATIC_DIR
 
 
-app.mount("/_expo", StaticFiles(directory=str(STATIC_DIR / "_expo")), name="expo_static")
-app.mount("/assets", StaticFiles(directory=str(STATIC_DIR / "assets")), name="assets_static")
+IMMUTABLE_CACHE_CONTROL = "public, max-age=31536000, immutable"
+HTML_NO_CACHE_CONTROL = "no-cache, no-store, must-revalidate"
+SHORT_STATIC_CACHE_CONTROL = "public, max-age=3600"
+
+
+class ImmutableStaticFiles(StaticFiles):
+    async def get_response(self, path: str, scope):
+        response = await super().get_response(path, scope)
+        if response.status_code in (200, 304):
+            response.headers["Cache-Control"] = IMMUTABLE_CACHE_CONTROL
+        return response
+
+
+app.mount("/_expo", ImmutableStaticFiles(directory=str(STATIC_DIR / "_expo")), name="expo_static")
+app.mount("/assets", ImmutableStaticFiles(directory=str(STATIC_DIR / "assets")), name="assets_static")
 
 
 @app.get("/", include_in_schema=False)
@@ -3754,7 +3935,10 @@ def serve_spa_root():
     active_static = _resolve_active_static_dir()
     index_file = active_static / "index.html"
     if index_file.is_file():
-        return FileResponse(str(index_file))
+        return FileResponse(
+            str(index_file),
+            headers={"Cache-Control": HTML_NO_CACHE_CONTROL},
+        )
     return JSONResponse(
         {
             "status": "ok",
@@ -3781,7 +3965,16 @@ def serve_spa_catch_all(full_path: str):
             candidate = (active_static / normalized).resolve()
             candidate.relative_to(active_static)
             if candidate.is_file():
-                return FileResponse(str(candidate))
+                if normalized.startswith("_expo/") or normalized.startswith("assets/"):
+                    cache_header = IMMUTABLE_CACHE_CONTROL
+                elif candidate.suffix.lower() in (".html", ".htm") or normalized == "index.html":
+                    cache_header = HTML_NO_CACHE_CONTROL
+                else:
+                    cache_header = SHORT_STATIC_CACHE_CONTROL
+                return FileResponse(
+                    str(candidate),
+                    headers={"Cache-Control": cache_header},
+                )
         except (ValueError, OSError):
             pass
 
@@ -3790,7 +3983,10 @@ def serve_spa_catch_all(full_path: str):
 
     index_file = active_static / "index.html"
     if index_file.is_file():
-        return FileResponse(str(index_file))
+        return FileResponse(
+            str(index_file),
+            headers={"Cache-Control": HTML_NO_CACHE_CONTROL},
+        )
     raise HTTPException(status_code=404, detail="Not Found")
 
 

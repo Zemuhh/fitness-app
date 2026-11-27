@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
   StyleSheet,
@@ -20,17 +20,40 @@ import {
 } from 'lucide-react-native';
 import { API_BASE_URL } from '@/config/api';
 import { CleanAppHeader } from '@/components/CleanAppHeader';
-import { CompanyPolicyModal } from '@/components/CompanyPolicyModal';
+import { DashboardSkeleton, LazyScreenFallback } from '@/components/DashboardSkeleton';
 import { EryaBrandLogo } from '@/components/EryaBrandLogo';
 import { SlideOverDrawer } from '@/components/SlideOverDrawer';
 import { useAuthDemo } from '@/context/AuthDemoContext';
-import { AdminControlScreen } from '@/screens/admin/AdminControlScreen';
 import { LoginScreen } from '@/screens/auth/LoginScreen';
-import { GatewayTabKey, PortalGatewayModal } from '@/screens/auth/PortalGatewayModal';
-import { MemberRootView } from '@/screens/member/MemberRootView';
-import { TrainerRootView } from '@/screens/trainer/TrainerRootView';
+import type { GatewayTabKey } from '@/screens/auth/PortalGatewayModal';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
 import { MemberDrawerRoute, TrainerDrawerRoute } from '@/types/navigation';
+
+const AdminControlScreen = React.lazy(() =>
+  import('@/screens/admin/AdminControlScreen').then((m) => ({
+    default: m.AdminControlScreen,
+  }))
+);
+const TrainerRootView = React.lazy(() =>
+  import('@/screens/trainer/TrainerRootView').then((m) => ({
+    default: m.TrainerRootView,
+  }))
+);
+const MemberRootView = React.lazy(() =>
+  import('@/screens/member/MemberRootView').then((m) => ({
+    default: m.MemberRootView,
+  }))
+);
+const CompanyPolicyModal = React.lazy(() =>
+  import('@/components/CompanyPolicyModal').then((m) => ({
+    default: m.CompanyPolicyModal,
+  }))
+);
+const PortalGatewayModal = React.lazy(() =>
+  import('@/screens/auth/PortalGatewayModal').then((m) => ({
+    default: m.PortalGatewayModal,
+  }))
+);
 
 export default function AppEntryScreen() {
   const {
@@ -137,16 +160,18 @@ export default function AppEntryScreen() {
     return (
       <>
         <StatusBar style="light" />
-        <CompanyPolicyModal
-          authToken={authToken}
-          userId={authUser.user_id ?? authUser.id ?? null}
-          userFullName={authUser.full_name}
-          userRole={authUser.role}
-          onAccepted={(acceptedAt) => {
-            markPolicyAccepted(acceptedAt);
-          }}
-          onLogout={logout}
-        />
+        <Suspense fallback={<LazyScreenFallback label="Sözleşme metni yükleniyor..." dark />}>
+          <CompanyPolicyModal
+            authToken={authToken}
+            userId={authUser.user_id ?? authUser.id ?? null}
+            userFullName={authUser.full_name}
+            userRole={authUser.role}
+            onAccepted={(acceptedAt) => {
+              markPolicyAccepted(acceptedAt);
+            }}
+            onLogout={logout}
+          />
+        </Suspense>
       </>
     );
   }
@@ -156,15 +181,17 @@ export default function AppEntryScreen() {
     return (
       <SafeAreaView style={styles.adminSafeArea} edges={['top', 'left', 'right', 'bottom']}>
         <StatusBar style="light" />
-        <AdminControlScreen
-          onSelectUser={(u) => {
-            selectUser(u);
-          }}
-          onDataChanged={() => {
-            reloadUsers();
-            triggerGlobalRefresh();
-          }}
-        />
+        <Suspense fallback={<LazyScreenFallback label="Yönetim merkezi yükleniyor..." dark />}>
+          <AdminControlScreen
+            onSelectUser={(u) => {
+              selectUser(u);
+            }}
+            onDataChanged={() => {
+              reloadUsers();
+              triggerGlobalRefresh();
+            }}
+          />
+        </Suspense>
       </SafeAreaView>
     );
   }
@@ -313,30 +340,34 @@ export default function AppEntryScreen() {
         </View>
       ) : selectedUser ? (
         selectedUser.role === 'trainer' ? (
-          <TrainerRootView
-            key={`trainer-${selectedUser.id}`}
-            trainer={selectedUser}
-            activeRoute={trainerRoute}
-            onNavigateRoute={setTrainerRoute}
-          />
+          <Suspense fallback={<LazyScreenFallback label="Eğitmen paneli hazırlanıyor..." />}>
+            <TrainerRootView
+              key={`trainer-${selectedUser.id}`}
+              trainer={selectedUser}
+              activeRoute={trainerRoute}
+              onNavigateRoute={setTrainerRoute}
+            />
+          </Suspense>
         ) : (
-          <MemberRootView
-            key={`member-${selectedUser.id}`}
-            member={selectedUser}
-            activeRoute={memberRoute}
-            onNavigate={setMemberRoute}
-            hideInternalHeader={true}
-            qrModalVisible={qrModalVisible}
-            onOpenQr={() => setQrModalVisible(true)}
-            onCloseQr={() => setQrModalVisible(false)}
-            notificationsModalVisible={notifModalVisible}
-            onOpenNotifications={() => setNotifModalVisible(true)}
-            onCloseNotifications={() => setNotifModalVisible(false)}
-            onUnreadCountChange={setUnreadCount}
-            onPackageSummaryChange={setPackageSummary}
-            onOpenGateway={() => handleOpenGateway()}
-            onOpenAdmin={isAdmin ? handleOpenAdminButton : undefined}
-          />
+          <Suspense fallback={<DashboardSkeleton />}>
+            <MemberRootView
+              key={`member-${selectedUser.id}`}
+              member={selectedUser}
+              activeRoute={memberRoute}
+              onNavigate={setMemberRoute}
+              hideInternalHeader={true}
+              qrModalVisible={qrModalVisible}
+              onOpenQr={() => setQrModalVisible(true)}
+              onCloseQr={() => setQrModalVisible(false)}
+              notificationsModalVisible={notifModalVisible}
+              onOpenNotifications={() => setNotifModalVisible(true)}
+              onCloseNotifications={() => setNotifModalVisible(false)}
+              onUnreadCountChange={setUnreadCount}
+              onPackageSummaryChange={setPackageSummary}
+              onOpenGateway={() => handleOpenGateway()}
+              onOpenAdmin={isAdmin ? handleOpenAdminButton : undefined}
+            />
+          </Suspense>
         )
       ) : (
         <View style={styles.centerBox}>
@@ -375,21 +406,25 @@ export default function AppEntryScreen() {
       )}
 
       {/* Üye Kodu Sorgulama Modalı */}
-      <PortalGatewayModal
-        asModal={true}
-        visible={gatewayVisible}
-        initialTab={gatewayInitialTab}
-        initialLookupCode={gatewayLookupCode}
-        onClose={() => setGatewayVisible(false)}
-        onSelectUser={
-          isAdmin
-            ? (u) => {
-                selectUser(u);
-                setGatewayVisible(false);
-              }
-            : undefined
-        }
-      />
+      {gatewayVisible ? (
+        <Suspense fallback={null}>
+          <PortalGatewayModal
+            asModal={true}
+            visible={gatewayVisible}
+            initialTab={gatewayInitialTab}
+            initialLookupCode={gatewayLookupCode}
+            onClose={() => setGatewayVisible(false)}
+            onSelectUser={
+              isAdmin
+                ? (u) => {
+                    selectUser(u);
+                    setGatewayVisible(false);
+                  }
+                : undefined
+            }
+          />
+        </Suspense>
+      ) : null}
     </SafeAreaView>
   );
 }
