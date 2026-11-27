@@ -620,8 +620,23 @@ export function MemberRootView({
             busyBookingId={busyBookingId}
           />
         ) : currentRoute === 'schedule' ? (
-          !dashboard || loadingFullDashboard ? (
-            <LazyScreenFallback label="Ders takvimi yükleniyor..." />
+          !dashboard ? (
+            loadingFullDashboard ? (
+              <LazyScreenFallback label="Ders takvimi yükleniyor..." />
+            ) : (
+              <View style={styles.centerLoader}>
+                <Text style={styles.errorText}>
+                  {loadError || 'Ders takvimi yüklenemedi. Lütfen bağlantınızı kontrol edip tekrar deneyin.'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.retryBtn}
+                  onPress={() => fetchFullDashboard(false)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.retryBtnText}>Tekrar Dene</Text>
+                </TouchableOpacity>
+              </View>
+            )
           ) : (
             <Suspense fallback={<LazyScreenFallback label="Ders takvimi hazırlanıyor..." />}>
               <MemberBookingTab
@@ -667,8 +682,23 @@ export function MemberRootView({
             />
           </Suspense>
         ) : currentRoute === 'packages' ? (
-          !dashboard || loadingFullDashboard ? (
-            <LazyScreenFallback label="Üyelik paketleri yükleniyor..." />
+          !dashboard ? (
+            loadingFullDashboard ? (
+              <LazyScreenFallback label="Üyelik paketleri yükleniyor..." />
+            ) : (
+              <View style={styles.centerLoader}>
+                <Text style={styles.errorText}>
+                  {loadError || 'Üyelik paketleri yüklenemedi. Lütfen bağlantınızı kontrol edip tekrar deneyin.'}
+                </Text>
+                <TouchableOpacity
+                  style={styles.retryBtn}
+                  onPress={() => fetchFullDashboard(false)}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.retryBtnText}>Tekrar Dene</Text>
+                </TouchableOpacity>
+              </View>
+            )
           ) : (
             <Suspense fallback={<LazyScreenFallback label="Paket mağazası hazırlanıyor..." />}>
               <MemberPackageRenewScreen
@@ -694,8 +724,23 @@ export function MemberRootView({
               onOpenTrainerDetail={(tId) => setSelectedTrainerId(tId)}
             />
           </Suspense>
-        ) : !dashboard || loadingFullDashboard ? (
-          <LazyScreenFallback label="Profil bilgileri yükleniyor..." />
+        ) : !dashboard ? (
+          loadingFullDashboard ? (
+            <LazyScreenFallback label="Profil bilgileri yükleniyor..." />
+          ) : (
+            <View style={styles.centerLoader}>
+              <Text style={styles.errorText}>
+                {loadError || 'Profil bilgileri yüklenemedi. Lütfen bağlantınızı kontrol edip tekrar deneyin.'}
+              </Text>
+              <TouchableOpacity
+                style={styles.retryBtn}
+                onPress={() => fetchFullDashboard(false)}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.retryBtnText}>Tekrar Dene</Text>
+              </TouchableOpacity>
+            </View>
+          )
         ) : (
           <Suspense fallback={<LazyScreenFallback label="Profil ekranı hazırlanıyor..." />}>
             <MemberProfileTab

@@ -1834,21 +1834,34 @@ def auth_register(payload: AuthRegisterRequest, db: Session = Depends(get_db)):
     return _build_user_session_out(db, new_user, sess, message=welcome_msg)
 
 
-def _remove_signed_policy_files(policy_file_path: Optional[str]) -> None:
-    if not policy_file_path:
-        return
-    try:
-        safe_name = Path(policy_file_path).name
-        if not safe_name:
-            return
-        txt_path = SIGNED_POLICIES_DIR / safe_name
-        if txt_path.is_file():
-            txt_path.unlink()
-        json_path = txt_path.with_suffix(".json")
-        if json_path.is_file():
-            json_path.unlink()
-    except OSError:
-        pass
+def _remove_signed_policy_files(
+    policy_file_path: Optional[str],
+    user_id: Optional[int] = None,
+) -> None:
+    if policy_file_path:
+        try:
+            safe_name = Path(policy_file_path).name
+            if safe_name:
+                txt_path = SIGNED_POLICIES_DIR / safe_name
+                if txt_path.is_file():
+                    txt_path.unlink()
+                json_path = txt_path.with_suffix(".json")
+                if json_path.is_file():
+                    json_path.unlink()
+        except OSError:
+            pass
+
+    if user_id is not None and SIGNED_POLICIES_DIR.is_dir():
+        for pattern in (
+            f"sozlesme_user_{user_id}_*.txt",
+            f"sozlesme_user_{user_id}_*.json",
+        ):
+            for fp in SIGNED_POLICIES_DIR.glob(pattern):
+                try:
+                    if fp.is_file():
+                        fp.unlink()
+                except OSError:
+                    pass
 
 
 def _permanently_delete_user(db: Session, user: User) -> Tuple[int, Optional[str]]:
@@ -1860,13 +1873,27 @@ def _permanently_delete_user(db: Session, user: User) -> Tuple[int, Optional[str
     user_id = user.id
     policy_file_path = getattr(user, "policy_file_path", None)
 
-    # Kullanıcının e-posta adreslerini OAuth state temizliği için topla
+    # Kullanıcının e-posta, google_sub ve oturum token bilgilerini OAuth state temizliği için topla
     user_emails = set()
     if user.email and user.email.strip():
         user_emails.add(user.email.strip().lower())
     auth_acc = db.query(UserAuthAccount).filter(UserAuthAccount.user_id == user_id).first()
-    if auth_acc and auth_acc.email and auth_acc.email.strip():
-        user_emails.add(auth_acc.email.strip().lower())
+    google_sub: Optional[str] = None
+    if auth_acc:
+        if auth_acc.email and auth_acc.email.strip():
+            user_emails.add(auth_acc.email.strip().lower())
+        if auth_acc.google_sub and auth_acc.google_sub.strip():
+            google_sub = auth_acc.google_sub.strip()
+
+    user_session_tokens = [
+        row[0]
+        for row in db.query(AuthSession.token).filter(AuthSession.user_id == user_id).all()
+        if row[0]
+    ]
+    member_package_ids = [
+        row[0]
+        for row in db.query(MemberPackage.id).filter(MemberPackage.member_id == user_id).all()
+    ]
 
     # 1. Üyenin aktif 'booked' rezervasyonları için ders kontenjanlarını (current_enrolled) düşür
     active_member_bookings = (
@@ -1879,25 +1906,23 @@ def _permanently_delete_user(db: Session, user: User) -> Tuple[int, Optional[str
         if class_sess:
             class_sess.current_enrolled = max(0, (class_sess.current_enrolled or 0) - 1)
 
-    # 2. Eğitmen hesabı siliniyorsa, eğitmene bağlı derslerdeki diğer üyelerin aktif kredilerini iade et ve dersleri temizle
-    trainer_session_ids: List[int] = []
-    if user.role == "trainer":
-        trainer_sessions = db.query(ClassSession).filter(ClassSession.trainer_id == user_id).all()
-        trainer_session_ids = [ts.id for ts in trainer_sessions]
-        if trainer_session_ids:
-            other_active_bookings = (
-                db.query(Booking)
-                .filter(
-                    Booking.session_id.in_(trainer_session_ids),
-                    Booking.status == "booked",
-                    Booking.member_id != user_id,
-                )
-                .all()
+    # 2. Kullanıcıya eğitmen olarak bağlı dersler varsa, diğer üyelerin aktif kredilerini iade et ve dersleri temizle
+    trainer_sessions = db.query(ClassSession).filter(ClassSession.trainer_id == user_id).all()
+    trainer_session_ids: List[int] = [ts.id for ts in trainer_sessions]
+    if trainer_session_ids:
+        other_active_bookings = (
+            db.query(Booking)
+            .filter(
+                Booking.session_id.in_(trainer_session_ids),
+                Booking.status == "booked",
+                Booking.member_id != user_id,
             )
-            for tb in other_active_bookings:
-                pkg = db.query(MemberPackage).filter(MemberPackage.id == tb.package_id).first()
-                if pkg:
-                    pkg.remaining_credits = max(0, (pkg.remaining_credits or 0) + 1)
+            .all()
+        )
+        for tb in other_active_bookings:
+            pkg = db.query(MemberPackage).filter(MemberPackage.id == tb.package_id).first()
+            if pkg:
+                pkg.remaining_credits = max(0, (pkg.remaining_credits or 0) + 1)
 
     # ORM güncellemelerini toplu silmelerden önce transaction içine flush et
     db.flush()
@@ -1915,13 +1940,27 @@ def _permanently_delete_user(db: Session, user: User) -> Tuple[int, Optional[str
         )
 
     # 4. Kullanıcıya ait tüm bağımlı kayıtları child -> parent sırasında sil
-    db.query(PaymentCheckoutSession).filter(PaymentCheckoutSession.member_id == user_id).delete(
-        synchronize_session=False
-    )
-    db.query(PaymentTransaction).filter(PaymentTransaction.member_id == user_id).delete(
-        synchronize_session=False
-    )
-    db.query(Booking).filter(Booking.member_id == user_id).delete(synchronize_session=False)
+    if member_package_ids:
+        db.query(PaymentCheckoutSession).filter(
+            (PaymentCheckoutSession.member_id == user_id)
+            | (PaymentCheckoutSession.credited_package_id.in_(member_package_ids))
+        ).delete(synchronize_session=False)
+        db.query(PaymentTransaction).filter(
+            (PaymentTransaction.member_id == user_id)
+            | (PaymentTransaction.member_package_id.in_(member_package_ids))
+        ).delete(synchronize_session=False)
+        db.query(Booking).filter(
+            (Booking.member_id == user_id)
+            | (Booking.package_id.in_(member_package_ids))
+        ).delete(synchronize_session=False)
+    else:
+        db.query(PaymentCheckoutSession).filter(PaymentCheckoutSession.member_id == user_id).delete(
+            synchronize_session=False
+        )
+        db.query(PaymentTransaction).filter(PaymentTransaction.member_id == user_id).delete(
+            synchronize_session=False
+        )
+        db.query(Booking).filter(Booking.member_id == user_id).delete(synchronize_session=False)
     db.query(Waitlist).filter(Waitlist.member_id == user_id).delete(synchronize_session=False)
     db.query(BodyMetrics).filter(BodyMetrics.member_id == user_id).delete(synchronize_session=False)
     db.query(DailyWellness).filter(DailyWellness.member_id == user_id).delete(
@@ -1940,6 +1979,14 @@ def _permanently_delete_user(db: Session, user: User) -> Tuple[int, Optional[str
         db.query(GoogleOAuthState).filter(GoogleOAuthState.email.in_(list(user_emails))).delete(
             synchronize_session=False
         )
+    if google_sub:
+        db.query(GoogleOAuthState).filter(GoogleOAuthState.google_sub == google_sub).delete(
+            synchronize_session=False
+        )
+    if user_session_tokens:
+        db.query(GoogleOAuthState).filter(
+            GoogleOAuthState.session_token.in_(user_session_tokens)
+        ).delete(synchronize_session=False)
     db.query(AuthSession).filter(AuthSession.user_id == user_id).delete(synchronize_session=False)
     db.query(UserAuthAccount).filter(UserAuthAccount.user_id == user_id).delete(
         synchronize_session=False
@@ -2008,7 +2055,7 @@ def auth_delete_me(
             detail="Hesap silme işlemi sırasında beklenmeyen bir hata oluştu. Lütfen tekrar deneyin.",
         ) from exc
 
-    _remove_signed_policy_files(policy_file_path)
+    _remove_signed_policy_files(policy_file_path, user_id=deleted_user_id)
 
     return AuthDeleteAccountOut(
         deleted=True,

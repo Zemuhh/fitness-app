@@ -20,6 +20,7 @@ import {
   AtSign,
   Bell,
   Calendar,
+  Check,
   CheckCircle2,
   ChevronRight,
   CreditCard,
@@ -90,6 +91,7 @@ export function MemberProfileTab({
   const [savingSwitchKey, setSavingSwitchKey] = useState<string | null>(null);
   const [legalModalTab, setLegalModalTab] = useState<LegalDocumentTab | null>(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState<boolean>(false);
+  const [deleteConfirmed, setDeleteConfirmed] = useState<boolean>(false);
   const [deletingAccount, setDeletingAccount] = useState<boolean>(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -184,14 +186,23 @@ export function MemberProfileTab({
       return;
     }
     setDeleteError(null);
+    setDeleteConfirmed(false);
     setDeleteModalVisible(true);
   };
 
+  const handleCloseDeleteModal = () => {
+    if (deletingAccount) return;
+    setDeleteConfirmed(false);
+    setDeleteModalVisible(false);
+  };
+
   const handleConfirmDeleteAccount = async () => {
+    if (!deleteConfirmed) return;
     setDeletingAccount(true);
     setDeleteError(null);
     try {
       await deleteMyAccount();
+      setDeleteConfirmed(false);
       setDeleteModalVisible(false);
     } catch (err: any) {
       const msg =
@@ -586,9 +597,7 @@ export function MemberProfileTab({
         visible={deleteModalVisible}
         transparent
         animationType="fade"
-        onRequestClose={() => {
-          if (!deletingAccount) setDeleteModalVisible(false);
-        }}
+        onRequestClose={handleCloseDeleteModal}
       >
         <SafeAreaView style={styles.modalBackdrop} edges={['top', 'bottom', 'left', 'right']}>
           <View style={styles.deleteModalCard}>
@@ -617,6 +626,34 @@ export function MemberProfileTab({
               </Text>
             </View>
 
+            <TouchableOpacity
+              style={[
+                styles.deleteConsentRow,
+                deleteConfirmed && styles.deleteConsentRowChecked,
+              ]}
+              onPress={() => setDeleteConfirmed((prev) => !prev)}
+              disabled={deletingAccount}
+              activeOpacity={0.82}
+              accessibilityRole="checkbox"
+              accessibilityState={{ checked: deleteConfirmed }}
+              accessibilityLabel="Hesabımın ve tüm kişisel verilerimin kalıcı olarak silineceğini onaylıyorum"
+            >
+              <View
+                style={[
+                  styles.deleteCheckbox,
+                  deleteConfirmed && styles.deleteCheckboxChecked,
+                ]}
+              >
+                {deleteConfirmed ? (
+                  <Check size={13} color={COLORS.white} strokeWidth={2.6} />
+                ) : null}
+              </View>
+              <Text style={styles.deleteConsentText}>
+                Hesabımın ve tüm kişisel verilerimin kalıcı olarak silineceğini,
+                bu işlemin geri alınamayacağını onaylıyorum.
+              </Text>
+            </TouchableOpacity>
+
             {deleteError ? (
               <View style={styles.deleteModalErrorBox}>
                 <AlertTriangle size={14} color={COLORS.danger} />
@@ -628,7 +665,7 @@ export function MemberProfileTab({
               <TouchableOpacity
                 style={styles.deleteCancelBtn}
                 disabled={deletingAccount}
-                onPress={() => setDeleteModalVisible(false)}
+                onPress={handleCloseDeleteModal}
                 activeOpacity={0.85}
                 accessibilityRole="button"
                 accessibilityLabel="Vazgeç"
@@ -639,12 +676,14 @@ export function MemberProfileTab({
               <TouchableOpacity
                 style={[
                   styles.deleteConfirmBtn,
-                  deletingAccount && { opacity: 0.7 },
+                  (!deleteConfirmed || deletingAccount) &&
+                    styles.deleteConfirmBtnDisabled,
                 ]}
-                disabled={deletingAccount}
+                disabled={!deleteConfirmed || deletingAccount}
                 onPress={handleConfirmDeleteAccount}
                 activeOpacity={0.85}
                 accessibilityRole="button"
+                accessibilityState={{ disabled: !deleteConfirmed || deletingAccount }}
                 accessibilityLabel="Hesabı Kalıcı Olarak Silmeyi Onayla"
               >
                 {deletingAccount ? (
@@ -1140,6 +1179,42 @@ const styles = StyleSheet.create({
     lineHeight: 18,
     fontWeight: '600',
   },
+  deleteConsentRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 10,
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.borderStrong,
+    borderRadius: 13,
+    padding: 12,
+  },
+  deleteConsentRowChecked: {
+    backgroundColor: COLORS.dangerBg,
+    borderColor: COLORS.dangerBorder,
+  },
+  deleteCheckbox: {
+    width: 21,
+    height: 21,
+    borderRadius: 6,
+    borderWidth: 1.8,
+    borderColor: COLORS.borderStrong,
+    backgroundColor: COLORS.surface,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  deleteCheckboxChecked: {
+    backgroundColor: COLORS.danger,
+    borderColor: COLORS.danger,
+  },
+  deleteConsentText: {
+    flex: 1,
+    color: COLORS.textPrimary,
+    fontSize: 12.2,
+    lineHeight: 17.5,
+    fontWeight: '600',
+  },
   deleteModalErrorBox: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1183,6 +1258,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.danger,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  deleteConfirmBtnDisabled: {
+    opacity: 0.45,
   },
   deleteConfirmBtnText: {
     color: COLORS.white,

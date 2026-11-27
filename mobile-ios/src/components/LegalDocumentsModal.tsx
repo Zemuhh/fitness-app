@@ -1,21 +1,29 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import {
+  Linking,
   Modal,
+  Platform,
   ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
   View,
 } from 'react-native';
+import * as WebBrowser from 'expo-web-browser';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import {
+  ExternalLink,
   FileText,
+  Globe,
   Info,
   ShieldCheck,
   Trash2,
   X,
 } from 'lucide-react-native';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
+
+const EXTERNAL_PRIVACY_URL = 'https://fitness-appp.onrender.com/privacy';
+const EXTERNAL_DELETE_ACCOUNT_URL = 'https://fitness-appp.onrender.com/delete-account';
 
 export type LegalDocumentTab = 'privacy' | 'terms';
 
@@ -44,12 +52,16 @@ const PRIVACY_SECTIONS: LegalSection[] = [
     body: 'Kamera izni yalnızca salon QR kod girişi ve isteğe bağlı öğün fotoğrafı analizi için; fotoğraf arşivi izni ise profil/öğün görseli seçimi ve QR giriş kartınızı kaydetmek için talep edilir. İzinler yalnızca ilgili özelliği kullandığınızda etkinleşir ve cihaz ayarlarından dilediğiniz zaman kapatılabilir.',
   },
   {
-    title: '4. Veri Güvenliği ve Ödeme Altyapısı',
+    title: '4. Yapay Zeka Öğün Analizi ve Harici İşleme',
+    body: 'AI Beslenme & Toparlanma özelliğini isteğe bağlı olarak kullandığınızda yüklediğiniz öğün fotoğrafları, kalori ve makro besin tahmini üretebilmek amacıyla harici yapay zeka servisiyle şifreli bağlantı üzerinden işlenir. Bu görseller yalnızca beslenme takibi amacıyla kullanılır; tıbbi tanı veya tedavi yerine geçmez, reklam veya üçüncü taraf pazarlama amaçlarıyla paylaşılmaz. İlk kullanım öncesinde açık onayınız alınır.',
+  },
+  {
+    title: '5. Veri Güvenliği ve Ödeme Altyapısı',
     body: 'Tüm veri iletişimi şifreli HTTPS bağlantısı üzerinden gerçekleştirilir. Kişisel verileriniz reklam veya pazarlama amacıyla üçüncü taraflara satılmaz. Fiziksel stüdyo ders paketi ödemeleri PCI-DSS uyumlu ödeme kuruluşu altyapısı üzerinden işlenir; kart bilgileriniz uygulama sunucularında saklanmaz.',
   },
   {
-    title: '5. KVKK Haklarınız ve Hesap Silme Hakkı',
-    body: 'KVKK Madde 11 kapsamında verilerinizin işlenip işlenmediğini öğrenme, düzeltilmesini veya silinmesini talep etme hakkına sahipsiniz. Hesabınızı ve ilişkili tüm kişisel verilerinizi (randevular, paket kayıtları, ölçümler, beslenme ve profil kayıtları) uygulama içindeki Profil > "Hesabımı Kalıcı Olarak Sil" adımıyla dilediğiniz zaman tek dokunuşla kalıcı olarak silebilirsiniz.',
+    title: '6. KVKK Haklarınız ve Hesap Silme Hakkı',
+    body: 'KVKK Madde 11 kapsamında verilerinizin işlenip işlenmediğini öğrenme, düzeltilmesini veya silinmesini talep etme hakkına sahipsiniz. Hesabınızı ve ilişkili tüm kişisel verilerinizi (randevular, paket kayıtları, ölçümler, beslenme ve profil kayıtları) uygulama içindeki Profil > "Hesabımı Kalıcı Olarak Sil" adımıyla dilediğiniz zaman kalıcı olarak silebilirsiniz.',
   },
 ];
 
@@ -84,6 +96,28 @@ export function LegalDocumentsModal({
       setActiveTab(initialTab);
     }
   }, [visible, initialTab]);
+
+  const handleOpenExternalUrl = useCallback(async (url: string) => {
+    if (Platform.OS === 'web' && typeof window !== 'undefined') {
+      try {
+        window.open(url, '_blank', 'noopener,noreferrer');
+        return;
+      } catch {
+        // Fallback below
+      }
+    }
+    try {
+      await WebBrowser.openBrowserAsync(url);
+      return;
+    } catch {
+      // Fallback to system browser
+    }
+    try {
+      await Linking.openURL(url);
+    } catch {
+      // Ignore if device cannot open URL
+    }
+  }, []);
 
   const sections = activeTab === 'privacy' ? PRIVACY_SECTIONS : TERMS_SECTIONS;
 
@@ -205,6 +239,41 @@ export function LegalDocumentsModal({
               Profil ekranındaki &quot;Hesabımı Kalıcı Olarak Sil&quot; seçeneği ile
               anında gerçekleştirebilirsiniz.
             </Text>
+          </View>
+
+          <View style={styles.externalLinksCard}>
+            <View style={styles.externalLinksHeader}>
+              <Globe size={14} color={COLORS.primary} />
+              <Text style={styles.externalLinksTitle}>
+                Çevrimiçi Yasal Sayfalar
+              </Text>
+            </View>
+
+            <TouchableOpacity
+              style={styles.externalLinkRow}
+              onPress={() => handleOpenExternalUrl(EXTERNAL_PRIVACY_URL)}
+              activeOpacity={0.82}
+              accessibilityRole="link"
+              accessibilityLabel="Web üzerinde Gizlilik Politikası sayfasını aç"
+            >
+              <Text style={styles.externalLinkText}>
+                Gizlilik Politikası (Web)
+              </Text>
+              <ExternalLink size={14} color={COLORS.primary} />
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.externalLinkRow}
+              onPress={() => handleOpenExternalUrl(EXTERNAL_DELETE_ACCOUNT_URL)}
+              activeOpacity={0.82}
+              accessibilityRole="link"
+              accessibilityLabel="Web üzerinde Hesap Silme Rehberi sayfasını aç"
+            >
+              <Text style={styles.externalLinkText}>
+                Hesap &amp; Veri Silme Politikası (Web)
+              </Text>
+              <ExternalLink size={14} color={COLORS.primary} />
+            </TouchableOpacity>
           </View>
         </ScrollView>
 
@@ -386,6 +455,46 @@ const styles = StyleSheet.create({
     fontSize: 12.2,
     lineHeight: 18,
     fontWeight: '600',
+  },
+  externalLinksCard: {
+    backgroundColor: COLORS.surface,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
+    ...CARD_SHADOW,
+  },
+  externalLinksHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    marginBottom: 2,
+  },
+  externalLinksTitle: {
+    fontFamily: FONTS.sans,
+    color: COLORS.textPrimary,
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  externalLinkRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.surfaceElevated,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+    gap: 8,
+  },
+  externalLinkText: {
+    flex: 1,
+    fontFamily: FONTS.sans,
+    color: COLORS.primary,
+    fontSize: 12.8,
+    fontWeight: '700',
   },
   footer: {
     paddingHorizontal: 16,

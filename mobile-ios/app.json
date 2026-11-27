@@ -22,12 +22,23 @@
       }
     },
     "android": {
+      "package": "com.eryapilates.reformer",
+      "versionCode": 1,
       "adaptiveIcon": {
         "backgroundColor": "#F6F1E9",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
         "backgroundImage": "./assets/images/android-icon-background.png",
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
+      "blockedPermissions": [
+        "android.permission.RECORD_AUDIO",
+        "android.permission.READ_EXTERNAL_STORAGE",
+        "android.permission.WRITE_EXTERNAL_STORAGE",
+        "android.permission.ACCESS_FINE_LOCATION",
+        "android.permission.ACCESS_COARSE_LOCATION",
+        "android.permission.READ_PHONE_STATE",
+        "android.permission.SYSTEM_ALERT_WINDOW"
+      ],
       "predictiveBackGestureEnabled": false
     },
     "web": {
@@ -42,7 +53,23 @@
       "themeColor": "#0D9488"
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "compileSdkVersion": 36,
+            "targetSdkVersion": 36
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "cameraPermission": "Salon QR kod girişi ve öğün fotoğrafı analizi için kamera erişimi gereklidir.",
+          "photosPermission": "Öğün fotoğrafı yükleme ve profil fotoğrafı seçimi için fotoğraf arşivi erişimi gereklidir."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

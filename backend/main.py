@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.orm import Session, joinedload
@@ -3928,6 +3928,631 @@ class ImmutableStaticFiles(StaticFiles):
 
 app.mount("/_expo", ImmutableStaticFiles(directory=str(STATIC_DIR / "_expo")), name="expo_static")
 app.mount("/assets", ImmutableStaticFiles(directory=str(STATIC_DIR / "assets")), name="assets_static")
+
+
+# ============================================================================
+# HERKESE AÇIK MAĞAZA YASAL SAYFALARI (APP STORE & GOOGLE PLAY UYUMLU)
+# ============================================================================
+
+_LEGAL_COMMON_CSS = """
+    :root {
+      --bg: #F6F1E9;
+      --surface: #FFFFFF;
+      --accent: #9A7328;
+      --accent-soft: #F3EAD7;
+      --ink: #221D19;
+      --muted: #5F544A;
+      --border: #E7DDD0;
+      --danger: #B42318;
+      --danger-bg: #FEF3F2;
+      --danger-border: #FECDCA;
+      --success: #1F6E43;
+      --success-bg: #ECFDF3;
+      --success-border: #ABEFC6;
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    .page-wrap {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 28px 18px 64px;
+    }
+    .hero {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 22px;
+      padding: 28px 26px;
+      box-shadow: 0 10px 30px rgba(34, 29, 25, 0.05);
+      margin-bottom: 20px;
+    }
+    .brand-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+    }
+    h1 {
+      margin: 0 0 10px;
+      font-size: clamp(24px, 4vw, 32px);
+      line-height: 1.25;
+      color: var(--ink);
+      letter-spacing: -0.02em;
+    }
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      font-size: 15px;
+    }
+    .meta-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px 18px;
+      margin-top: 18px;
+      padding-top: 16px;
+      border-top: 1px solid var(--border);
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .meta-row a {
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .meta-row a:hover { text-decoration: underline; }
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      padding: 24px 26px;
+      margin-bottom: 16px;
+      box-shadow: 0 6px 20px rgba(34, 29, 25, 0.03);
+    }
+    .card h2 {
+      margin: 0 0 12px;
+      font-size: 19px;
+      line-height: 1.35;
+      color: var(--ink);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .card h2 .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--accent);
+      flex-shrink: 0;
+    }
+    .card p {
+      margin: 0 0 12px;
+      font-size: 15px;
+      color: var(--ink);
+    }
+    .card p:last-child { margin-bottom: 0; }
+    ul, ol {
+      margin: 8px 0 12px;
+      padding-left: 20px;
+    }
+    li {
+      margin-bottom: 8px;
+      font-size: 15px;
+    }
+    li:last-child { margin-bottom: 0; }
+    .highlight-box {
+      background: #FCF9F4;
+      border: 1px solid #E8D9BC;
+      border-left: 4px solid var(--accent);
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin: 12px 0;
+      font-size: 14.5px;
+    }
+    .cta-link {
+      display: inline-block;
+      margin-top: 8px;
+      padding: 11px 18px;
+      border-radius: 12px;
+      background: var(--accent);
+      color: #FFFFFF !important;
+      font-weight: 600;
+      font-size: 14px;
+      text-decoration: none;
+    }
+    .cta-link:hover { opacity: 0.92; }
+    a { color: var(--accent); }
+    .en-card {
+      background: #FFFEFC;
+      border: 1px solid #DFD2BE;
+    }
+    .en-label {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--accent);
+      background: var(--accent-soft);
+      padding: 4px 10px;
+      border-radius: 999px;
+      margin-bottom: 10px;
+    }
+    .footer {
+      text-align: center;
+      margin-top: 28px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .footer a {
+      color: var(--accent);
+      font-weight: 600;
+      text-decoration: none;
+    }
+    .footer a:hover { text-decoration: underline; }
+    .form-group {
+      margin-bottom: 14px;
+    }
+    .form-group label {
+      display: block;
+      font-size: 13.5px;
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 6px;
+    }
+    .form-group input[type="text"],
+    .form-group input[type="password"] {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid #D9CCBA;
+      border-radius: 12px;
+      background: #FFFEFC;
+      color: var(--ink);
+      font-size: 15px;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .form-group input[type="text"]:focus,
+    .form-group input[type="password"]:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px rgba(154, 115, 40, 0.15);
+    }
+    .checkbox-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin: 16px 0 18px;
+      padding: 12px 14px;
+      background: #FCF9F4;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      font-size: 14px;
+    }
+    .checkbox-row input[type="checkbox"] {
+      margin-top: 3px;
+      width: 18px;
+      height: 18px;
+      accent-color: var(--danger);
+      flex-shrink: 0;
+    }
+    .btn-danger {
+      width: 100%;
+      padding: 14px 18px;
+      border: none;
+      border-radius: 12px;
+      background: var(--danger);
+      color: #FFFFFF;
+      font-size: 15px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: opacity 0.15s ease;
+    }
+    .btn-danger:hover { opacity: 0.92; }
+    .btn-danger:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+    .status-box {
+      display: none;
+      margin-top: 16px;
+      padding: 14px 16px;
+      border-radius: 12px;
+      font-size: 14.5px;
+      font-weight: 500;
+    }
+    .status-box.error {
+      display: block;
+      background: var(--danger-bg);
+      border: 1px solid var(--danger-border);
+      color: var(--danger);
+    }
+    .status-box.success {
+      display: block;
+      background: var(--success-bg);
+      border: 1px solid var(--success-border);
+      color: var(--success);
+    }
+    @media (max-width: 600px) {
+      .page-wrap { padding: 18px 14px 48px; }
+      .hero, .card { padding: 20px 18px; border-radius: 16px; }
+    }
+"""
+
+_PRIVACY_HTML = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ERYA Pilates Reformer — Gizlilik Politikası &amp; KVKK Aydınlatma Metni</title>
+  <style>{_LEGAL_COMMON_CSS}</style>
+</head>
+<body>
+  <main class="page-wrap">
+    <header class="hero">
+      <div class="brand-badge">ERYA Pilates Reformer &bull; Daylight Wellness</div>
+      <h1>ERYA Pilates Reformer — Gizlilik Politikası &amp; KVKK Aydınlatma Metni</h1>
+      <p class="subtitle">
+        6698 sayılı Kişisel Verilerin Korunması Kanunu (KVKK), Apple App Store ve Google Play Store veri gizliliği
+        standartları kapsamında kişisel verilerinizin işlenmesi, korunması ve haklarınıza ilişkin aydınlatma metnidir.
+      </p>
+      <div class="meta-row">
+        <span><strong>Veri Sorumlusu:</strong> ERYA Pilates Reformer Stüdyosu</span>
+        <span><strong>Destek &amp; KVKK:</strong> <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a></span>
+        <span><a href="/delete-account">Hesap ve Veri Silme &rarr;</a></span>
+        <span><a href="#english-summary">English Privacy Summary &darr;</a></span>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2><span class="dot"></span>1. Veri Sorumlusu ve İletişim Bilgileri</h2>
+      <p>
+        Bu gizlilik politikası, <strong>ERYA Pilates Reformer Stüdyosu</strong> tarafından sunulan mobil uygulamalar
+        (iOS ve Android) ile web portalı üzerinden toplanan kişisel verilere uygulanır.
+      </p>
+      <p>
+        Veri güvenliği, gizlilik talepleri ve KVKK kapsamındaki tüm başvurularınız için bize
+        <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a> adresinden ulaşabilirsiniz.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>2. Toplanan Kişisel Veriler ve İşleme Amaçları</h2>
+      <p>Uygulama deneyiminizi ve stüdyo üyelik hizmetlerinizi sunabilmek için yalnızca gerekli olan veriler işlenir:</p>
+      <ul>
+        <li><strong>Kimlik ve İletişim Bilgileri:</strong> Ad-soyad, e-posta adresi, telefon numarası ve kişiye özel stüdyo erişim kodu.</li>
+        <li><strong>Üyelik ve Ders Kayıtları:</strong> Reformer/Cadillac ders rezervasyonları, katılım/yoklama geçmişi, bekleme listesi kayıtları, paket/kredi bakiyesi ve ödeme işlem kayıtları.</li>
+        <li><strong>Vücut Ölçüm ve Postür Notları:</strong> İsteğe bağlı girilen kilo, yağ oranı, kas kütlesi ölçümleri ile eğitmenlerin güvenli egzersiz planlaması için kullandığı postür ve bölgesel hassasiyet/sakatlık notları.</li>
+        <li><strong>Günlük Wellness ve Beslenme Kayıtları:</strong> Günlük su tüketimi, uyku ve enerji durumu bildirimleri ile kullanıcı tarafından kaydedilen öğün ve beslenme geçmişi.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>3. Cihaz İzinleri (Kamera ve Fotoğraf Galerisi)</h2>
+      <ul>
+        <li><strong>Kamera İzni:</strong> Yalnızca kullanıcının başlattığı stüdyo QR kod ile derse giriş (check-in) doğrulaması ve isteğe bağlı öğün fotoğrafı çekimi için kullanılır.</li>
+        <li><strong>Fotoğraf Galerisi İzni:</strong> Yalnızca kullanıcının seçtiği öğün fotoğrafının beslenme analizi veya profil görseli güncellemesi amacıyla yüklenmesi için kullanılır.</li>
+      </ul>
+      <p>
+        Hiçbir kamera görüntüsü, galeri dosyası veya cihaz verisi kullanıcının açık işlemi ve izni olmadan arka planda
+        toplanmaz, kaydedilmez veya üçüncü taraflara aktarılmaz.
+      </p>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>4. Harici Yapay Zeka (AI) İşleme Beyanı</h2>
+      <div class="highlight-box">
+        <strong>Önemli Bilgilendirme:</strong> AI Beslenme fotoğraf analizi özelliğinde yüklenen yemek fotoğrafları ve
+        öğün açıklamaları, <strong>yalnızca kullanıcının açık ön onayı ile</strong> tahmini kalori ve makro besin
+        (protein, karbonhidrat, yağ) hesaplaması amacıyla harici yapay zeka servisi (<strong>Google Gemini</strong>)
+        tarafından işlenir.
+      </div>
+      <ul>
+        <li>Üretilen beslenme ve kalori tahminleri yalnızca genel sağlıklı yaşam bilgilendirmesi amaçlıdır; <strong>tıbbi tanı, tedavi veya uzman diyetisyen reçetesi yerine geçmez</strong>.</li>
+        <li>Yüklenen yemek fotoğrafları ve kişisel sağlık/wellness verileri hiçbir koşulda üçüncü taraf reklamcılık, veri komisyonculuğu veya profilleme amacıyla satılmaz ve paylaşılmaz.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>5. Veri Saklama Süresi ve Güvenlik Önlemleri</h2>
+      <ul>
+        <li><strong>Şifreli İletişim:</strong> Uygulama ile sunucularımız arasındaki tüm veri aktarımı güncel <strong>HTTPS/TLS</strong> şifreleme protokolü üzerinden gerçekleştirilir.</li>
+        <li><strong>Güvenli Parola Saklama:</strong> Kullanıcı parolaları açık metin olarak saklanmaz; yüksek yinelemeli <strong>PBKDF2-HMAC-SHA256</strong> algoritması ile tek yönlü özetlenerek korunur.</li>
+        <li><strong>Saklama Süresi:</strong> Kişisel verileriniz üyeliğiniz süresince saklanır. Hesabınızı sildiğinizde tüm kişisel profil, ölçüm, rezervasyon, oturum ve beslenme verileriniz kalıcı olarak imha edilir; yalnızca yürürlükteki mali mevzuatın gerektirdiği anonimleştirilmiş muhasebe kayıtları yasal süre boyunca saklanabilir.</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>6. 6698 Sayılı KVKK Madde 11 Kapsamındaki Haklarınız</h2>
+      <p>KVKK'nın 11. maddesi uyarınca veri sorumlusuna başvurarak:</p>
+      <ul>
+        <li>Kişisel verilerinizin işlenip işlenmediğini öğrenme ve işlenmişse buna ilişkin bilgi talep etme,</li>
+        <li>Verilerin işlenme amacını ve amacına uygun kullanılıp kullanılmadığını öğrenme,</li>
+        <li>Eksik veya yanlış işlenmiş verilerin düzeltilmesini isteme,</li>
+        <li>KVKK Madde 7 kapsamında kişisel verilerinizin silinmesini veya yok edilmesini talep etme,</li>
+        <li>İşlenen verilerin münhasıran otomatik sistemler vasıtasıyla analiz edilmesi suretiyle aleyhinize bir sonucun ortaya çıkmasına itiraz etme ve kanuna aykırı işleme sebebiyle zarara uğramanız hâlinde tazminat talep etme</li>
+      </ul>
+      <p>
+        haklarına sahipsiniz. Taleplerinizi <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a>
+        adresine iletebilir veya hesabınızı doğrudan web/uygulama üzerinden silebilirsiniz.
+      </p>
+      <a class="cta-link" href="/delete-account">Hesabımı ve Verilerimi Kalıcı Olarak Sil (/delete-account)</a>
+    </section>
+
+    <section id="english-summary" class="card en-card" lang="en">
+      <div class="en-label">English Privacy Summary</div>
+      <h2>Privacy Policy &amp; Data Protection Summary</h2>
+      <p>
+        <strong>Data Controller:</strong> ERYA Pilates Reformer Studio (<a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a>).
+      </p>
+      <ul>
+        <li><strong>Data Collected:</strong> Full name, email address, phone number, studio access code, class bookings &amp; attendance history, membership packages/credits, optional body metrics &amp; posture/injury notes, and daily water, sleep, energy, and nutrition logs.</li>
+        <li><strong>Device Permissions:</strong> Camera is used strictly for user-initiated studio QR check-in and meal photo capture; Photo Library is used strictly for selecting meal or profile photos. No background or unauthorized data collection occurs.</li>
+        <li><strong>External AI Processing Disclosure:</strong> When using the AI Nutrition photo analysis feature, meal photos are sent to an external AI service (<strong>Google Gemini</strong>) solely with the user's explicit prior consent to estimate calories and macronutrients. Output is for informational wellness purposes only, is not medical advice or diagnosis, and user data is never sold or shared for third-party advertising or profiling.</li>
+        <li><strong>Security &amp; Retention:</strong> All traffic is encrypted in transit via HTTPS/TLS and passwords are stored using PBKDF2-HMAC-SHA256 hashing.</li>
+        <li><strong>Account &amp; Data Deletion:</strong> Users may permanently delete their account and associated personal data at any time in-app (<em>Profile &rarr; Permanently Delete My Account</em>) or via our web deletion portal at <a href="/delete-account">/delete-account</a>.</li>
+      </ul>
+    </section>
+
+    <footer class="footer">
+      &copy; ERYA Pilates Reformer Stüdyosu &bull;
+      <a href="/privacy">Gizlilik Politikası</a> &bull;
+      <a href="/delete-account">Hesap Silme</a> &bull;
+      <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a>
+    </footer>
+  </main>
+</body>
+</html>
+"""
+
+_DELETE_ACCOUNT_HTML = f"""<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>ERYA Pilates Reformer — Hesap ve Veri Silme (Account Deletion)</title>
+  <style>{_LEGAL_COMMON_CSS}</style>
+</head>
+<body>
+  <main class="page-wrap">
+    <header class="hero">
+      <div class="brand-badge">ERYA Pilates Reformer &bull; Account Deletion</div>
+      <h1>ERYA Pilates Reformer — Hesap ve Veri Silme (Account Deletion)</h1>
+      <p class="subtitle">
+        ERYA Pilates Reformer hesabınızı ve ilişkili tüm kişisel verilerinizi mobil uygulama içinden veya doğrudan
+        aşağıdaki güvenli web formunu kullanarak kalıcı olarak silebilirsiniz.
+      </p>
+      <div class="meta-row">
+        <span><strong>Uygulama / Stüdyo:</strong> ERYA Pilates Reformer</span>
+        <span><strong>Destek:</strong> <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a></span>
+        <span><a href="/privacy">&larr; Gizlilik Politikası &amp; KVKK</a></span>
+        <span><a href="#english-deletion">English Summary &darr;</a></span>
+      </div>
+    </header>
+
+    <section class="card">
+      <h2><span class="dot"></span>Yöntem 1: Uygulama İçi Anında Hesap Silme</h2>
+      <p>Mobil uygulama içerisinden hesabınızı saniyeler içinde kalıcı olarak silebilirsiniz:</p>
+      <ol>
+        <li>ERYA Pilates Reformer uygulamasına giriş yapın.</li>
+        <li>Alt menüden <strong>Profil</strong> ekranını açın.</li>
+        <li><strong>Hesabımı Kalıcı Olarak Sil</strong> seçeneğine dokunun.</li>
+        <li>Kalıcı silme onay kutusunu işaretleyip işlemi onaylayın.</li>
+      </ol>
+      <p>Onay işleminin ardından hesabınız ve tüm kişisel verileriniz anında ve geri döndürülemez biçimde silinir.</p>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>Yöntem 2: Doğrudan Web'den Güvenli Hesap Silme Formu</h2>
+      <p>
+        Uygulamaya erişiminiz yoksa aşağıdaki form ile kimliğinizi doğrulayarak hesabınızı hemen şimdi web üzerinden
+        kalıcı olarak silebilirsiniz.
+      </p>
+
+      <form id="deleteAccountForm" novalidate>
+        <div class="form-group">
+          <label for="identifier">E-posta / Kullanıcı Adı / Erişim Kodu</label>
+          <input
+            type="text"
+            id="identifier"
+            name="identifier"
+            autocomplete="username"
+            placeholder="ornek@eposta.com veya ERYA-1004"
+            required
+          />
+        </div>
+
+        <div class="form-group">
+          <label for="password">Şifre</label>
+          <input
+            type="password"
+            id="password"
+            name="password"
+            autocomplete="current-password"
+            placeholder="Hesap şifrenizi girin"
+            required
+          />
+        </div>
+
+        <label class="checkbox-row" for="confirmDelete">
+          <input type="checkbox" id="confirmDelete" name="confirmDelete" required />
+          <span>
+            ERYA Pilates Reformer hesabımın, ders rezervasyonlarımın, paket/kredi bilgilerimin, vücut ölçümlerimin ve
+            tüm kişisel verilerimin <strong>kalıcı ve geri döndürülemez</strong> olarak silineceğini onaylıyorum.
+          </span>
+        </label>
+
+        <button type="submit" id="deleteBtn" class="btn-danger">Hesabımı Kalıcı Olarak Sil</button>
+        <div id="statusBox" class="status-box" role="alert" aria-live="polite"></div>
+      </form>
+
+      <div class="highlight-box" style="margin-top: 18px;">
+        <strong>Şifrenizi mi unuttunuz veya yalnızca erişim kodunuz mu var?</strong><br />
+        Kayıtlı ad-soyadınız, e-posta adresiniz veya stüdyo erişim kodunuzla
+        <a href="mailto:destek@eryapilates.com?subject=ERYA%20Pilates%20Hesap%20Silme%20Talebi">destek@eryapilates.com</a>
+        adresine e-posta göndererek hesap silme talebi oluşturabilirsiniz. Talebiniz kimlik doğrulaması sonrası
+        <strong>en geç 7 gün içinde</strong> tamamlanır ve tarafınıza e-posta ile onay iletilir.
+      </div>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>Kalıcı Olarak Silinen Veriler</h2>
+      <p>Hesap silme işlemi onaylandığında aşağıdaki veriler <strong>anında ve geri döndürülemez biçimde</strong> silinir:</p>
+      <ul>
+        <li>Profil bilgileri (ad-soyad, e-posta, telefon numarası, profil fotoğrafı, davet/referans kodu)</li>
+        <li>Giriş kimlik bilgileri, kişisel erişim kodları ve tüm aktif oturum anahtarları</li>
+        <li>Tüm ders rezervasyonları ve bekleme listesi (waitlist) kayıtları</li>
+        <li>Üyelik paketleri ve kalan ders kredi kayıtları</li>
+        <li>Vücut ölçümleri (kilo, yağ oranı, kas kütlesi) ile sakatlık/postür notları</li>
+        <li>Günlük su, uyku, enerji, beslenme ve öğün fotoğrafı/makro geçmişi kayıtları</li>
+        <li>İmzalanmış şirket politikası / KVKK onay arşiv dosyaları</li>
+      </ul>
+    </section>
+
+    <section class="card">
+      <h2><span class="dot"></span>Yasal Yükümlülük Kapsamında Saklanan Veriler</h2>
+      <p>
+        Yürürlükteki vergi ve ticaret mevzuatı uyarınca muhasebe/fatura yükümlülüğüne tabi olan
+        <strong>anonimleştirilmiş mali kayıtlar</strong> yalnızca ilgili yasal saklama süresi boyunca (mevzuat gereği
+        en fazla 10 yıl) tutulabilir. Kişisel hesap profiliniz, iletişim bilgileriniz, rezervasyonlarınız ve
+        sağlık/beslenme kayıtlarınız hiçbir şekilde saklanmaz ve anında kalıcı olarak imha edilir.
+      </p>
+    </section>
+
+    <section id="english-deletion" class="card en-card" lang="en">
+      <div class="en-label">English Summary &bull; Account &amp; Data Deletion</div>
+      <h2>How to Delete Your ERYA Pilates Reformer Account</h2>
+      <ul>
+        <li><strong>Option 1 (In-App Instant Deletion):</strong> Sign in to the ERYA Pilates Reformer app &rarr; open <em>Profile</em> &rarr; tap <em>Hesabımı Kalıcı Olarak Sil</em> (Permanently Delete My Account) &rarr; check the confirmation box and confirm.</li>
+        <li><strong>Option 2 (Direct Web Deletion):</strong> Use the secure form above with your Email / Username / Access Code and Password to authenticate and immediately delete your account via <code>DELETE /auth/me</code>.</li>
+        <li><strong>Email Support (Forgot Password):</strong> Email <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a> from your registered address or include your studio access code; requests are processed within <strong>7 days</strong>.</li>
+        <li><strong>Data Deleted Immediately:</strong> Profile details, login credentials and active sessions, class bookings and waitlists, membership packages/credits, body metrics, posture/injury notes, daily water/energy/nutrition meal logs, and signed policy archives.</li>
+        <li><strong>Data Retained (If Applicable):</strong> Anonymized statutory accounting/invoice records may be retained strictly as required by local tax law; all personal account data is permanently and irreversibly erased.</li>
+      </ul>
+    </section>
+
+    <footer class="footer">
+      &copy; ERYA Pilates Reformer Stüdyosu &bull;
+      <a href="/privacy">Gizlilik Politikası &amp; KVKK</a> &bull;
+      <a href="/delete-account">Hesap Silme</a> &bull;
+      <a href="mailto:destek@eryapilates.com">destek@eryapilates.com</a>
+    </footer>
+  </main>
+
+  <script>
+    (function () {{
+      const form = document.getElementById("deleteAccountForm");
+      const identifierInput = document.getElementById("identifier");
+      const passwordInput = document.getElementById("password");
+      const confirmCheckbox = document.getElementById("confirmDelete");
+      const deleteBtn = document.getElementById("deleteBtn");
+      const statusBox = document.getElementById("statusBox");
+
+      function showStatus(type, message) {{
+        statusBox.className = "status-box " + type;
+        statusBox.textContent = message;
+      }}
+
+      form.addEventListener("submit", async function (event) {{
+        event.preventDefault();
+        const identifier = (identifierInput.value || "").trim();
+        const password = (passwordInput.value || "").trim();
+
+        if (!identifier || !password) {{
+          showStatus("error", "Lütfen e-posta/kullanıcı adı/erişim kodu ve şifre alanlarını doldurun.");
+          return;
+        }}
+        if (!confirmCheckbox.checked) {{
+          showStatus("error", "Devam etmek için kalıcı hesap silme onay kutusunu işaretlemelisiniz.");
+          return;
+        }}
+
+        deleteBtn.disabled = true;
+        deleteBtn.textContent = "Kimlik doğrulanıyor ve hesap siliniyor...";
+        statusBox.className = "status-box";
+        statusBox.textContent = "";
+
+        try {{
+          const loginResp = await fetch("/auth/login", {{
+            method: "POST",
+            headers: {{ "Content-Type": "application/json" }},
+            body: JSON.stringify({{ identifier: identifier, password: password }})
+          }});
+          const loginData = await loginResp.json().catch(function () {{ return {{}}; }});
+          if (!loginResp.ok || !loginData.token) {{
+            showStatus(
+              "error",
+              loginData.detail || "Giriş bilgileri doğrulanamadı. Şifrenizi unuttuysanız destek@eryapilates.com üzerinden talep oluşturabilirsiniz."
+            );
+            return;
+          }}
+
+          const delResp = await fetch("/auth/me", {{
+            method: "DELETE",
+            headers: {{
+              "Authorization": "Bearer " + loginData.token,
+              "Accept": "application/json"
+            }}
+          }});
+          const delData = await delResp.json().catch(function () {{ return {{}}; }});
+          if (!delResp.ok) {{
+            showStatus(
+              "error",
+              delData.detail || "Hesap silme işlemi tamamlanamadı. Lütfen destek@eryapilates.com ile iletişime geçin."
+            );
+            return;
+          }}
+
+          identifierInput.value = "";
+          passwordInput.value = "";
+          confirmCheckbox.checked = false;
+          showStatus(
+            "success",
+            delData.message || "Hesabınız ve ilişkili tüm kişisel verileriniz kalıcı olarak silindi."
+          );
+        }} catch (err) {{
+          showStatus("error", "Sunucuya bağlanılamadı. Lütfen internet bağlantınızı kontrol edip tekrar deneyin.");
+        }} finally {{
+          deleteBtn.disabled = false;
+          deleteBtn.textContent = "Hesabımı Kalıcı Olarak Sil";
+        }}
+      }});
+    }})();
+  </script>
+</body>
+</html>
+"""
+
+
+@app.get("/privacy", response_class=HTMLResponse, include_in_schema=False)
+def serve_privacy_policy():
+    return HTMLResponse(
+        content=_PRIVACY_HTML,
+        status_code=200,
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/delete-account", response_class=HTMLResponse, include_in_schema=False)
+def serve_delete_account_page():
+    return HTMLResponse(
+        content=_DELETE_ACCOUNT_HTML,
+        status_code=200,
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 @app.get("/", include_in_schema=False)

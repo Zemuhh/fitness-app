@@ -39,6 +39,13 @@ import {
   Zap,
 } from 'lucide-react-native';
 import { apiRequest } from '@/config/api';
+import {
+  AiVisionConsentModal,
+  getAiVisionConsentAccepted,
+  isAiVisionConsentAcceptedSync,
+  markAiVisionConsentAcceptedSync,
+  saveAiVisionConsentAccepted,
+} from '@/components/AiVisionConsentModal';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
 import {
@@ -568,6 +575,31 @@ export function MemberNutritionScreen({
   const [loggingVisionMeal, setLoggingVisionMeal] = useState<boolean>(false);
   const [visionLogError, setVisionLogError] = useState<string | null>(null);
 
+  // Yapay Zeka Veri Paylaşım Onay Durumu (Tek Seferlik Kalıcı Onay)
+  const [aiConsentAccepted, setAiConsentAccepted] = useState<boolean>(() =>
+    isAiVisionConsentAcceptedSync()
+  );
+  const [aiConsentLoaded, setAiConsentLoaded] = useState<boolean>(
+    Platform.OS === 'web' || isAiVisionConsentAcceptedSync()
+  );
+  const [aiConsentModalVisible, setAiConsentModalVisible] =
+    useState<boolean>(false);
+  const [pendingPhotoAction, setPendingPhotoAction] = useState<
+    'camera' | 'library' | null
+  >(null);
+
+  useEffect(() => {
+    let active = true;
+    getAiVisionConsentAccepted().then((accepted) => {
+      if (!active) return;
+      if (accepted) setAiConsentAccepted(true);
+      setAiConsentLoaded(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   // Tarama çizgisi animasyonu
   const scanAnim = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -942,7 +974,7 @@ export function MemberNutritionScreen({
     [executePhotoAnalysis, onShowBanner, photoNotes]
   );
 
-  const handleTriggerGallery = useCallback(async () => {
+  const runGalleryPicker = useCallback(async () => {
     if (photoAnalyzing || preparingPhoto) return;
     if (Platform.OS === 'web') {
       if (galleryInputRef.current) {
@@ -969,7 +1001,7 @@ export function MemberNutritionScreen({
     await executePhotoAnalysis(picked.photo, photoNotes);
   }, [executePhotoAnalysis, onShowBanner, photoAnalyzing, photoNotes, preparingPhoto]);
 
-  const handleTriggerCamera = useCallback(async () => {
+  const runCameraPicker = useCallback(async () => {
     if (photoAnalyzing || preparingPhoto) return;
     if (Platform.OS === 'web') {
       if (cameraInputRef.current) {
@@ -995,6 +1027,87 @@ export function MemberNutritionScreen({
     setVisionResult(null);
     await executePhotoAnalysis(picked.photo, photoNotes);
   }, [executePhotoAnalysis, onShowBanner, photoAnalyzing, photoNotes, preparingPhoto]);
+
+  const handleTriggerGallery = useCallback(async () => {
+    if (photoAnalyzing || preparingPhoto) return;
+    let consented = aiConsentAccepted || isAiVisionConsentAcceptedSync();
+    if (!consented && !aiConsentLoaded) {
+      consented = await getAiVisionConsentAccepted();
+      setAiConsentLoaded(true);
+      if (consented) setAiConsentAccepted(true);
+    }
+    if (!consented) {
+      setPendingPhotoAction('library');
+      setAiConsentModalVisible(true);
+      return;
+    }
+    await runGalleryPicker();
+  }, [
+    aiConsentAccepted,
+    aiConsentLoaded,
+    photoAnalyzing,
+    preparingPhoto,
+    runGalleryPicker,
+  ]);
+
+  const handleTriggerCamera = useCallback(async () => {
+    if (photoAnalyzing || preparingPhoto) return;
+    let consented = aiConsentAccepted || isAiVisionConsentAcceptedSync();
+    if (!consented && !aiConsentLoaded) {
+      consented = await getAiVisionConsentAccepted();
+      setAiConsentLoaded(true);
+      if (consented) setAiConsentAccepted(true);
+    }
+    if (!consented) {
+      setPendingPhotoAction('camera');
+      setAiConsentModalVisible(true);
+      return;
+    }
+    await runCameraPicker();
+  }, [
+    aiConsentAccepted,
+    aiConsentLoaded,
+    photoAnalyzing,
+    preparingPhoto,
+    runCameraPicker,
+  ]);
+
+  const handleCancelAiConsent = useCallback(() => {
+    setAiConsentModalVisible(false);
+    setPendingPhotoAction(null);
+  }, []);
+
+  const handleAcceptAiConsent = useCallback(() => {
+    markAiVisionConsentAcceptedSync();
+    setAiConsentAccepted(true);
+    setAiConsentLoaded(true);
+    void saveAiVisionConsentAccepted();
+
+    const nextAction = pendingPhotoAction;
+    setPendingPhotoAction(null);
+    setAiConsentModalVisible(false);
+
+    if (!nextAction) return;
+
+    if (Platform.OS === 'web') {
+      // Web tarayıcılarında kullanıcı tıklama jesti içinde dosya seçiciyi doğrudan aç
+      if (nextAction === 'camera') {
+        cameraInputRef.current?.click();
+      } else {
+        galleryInputRef.current?.click();
+      }
+      return;
+    }
+
+    // iOS/Android native Modal kapanış animasyonu ile picker çakışmasını önle
+    setTimeout(() => {
+      if (nextAction === 'camera') {
+        void runCameraPicker();
+      } else {
+        void runGalleryPicker();
+      }
+    }, 260);
+  }, [pendingPhotoAction, runCameraPicker, runGalleryPicker]);
 
   const handleClearPhoto = useCallback(() => {
     setSelectedPhoto(null);
@@ -1455,43 +1568,45 @@ export function MemberNutritionScreen({
               </TouchableOpacity>
             ) : null}
 
-            {/* Hızlı Öğün Şablonları */}
-            <View style={styles.paramBlock}>
-              <Text style={styles.fieldLabel}>Hızlı örnek tabaklar</Text>
-              <View style={styles.chipsWrap}>
-                {SAMPLE_PLATES.map((sample) => {
-                  const isCurrent = selectedPhoto?.fileName === sample.filename;
-                  return (
-                    <TouchableOpacity
-                      key={sample.id}
-                      style={[
-                        styles.sampleChip,
-                        isCurrent && styles.sampleChipActive,
-                      ]}
-                      onPress={() => handleSelectSamplePlate(sample)}
-                      disabled={photoAnalyzing || preparingPhoto}
-                      activeOpacity={0.78}
-                      accessibilityRole="button"
-                    >
-                      <View
+            {/* Hızlı Öğün Şablonları (Yalnızca Geliştirme Ortamı) */}
+            {__DEV__ && (
+              <View style={styles.paramBlock}>
+                <Text style={styles.fieldLabel}>Hızlı örnek tabaklar</Text>
+                <View style={styles.chipsWrap}>
+                  {SAMPLE_PLATES.map((sample) => {
+                    const isCurrent = selectedPhoto?.fileName === sample.filename;
+                    return (
+                      <TouchableOpacity
+                        key={sample.id}
                         style={[
-                          styles.sampleDot,
-                          { backgroundColor: sample.palette[0] },
+                          styles.sampleChip,
+                          isCurrent && styles.sampleChipActive,
                         ]}
-                      />
-                      <Text
-                        style={[
-                          styles.sampleChipText,
-                          isCurrent && styles.sampleChipTextActive,
-                        ]}
+                        onPress={() => handleSelectSamplePlate(sample)}
+                        disabled={photoAnalyzing || preparingPhoto}
+                        activeOpacity={0.78}
+                        accessibilityRole="button"
                       >
-                        {sample.label}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
+                        <View
+                          style={[
+                            styles.sampleDot,
+                            { backgroundColor: sample.palette[0] },
+                          ]}
+                        />
+                        <Text
+                          style={[
+                            styles.sampleChipText,
+                            isCurrent && styles.sampleChipTextActive,
+                          ]}
+                        >
+                          {sample.label}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               </View>
-            </View>
+            )}
           </View>
         ) : (
           /* METİNLE HIZLI YAZ MODU */
@@ -1874,6 +1989,13 @@ export function MemberNutritionScreen({
             tintColor={COLORS.primary}
           />
         }
+      />
+
+      {/* YAPAY ZEKA VERİ PAYLAŞIM ONAY MODALI (TEK SEFERLİK) */}
+      <AiVisionConsentModal
+        visible={aiConsentModalVisible}
+        onCancel={handleCancelAiConsent}
+        onAccept={handleAcceptAiConsent}
       />
 
       {/* AI FOOD VISION DÜZENLENEBİLİR ANALİZ SONUÇ MODALI (Lazy) */}

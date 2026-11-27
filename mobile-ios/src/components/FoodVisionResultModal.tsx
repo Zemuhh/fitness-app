@@ -536,10 +536,12 @@ export function FoodVisionResultModal({
             </View>
           ) : null}
 
-          {/* Zorunlu App Store Sağlık Uyarısı */}
+          {/* Zorunlu App Store Sağlık Uyarısı (Guideline 1.4.1) */}
           <Text style={styles.disclaimerText}>
-            Tahmini değerlerdir; porsiyon ve pişirme yöntemine göre farklılık
-            gösterebilir.
+            Bilgilendirme: Bu alandaki yapay zeka analizleri ve tahminler
+            yalnızca spor/fitness takibi amaçlıdır; tıbbi tanı, tedavi veya
+            doktor tavsiyesi yerine geçmez. Değerler porsiyon ve pişirme
+            yöntemine göre farklılık gösterebilir.
           </Text>
         </ScrollView>
 
