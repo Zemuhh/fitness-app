@@ -1,6 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Animated,
+  Easing,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -15,6 +17,7 @@ import {
 import Svg, { Circle } from 'react-native-svg';
 import {
   Activity,
+  AlertCircle,
   Camera,
   CheckCircle2,
   ChevronDown,
@@ -29,11 +32,13 @@ import {
   Plus,
   RefreshCw,
   ScanLine,
+  Sparkles,
   Trash2,
   Upload,
   Utensils,
   Zap,
 } from 'lucide-react-native';
+import { FoodVisionResultModal } from '@/components/FoodVisionResultModal';
 import { apiRequest } from '@/config/api';
 import { useAuthDemo } from '@/context/AuthDemoContext';
 import { CARD_SHADOW, COLORS, FONTS } from '@/theme/colors';
@@ -41,9 +46,20 @@ import {
   AppUser,
   DailyWellness,
   EnergyStatus,
+  FoodVisionAnalyzeResponse,
   MemberDrawerRoute,
   NutritionAnalyzeResponse,
+  NutritionLogMealRequest,
+  NutritionLogMealResponse,
+  NutritionMealLog,
 } from '@/types/fitness';
+import {
+  buildFoodVisionFormData,
+  buildPickedPhotoFromDataUri,
+  compressWebImageForUpload,
+  PickedFoodPhoto,
+  pickNativeFoodPhoto,
+} from '@/utils/foodPhotoPicker';
 
 export interface MemberNutritionScreenProps {
   member: AppUser;
@@ -53,90 +69,21 @@ export interface MemberNutritionScreenProps {
 
 type AnalyzerMode = 'photo' | 'text';
 type MealType = 'Kahvaltı' | 'Öğle' | 'Akşam' | 'Ara Öğün';
-type PortionSize = 'Küçük' | 'Normal' | 'Büyük';
-
-interface DetectedFoodItem {
-  name: string;
-  portion: string;
-  calories: number;
-  protein_g: number;
-  carbs_g: number;
-  fat_g: number;
-  confidence_pct: number;
-}
-
-interface PhotoAnalyzeRequest {
-  member_id: number;
-  image_base64: string;
-  filename?: string;
-  meal_type: MealType;
-  portion_size: PortionSize;
-  notes?: string;
-  auto_log: boolean;
-}
-
-interface PhotoAnalyzeResponse {
-  log_id: number;
-  meal_type: string;
-  portion_size: string;
-  meal_title: string;
-  total_calories: number;
-  protein_g: number;
-  carbs_g: number;
-  fat_g: number;
-  fiber_g: number;
-  sugar_g: number;
-  health_score: number;
-  glycemic_load: string;
-  burn_equivalent: string;
-  analysis_engine: string;
-  detected_items: DetectedFoodItem[];
-  coach_note: string;
-  suggestions: string[];
-  wellness: DailyWellness;
-}
-
-interface NutritionMealLog {
-  id: number;
-  date: string;
-  created_at: string;
-  source: string;
-  meal_type: string;
-  portion_size: string;
-  meal_description: string;
-  photo_thumbnail?: string | null;
-  calories: number;
-  protein_g: number;
-  carbs_g: number;
-  fat_g: number;
-  fiber_g: number;
-  sugar_g: number;
-  health_score: number;
-  glycemic_load: string;
-  burn_equivalent: string;
-  detected_items: DetectedFoodItem[];
-  coach_note: string;
-}
 
 interface SamplePlatePreset {
   id: string;
   label: string;
   mealType: MealType;
-  portionSize: PortionSize;
   filename: string;
   notes: string;
   palette: [string, string, string];
 }
-
-const MEAL_TYPE_OPTIONS: MealType[] = ['Kahvaltı', 'Öğle', 'Akşam', 'Ara Öğün'];
-const PORTION_SIZE_OPTIONS: PortionSize[] = ['Küçük', 'Normal', 'Büyük'];
 
 const SAMPLE_PLATES: SamplePlatePreset[] = [
   {
     id: 'salmon-quinoa',
     label: 'Izgara somon ve kinoa',
     mealType: 'Öğle',
-    portionSize: 'Normal',
     filename: 'izgara-somon-kinoa.jpg',
     notes: 'Izgara somon, haşlanmış kinoa, avokado ve zeytinyağlı roka salatası',
     palette: ['#D97A5B', '#D8B979', '#5A815E'],
@@ -145,7 +92,6 @@ const SAMPLE_PLATES: SamplePlatePreset[] = [
     id: 'avocado-eggs',
     label: 'Avokadolu poşe yumurta',
     mealType: 'Kahvaltı',
-    portionSize: 'Normal',
     filename: 'avokadolu-pose-yumurta.jpg',
     notes: '2 poşe yumurta, 1 dilim ekşi maya tam buğday ekmek, avokado ve lor peyniri',
     palette: ['#E8B949', '#6B8E5E', '#A87C4F'],
@@ -154,7 +100,6 @@ const SAMPLE_PLATES: SamplePlatePreset[] = [
     id: 'chicken-bowl',
     label: 'Tavuklu Akdeniz kasesi',
     mealType: 'Akşam',
-    portionSize: 'Normal',
     filename: 'tavuklu-akdeniz-kasesi.jpg',
     notes: 'Izgara tavuk göğsü, bulgur pilavı, süzme yoğurt ve közlenmiş sebze',
     palette: ['#C89862', '#D4C39A', '#7A5536'],
@@ -414,70 +359,12 @@ function generateSamplePlateDataUri(sample: SamplePlatePreset): string {
   }
 }
 
-function compressWebImageFile(file: any, maxDim = 720): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const FileReaderCtor = (globalThis as any).FileReader;
-    if (!FileReaderCtor) {
-      reject(new Error('Görsel okuyucu bu ortamda kullanılamıyor'));
-      return;
-    }
-
-    const reader = new FileReaderCtor();
-    reader.onerror = () => reject(new Error('Fotoğraf okunamadı'));
-    reader.onload = () => {
-      const rawDataUrl = typeof reader.result === 'string' ? reader.result : '';
-      if (!rawDataUrl) {
-        reject(new Error('Fotoğraf verisi boş'));
-        return;
-      }
-
-      const ImageCtor = (globalThis as any).Image;
-      const doc = (globalThis as any).document;
-      if (!ImageCtor || !doc) {
-        resolve(rawDataUrl);
-        return;
-      }
-
-      const img = new ImageCtor();
-      img.onerror = () => resolve(rawDataUrl);
-      img.onload = () => {
-        try {
-          const origW = Number(img.naturalWidth || img.width || 0);
-          const origH = Number(img.naturalHeight || img.height || 0);
-          if (!origW || !origH) {
-            resolve(rawDataUrl);
-            return;
-          }
-
-          const longest = Math.max(origW, origH);
-          const scale = longest > maxDim ? maxDim / longest : 1;
-          const targetW = Math.max(1, Math.round(origW * scale));
-          const targetH = Math.max(1, Math.round(origH * scale));
-
-          const canvas = doc.createElement('canvas');
-          canvas.width = targetW;
-          canvas.height = targetH;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            resolve(rawDataUrl);
-            return;
-          }
-
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, targetW, targetH);
-          ctx.drawImage(img, 0, 0, targetW, targetH);
-
-          const jpegDataUrl = canvas.toDataURL('image/jpeg', 0.82);
-          resolve(jpegDataUrl || rawDataUrl);
-        } catch {
-          resolve(rawDataUrl);
-        }
-      };
-      img.src = rawDataUrl;
-    };
-
-    reader.readAsDataURL(file);
-  });
+function getDefaultMealTypeByHour(): MealType {
+  const hour = new Date().getHours();
+  if (hour >= 5 && hour < 11) return 'Kahvaltı';
+  if (hour >= 11 && hour < 16) return 'Öğle';
+  if (hour >= 16 && hour < 22) return 'Akşam';
+  return 'Ara Öğün';
 }
 
 export function MemberNutritionScreen({
@@ -496,15 +383,57 @@ export function MemberNutritionScreen({
   // Analyzer Mode ('photo' default)
   const [mode, setMode] = useState<AnalyzerMode>('photo');
 
-  // Photo Analyzer State
-  const [selectedPhotoUri, setSelectedPhotoUri] = useState<string | null>(null);
-  const [selectedPhotoName, setSelectedPhotoName] = useState<string>('');
+  // AI Food Vision State
+  const [selectedPhoto, setSelectedPhoto] = useState<PickedFoodPhoto | null>(
+    null
+  );
   const [preparingPhoto, setPreparingPhoto] = useState<boolean>(false);
-  const [mealType, setMealType] = useState<MealType>('Öğle');
-  const [portionSize, setPortionSize] = useState<PortionSize>('Normal');
+  const [mealType, setMealType] = useState<MealType>(() =>
+    getDefaultMealTypeByHour()
+  );
   const [photoNotes, setPhotoNotes] = useState<string>('');
   const [photoAnalyzing, setPhotoAnalyzing] = useState<boolean>(false);
-  const [photoResult, setPhotoResult] = useState<PhotoAnalyzeResponse | null>(null);
+  const [photoError, setPhotoError] = useState<string | null>(null);
+  const [visionResult, setVisionResult] =
+    useState<FoodVisionAnalyzeResponse | null>(null);
+  const [visionModalVisible, setVisionModalVisible] = useState<boolean>(false);
+  const [loggingVisionMeal, setLoggingVisionMeal] = useState<boolean>(false);
+  const [visionLogError, setVisionLogError] = useState<string | null>(null);
+
+  // Tarama çizgisi animasyonu
+  const scanAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    if (!photoAnalyzing) {
+      scanAnim.stopAnimation();
+      scanAnim.setValue(0);
+      return;
+    }
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(scanAnim, {
+          toValue: 1,
+          duration: 1500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: Platform.OS !== 'web',
+        }),
+        Animated.timing(scanAnim, {
+          toValue: 0,
+          duration: 1500,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: Platform.OS !== 'web',
+        }),
+      ])
+    );
+    loop.start();
+    return () => {
+      loop.stop();
+    };
+  }, [photoAnalyzing, scanAnim]);
+
+  const scanLineTranslateY = scanAnim.interpolate({
+    inputRange: [0, 1],
+    outputRange: [12, 200],
+  });
 
   // Text Analyzer State
   const [mealText, setMealText] = useState<string>('');
@@ -635,6 +564,186 @@ export function MemberNutritionScreen({
     [member.id, onShowBanner, triggerGlobalRefresh, updatingEnergy]
   );
 
+  const executePhotoAnalysis = useCallback(
+    async (photoOverride?: PickedFoodPhoto, noteOverride?: string) => {
+      const targetPhoto = photoOverride ?? selectedPhoto;
+      const activeNote = (noteOverride ?? photoNotes).trim();
+
+      if (!targetPhoto) {
+        onShowBanner?.(
+          'warning',
+          'Analiz için önce bir tabak fotoğrafı çekin veya galeriden seçin'
+        );
+        return;
+      }
+
+      setPhotoAnalyzing(true);
+      setPhotoError(null);
+      setVisionLogError(null);
+
+      try {
+        const formData = buildFoodVisionFormData(
+          targetPhoto,
+          member.id,
+          activeNote
+        );
+
+        const res = await apiRequest<FoodVisionAnalyzeResponse>(
+          '/nutrition/analyze-photo',
+          {
+            method: 'POST',
+            body: formData,
+          }
+        );
+
+        const safeItems = Array.isArray(res?.items)
+          ? res.items.map((item) => ({
+              name: String(item?.name || 'Yiyecek'),
+              estimated_grams: Number(item?.estimated_grams || 0),
+              calories: Number(item?.calories || 0),
+              protein_g: Number(item?.protein_g || 0),
+              carbs_g: Number(item?.carbs_g || 0),
+              fat_g: Number(item?.fat_g || 0),
+            }))
+          : [];
+
+        const normalized: FoodVisionAnalyzeResponse = {
+          meal_name: res?.meal_name || 'Analiz Edilen Öğün',
+          confidence: Number(res?.confidence || 0),
+          items: safeItems,
+          total_calories: Number(res?.total_calories || 0),
+          total_protein_g: Number(res?.total_protein_g || 0),
+          total_carbs_g: Number(res?.total_carbs_g || 0),
+          total_fat_g: Number(res?.total_fat_g || 0),
+          coach_tip: res?.coach_tip || '',
+          is_mock: Boolean(res?.is_mock),
+        };
+
+        setVisionResult(normalized);
+        setVisionModalVisible(true);
+      } catch (err: any) {
+        const errorMsg =
+          err?.message ||
+          'Fotoğraf analiz edilirken bir sorun oluştu. Lütfen tekrar deneyin.';
+        setPhotoError(errorMsg);
+        onShowBanner?.('error', errorMsg);
+      } finally {
+        setPhotoAnalyzing(false);
+      }
+    },
+    [member.id, onShowBanner, photoNotes, selectedPhoto]
+  );
+
+  const handleConfirmVisionMeal = useCallback(
+    async (payload: NutritionLogMealRequest) => {
+      if (loggingVisionMeal) return;
+      setLoggingVisionMeal(true);
+      setVisionLogError(null);
+
+      try {
+        const res = await apiRequest<NutritionLogMealResponse>(
+          '/nutrition/log-meal',
+          {
+            method: 'POST',
+            body: JSON.stringify(payload),
+          }
+        );
+
+        if (res?.wellness) {
+          setWellness(res.wellness);
+        }
+
+        const newLog: NutritionMealLog = res?.meal_log
+          ? {
+              ...res.meal_log,
+              photo_thumbnail:
+                res.meal_log.photo_thumbnail ||
+                selectedPhoto?.thumbnailDataUri ||
+                selectedPhoto?.previewUri ||
+                null,
+              detected_items:
+                res.meal_log.detected_items ||
+                payload.items.map((it) => ({
+                  name: it.name,
+                  estimated_grams: it.estimated_grams,
+                  portion: `~${it.estimated_grams}g`,
+                  calories: it.calories,
+                  protein_g: it.protein_g,
+                  carbs_g: it.carbs_g,
+                  fat_g: it.fat_g,
+                })),
+              coach_note: res.meal_log.coach_note || payload.coach_tip,
+            }
+          : {
+              id: res?.log_id || Date.now(),
+              date:
+                res?.wellness?.date || new Date().toISOString().slice(0, 10),
+              created_at: new Date().toISOString(),
+              source: 'photo',
+              meal_type: payload.meal_type || mealType,
+              portion_size:
+                payload.portion_multiplier === 0.5
+                  ? 'Yarım'
+                  : payload.portion_multiplier === 1.5
+                  ? 'Büyük'
+                  : 'Normal',
+              portion_multiplier: payload.portion_multiplier,
+              meal_description: payload.meal_name,
+              photo_thumbnail:
+                selectedPhoto?.thumbnailDataUri ||
+                selectedPhoto?.previewUri ||
+                null,
+              calories: payload.total_calories,
+              protein_g: payload.total_protein_g,
+              carbs_g: payload.total_carbs_g,
+              fat_g: payload.total_fat_g,
+              detected_items: payload.items.map((it) => ({
+                name: it.name,
+                estimated_grams: it.estimated_grams,
+                portion: `~${it.estimated_grams}g`,
+                calories: it.calories,
+                protein_g: it.protein_g,
+                carbs_g: it.carbs_g,
+                fat_g: it.fat_g,
+              })),
+              coach_note: payload.coach_tip,
+            };
+
+        setMealLogs((prev) => [
+          newLog,
+          ...prev.filter((item) => item.id !== newLog.id),
+        ]);
+        setVisionModalVisible(false);
+        setPhotoNotes('');
+
+        fetchMealLogs();
+        triggerGlobalRefresh();
+
+        onShowBanner?.(
+          'success',
+          res?.message ||
+            `${payload.meal_name}: +${formatNumber(payload.total_calories)} kcal günlüğüne eklendi`
+        );
+      } catch (err: any) {
+        const msg =
+          err?.message ||
+          'Öğün günlüğüne kaydedilirken bir hata oluştu. Lütfen tekrar deneyin.';
+        setVisionLogError(msg);
+        onShowBanner?.('error', msg);
+      } finally {
+        setLoggingVisionMeal(false);
+      }
+    },
+    [
+      fetchMealLogs,
+      loggingVisionMeal,
+      mealType,
+      onShowBanner,
+      selectedPhoto,
+      triggerGlobalRefresh,
+    ]
+  );
+
   const handleWebFileChange = useCallback(
     async (event: any) => {
       const file = event?.target?.files?.[0];
@@ -644,189 +753,97 @@ export function MemberNutritionScreen({
       if (!file) return;
 
       setPreparingPhoto(true);
+      setPhotoError(null);
       try {
-        const compressedUri = await compressWebImageFile(file, 720);
-        setSelectedPhotoUri(compressedUri);
-        setSelectedPhotoName(file.name || 'tabak-fotografi.jpg');
-        setPhotoResult(null);
-      } catch (err: any) {
-        onShowBanner?.(
-          'error',
-          err?.message || 'Fotoğraf hazırlanırken hata oluştu'
-        );
-      } finally {
+        const compressed = await compressWebImageForUpload(file, 1280, 0.7);
+        setSelectedPhoto(compressed);
+        setVisionResult(null);
         setPreparingPhoto(false);
+        await executePhotoAnalysis(compressed, photoNotes);
+      } catch (err: any) {
+        setPreparingPhoto(false);
+        const msg = err?.message || 'Fotoğraf hazırlanırken hata oluştu';
+        setPhotoError(msg);
+        onShowBanner?.('error', msg);
       }
     },
-    [onShowBanner]
+    [executePhotoAnalysis, onShowBanner, photoNotes]
   );
 
-  const handleTriggerGallery = useCallback(() => {
-    if (Platform.OS === 'web' && galleryInputRef.current) {
-      galleryInputRef.current.click();
+  const handleTriggerGallery = useCallback(async () => {
+    if (photoAnalyzing || preparingPhoto) return;
+    if (Platform.OS === 'web') {
+      if (galleryInputRef.current) {
+        galleryInputRef.current.click();
+      }
       return;
     }
-    onShowBanner?.(
-      'warning',
-      'Fotoğraf seçimi bu görünümde desteklenmiyorsa "Metinle hızlı yaz" sekmesinden veya aşağıdaki hızlı öğün şablonlarından devam edebilirsiniz.'
-    );
-  }, [onShowBanner]);
 
-  const handleTriggerCamera = useCallback(() => {
-    if (Platform.OS === 'web' && cameraInputRef.current) {
-      cameraInputRef.current.click();
+    setPreparingPhoto(true);
+    setPhotoError(null);
+    const picked = await pickNativeFoodPhoto('gallery');
+    setPreparingPhoto(false);
+
+    if (picked.cancelled) return;
+    if (picked.error || !picked.photo) {
+      const msg = picked.error || 'Fotoğraf seçilemedi.';
+      setPhotoError(msg);
+      onShowBanner?.('warning', msg);
       return;
     }
-    onShowBanner?.(
-      'warning',
-      'Kamera erişimi bu görünümde desteklenmiyorsa "Metinle hızlı yaz" sekmesinden veya aşağıdaki hızlı öğün şablonlarından devam edebilirsiniz.'
-    );
-  }, [onShowBanner]);
+
+    setSelectedPhoto(picked.photo);
+    setVisionResult(null);
+    await executePhotoAnalysis(picked.photo, photoNotes);
+  }, [executePhotoAnalysis, onShowBanner, photoAnalyzing, photoNotes, preparingPhoto]);
+
+  const handleTriggerCamera = useCallback(async () => {
+    if (photoAnalyzing || preparingPhoto) return;
+    if (Platform.OS === 'web') {
+      if (cameraInputRef.current) {
+        cameraInputRef.current.click();
+      }
+      return;
+    }
+
+    setPreparingPhoto(true);
+    setPhotoError(null);
+    const picked = await pickNativeFoodPhoto('camera');
+    setPreparingPhoto(false);
+
+    if (picked.cancelled) return;
+    if (picked.error || !picked.photo) {
+      const msg = picked.error || 'Kamera ile fotoğraf çekilemedi.';
+      setPhotoError(msg);
+      onShowBanner?.('warning', msg);
+      return;
+    }
+
+    setSelectedPhoto(picked.photo);
+    setVisionResult(null);
+    await executePhotoAnalysis(picked.photo, photoNotes);
+  }, [executePhotoAnalysis, onShowBanner, photoAnalyzing, photoNotes, preparingPhoto]);
 
   const handleClearPhoto = useCallback(() => {
-    setSelectedPhotoUri(null);
-    setSelectedPhotoName('');
-    setPhotoResult(null);
+    setSelectedPhoto(null);
+    setVisionResult(null);
+    setPhotoError(null);
   }, []);
 
-  const executePhotoAnalysis = useCallback(
-    async (override?: {
-      imageUri: string;
-      filename: string;
-      mealType: MealType;
-      portionSize: PortionSize;
-      notes: string;
-    }) => {
-      const activeImageUri = override?.imageUri ?? selectedPhotoUri;
-      const activeFilename = override?.filename ?? selectedPhotoName;
-      const activeMealType = override?.mealType ?? mealType;
-      const activePortionSize = override?.portionSize ?? portionSize;
-      const activeNotes = (override?.notes ?? photoNotes).trim();
-
-      if (!activeImageUri) {
-        onShowBanner?.(
-          'warning',
-          'Analiz için önce bir tabak fotoğrafı seçin veya kamera ile çekin'
-        );
-        return;
-      }
-
-      setPhotoAnalyzing(true);
-      try {
-        const payload: PhotoAnalyzeRequest = {
-          member_id: member.id,
-          image_base64: activeImageUri,
-          filename: activeFilename || 'tabak.jpg',
-          meal_type: activeMealType,
-          portion_size: activePortionSize,
-          notes: activeNotes || undefined,
-          auto_log: true,
-        };
-
-        const res = await apiRequest<PhotoAnalyzeResponse>(
-          '/nutrition/analyze-photo',
-          {
-            method: 'POST',
-            body: JSON.stringify(payload),
-          }
-        );
-
-        const safeRes: PhotoAnalyzeResponse = {
-          ...res,
-          total_calories: Number(res.total_calories || 0),
-          protein_g: Number(res.protein_g || 0),
-          carbs_g: Number(res.carbs_g || 0),
-          fat_g: Number(res.fat_g || 0),
-          fiber_g: Number(res.fiber_g || 0),
-          sugar_g: Number(res.sugar_g || 0),
-          health_score: Number(res.health_score || 0),
-          detected_items: Array.isArray(res.detected_items)
-            ? res.detected_items
-            : [],
-          suggestions: Array.isArray(res.suggestions) ? res.suggestions : [],
-        };
-
-        setPhotoResult(safeRes);
-        if (safeRes.wellness) {
-          setWellness(safeRes.wellness);
-        }
-
-        // Öğün geçmişini anında güncelle
-        const syntheticLog: NutritionMealLog = {
-          id: safeRes.log_id || Date.now(),
-          date:
-            safeRes.wellness?.date || new Date().toISOString().slice(0, 10),
-          created_at: new Date().toISOString(),
-          source: 'photo',
-          meal_type: safeRes.meal_type || activeMealType,
-          portion_size: safeRes.portion_size || activePortionSize,
-          meal_description: safeRes.meal_title || activeFilename || 'Fotoğraflı öğün',
-          photo_thumbnail: activeImageUri,
-          calories: safeRes.total_calories,
-          protein_g: safeRes.protein_g,
-          carbs_g: safeRes.carbs_g,
-          fat_g: safeRes.fat_g,
-          fiber_g: safeRes.fiber_g,
-          sugar_g: safeRes.sugar_g,
-          health_score: safeRes.health_score,
-          glycemic_load: safeRes.glycemic_load,
-          burn_equivalent: safeRes.burn_equivalent,
-          detected_items: safeRes.detected_items,
-          coach_note: safeRes.coach_note,
-        };
-        setMealLogs((prev) => [
-          syntheticLog,
-          ...prev.filter((item) => item.id !== syntheticLog.id),
-        ]);
-
-        fetchMealLogs();
-        triggerGlobalRefresh();
-        onShowBanner?.(
-          'success',
-          `${safeRes.meal_title}: +${formatNumber(safeRes.total_calories)} kcal günlük makrolarınıza eklendi`
-        );
-      } catch (err: any) {
-        onShowBanner?.(
-          'error',
-          err?.message || 'Fotoğraf analizi sırasında sunucuya ulaşılamadı'
-        );
-      } finally {
-        setPhotoAnalyzing(false);
-      }
-    },
-    [
-      fetchMealLogs,
-      mealType,
-      member.id,
-      onShowBanner,
-      photoNotes,
-      portionSize,
-      selectedPhotoName,
-      selectedPhotoUri,
-      triggerGlobalRefresh,
-    ]
-  );
-
   const handleSelectSamplePlate = useCallback(
-    (sample: SamplePlatePreset) => {
-      if (photoAnalyzing) return;
+    async (sample: SamplePlatePreset) => {
+      if (photoAnalyzing || preparingPhoto) return;
       const generatedUri = generateSamplePlateDataUri(sample);
-      setSelectedPhotoUri(generatedUri);
-      setSelectedPhotoName(sample.filename);
+      const picked = buildPickedPhotoFromDataUri(generatedUri, sample.filename);
+      setSelectedPhoto(picked);
       setMealType(sample.mealType);
-      setPortionSize(sample.portionSize);
       setPhotoNotes(sample.notes);
-      setPhotoResult(null);
+      setVisionResult(null);
+      setPhotoError(null);
 
-      executePhotoAnalysis({
-        imageUri: generatedUri,
-        filename: sample.filename,
-        mealType: sample.mealType,
-        portionSize: sample.portionSize,
-        notes: sample.notes,
-      });
+      await executePhotoAnalysis(picked, sample.notes);
     },
-    [executePhotoAnalysis, photoAnalyzing]
+    [executePhotoAnalysis, photoAnalyzing, preparingPhoto]
   );
 
   const handleAnalyzeTextMeal = useCallback(async () => {
@@ -928,10 +945,6 @@ export function MemberNutritionScreen({
     ];
   }, [wellness]);
 
-  const photoHealthTone = photoResult
-    ? getHealthScoreTone(photoResult.health_score)
-    : null;
-
   const todayDateLabel = useMemo(() => formatTodayTurkishDate(), []);
 
   return (
@@ -1003,12 +1016,14 @@ export function MemberNutritionScreen({
         </View>
       )}
 
-      {/* 1. ANA MODÜL: FOTOĞRAFTAN AI KALORİ & BESİN ANALİZİ */}
+      {/* 1. ANA MODÜL: 📸 TABAĞINI ÇEK & KALORİ HESAPLA (AI FOOD VISION) */}
       <View style={styles.card}>
         <View style={styles.cardHeader}>
           <View style={styles.cardHeaderLeft}>
-            <ScanLine size={18} color={COLORS.textSecondary} strokeWidth={1.6} />
-            <Text style={styles.cardTitle}>Fotoğraftan kalori ve besin analizi</Text>
+            <ScanLine size={18} color={COLORS.primary} strokeWidth={1.8} />
+            <Text style={styles.cardTitle}>
+              📸 Tabağını Çek & Kalori Hesapla
+            </Text>
           </View>
         </View>
 
@@ -1067,24 +1082,51 @@ export function MemberNutritionScreen({
 
         {mode === 'photo' ? (
           <View style={styles.moduleBody}>
-            {/* Fotoğraf Yükleme / Önizleme Alanı */}
-            {selectedPhotoUri ? (
+            {/* Opsiyonel Ek Not (Fotoğraf seçmeden/çekmeden önce girilebilir) */}
+            <View style={styles.paramBlock}>
+              <Text style={styles.fieldLabel}>
+                Ek not (isteğe bağlı, örn: az yağlı, sossuz)
+              </Text>
+              <TextInput
+                style={styles.notesInputSingle}
+                value={photoNotes}
+                onChangeText={setPhotoNotes}
+                placeholder="Ek not (isteğe bağlı, örn: az yağlı, sossuz)"
+                placeholderTextColor={COLORS.textMuted}
+                editable={!photoAnalyzing}
+                returnKeyType="done"
+              />
+            </View>
+
+            {/* Fotoğraf Yükleme / Önizleme & Tarama Animasyonu */}
+            {selectedPhoto ? (
               <View style={styles.previewCard}>
                 <View style={styles.previewImageWrap}>
                   <Image
-                    source={{ uri: selectedPhotoUri }}
+                    source={{ uri: selectedPhoto.previewUri }}
                     style={styles.previewImage}
                     resizeMode="cover"
                   />
                   {photoAnalyzing && (
                     <View style={styles.scanningOverlay}>
-                      <ActivityIndicator size="small" color={COLORS.white} />
-                      <Text style={styles.scanningTitle}>
-                        Tabak analiz ediliyor
-                      </Text>
-                      <Text style={styles.scanningSub}>
-                        Yiyecek kalemleri, porsiyon ve makrolar hesaplanıyor
-                      </Text>
+                      <Animated.View
+                        style={[
+                          styles.scanBeam,
+                          { transform: [{ translateY: scanLineTranslateY }] },
+                        ]}
+                      />
+                      <View style={styles.scanningBadge}>
+                        <ActivityIndicator
+                          size="small"
+                          color={COLORS.primaryGlow}
+                        />
+                        <Text style={styles.scanningTitle}>
+                          🤖 Yapay Zeka tabağını analiz ediyor...
+                        </Text>
+                        <Text style={styles.scanningSub}>
+                          Yiyecekler, tahmini gramaj ve makrolar hesaplanıyor
+                        </Text>
+                      </View>
                     </View>
                   )}
                 </View>
@@ -1097,24 +1139,26 @@ export function MemberNutritionScreen({
                       strokeWidth={1.5}
                     />
                     <Text style={styles.previewFileName} numberOfLines={1}>
-                      {selectedPhotoName || 'Seçili tabak fotoğrafı'}
+                      {selectedPhoto.fileName || 'Seçili tabak fotoğrafı'}
                     </Text>
                   </View>
 
                   <View style={styles.previewActions}>
                     <TouchableOpacity
                       style={styles.ghostIconBtn}
-                      onPress={handleTriggerGallery}
+                      onPress={() => executePhotoAnalysis()}
                       disabled={photoAnalyzing}
                       activeOpacity={0.75}
                       accessibilityRole="button"
                     >
                       <RefreshCw
                         size={14}
-                        color={COLORS.textSecondary}
-                        strokeWidth={1.6}
+                        color={COLORS.primary}
+                        strokeWidth={1.7}
                       />
-                      <Text style={styles.ghostBtnText}>Değiştir</Text>
+                      <Text style={styles.ghostBtnTextPrimary}>
+                        Tekrar analiz
+                      </Text>
                     </TouchableOpacity>
 
                     <TouchableOpacity
@@ -1142,57 +1186,104 @@ export function MemberNutritionScreen({
                   ) : (
                     <Camera
                       size={22}
-                      color={COLORS.textSecondary}
-                      strokeWidth={1.5}
+                      color={COLORS.primary}
+                      strokeWidth={1.6}
                     />
                   )}
                 </View>
                 <Text style={styles.uploadTitle}>
-                  Öğün fotoğrafınızı yükleyin veya çekin
+                  Öğünün fotoğrafını çek veya galeriden seç
                 </Text>
                 <Text style={styles.uploadDesc}>
-                  Yüksek boyutlu fotoğraflar otomatik optimize edilerek saniyeler
-                  içinde analiz edilir
+                  Fotoğrafın otomatik optimize edilip yapay zeka ile saniyeler
+                  içinde kalori ve makro dökümü çıkarılır
                 </Text>
-
-                <View style={styles.uploadBtnRow}>
-                  <TouchableOpacity
-                    style={styles.uploadPrimaryBtn}
-                    onPress={handleTriggerCamera}
-                    disabled={preparingPhoto}
-                    activeOpacity={0.82}
-                    accessibilityRole="button"
-                  >
-                    <Camera size={16} color={COLORS.white} strokeWidth={1.6} />
-                    <Text style={styles.uploadPrimaryBtnText}>Kamera ile çek</Text>
-                  </TouchableOpacity>
-
-                  <TouchableOpacity
-                    style={styles.uploadSecondaryBtn}
-                    onPress={handleTriggerGallery}
-                    disabled={preparingPhoto}
-                    activeOpacity={0.82}
-                    accessibilityRole="button"
-                  >
-                    <Upload
-                      size={16}
-                      color={COLORS.textPrimary}
-                      strokeWidth={1.6}
-                    />
-                    <Text style={styles.uploadSecondaryBtnText}>
-                      Fotoğraf seç
-                    </Text>
-                  </TouchableOpacity>
-                </View>
               </View>
             )}
 
+            {/* İki Ana Aksiyon Butonu */}
+            <View style={styles.uploadBtnRow}>
+              <TouchableOpacity
+                style={[
+                  styles.uploadPrimaryBtn,
+                  (preparingPhoto || photoAnalyzing) && { opacity: 0.65 },
+                ]}
+                onPress={handleTriggerCamera}
+                disabled={preparingPhoto || photoAnalyzing}
+                activeOpacity={0.82}
+                accessibilityRole="button"
+              >
+                <Camera size={16} color={COLORS.white} strokeWidth={1.7} />
+                <Text style={styles.uploadPrimaryBtnText}>📷 Fotoğraf Çek</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity
+                style={[
+                  styles.uploadSecondaryBtn,
+                  (preparingPhoto || photoAnalyzing) && { opacity: 0.65 },
+                ]}
+                onPress={handleTriggerGallery}
+                disabled={preparingPhoto || photoAnalyzing}
+                activeOpacity={0.82}
+                accessibilityRole="button"
+              >
+                <Upload
+                  size={16}
+                  color={COLORS.textPrimary}
+                  strokeWidth={1.7}
+                />
+                <Text style={styles.uploadSecondaryBtnText}>
+                  🖼️ Galeriden Seç
+                </Text>
+              </TouchableOpacity>
+            </View>
+
+            {/* Fotoğraf Analiz Hata Kutusu */}
+            {photoError && !photoAnalyzing ? (
+              <View style={styles.photoErrorBox}>
+                <AlertCircle
+                  size={16}
+                  color={COLORS.dangerText}
+                  strokeWidth={1.8}
+                />
+                <Text style={styles.photoErrorText}>{photoError}</Text>
+              </View>
+            ) : null}
+
+            {/* Son Analiz Sonucunu Tekrar Açma Çubuğu */}
+            {visionResult && !visionModalVisible && !photoAnalyzing ? (
+              <TouchableOpacity
+                style={styles.reopenVisionBar}
+                onPress={() => setVisionModalVisible(true)}
+                activeOpacity={0.82}
+                accessibilityRole="button"
+              >
+                <View style={styles.reopenVisionLeft}>
+                  <Sparkles
+                    size={16}
+                    color={COLORS.success}
+                    strokeWidth={1.8}
+                  />
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.reopenVisionTitle} numberOfLines={1}>
+                      {visionResult.meal_name} (
+                      {formatNumber(visionResult.total_calories)} kcal)
+                    </Text>
+                    <Text style={styles.reopenVisionSub}>
+                      Porsiyonu düzenleyip günlüğüne eklemek için dokun
+                    </Text>
+                  </View>
+                </View>
+                <Text style={styles.reopenVisionAction}>İncele</Text>
+              </TouchableOpacity>
+            ) : null}
+
             {/* Hızlı Öğün Şablonları */}
             <View style={styles.paramBlock}>
-              <Text style={styles.fieldLabel}>Hızlı öğün şablonları</Text>
+              <Text style={styles.fieldLabel}>Hızlı örnek tabaklar</Text>
               <View style={styles.chipsWrap}>
                 {SAMPLE_PLATES.map((sample) => {
-                  const isCurrent = selectedPhotoName === sample.filename;
+                  const isCurrent = selectedPhoto?.fileName === sample.filename;
                   return (
                     <TouchableOpacity
                       key={sample.id}
@@ -1201,7 +1292,7 @@ export function MemberNutritionScreen({
                         isCurrent && styles.sampleChipActive,
                       ]}
                       onPress={() => handleSelectSamplePlate(sample)}
-                      disabled={photoAnalyzing}
+                      disabled={photoAnalyzing || preparingPhoto}
                       activeOpacity={0.78}
                       accessibilityRole="button"
                     >
@@ -1224,291 +1315,6 @@ export function MemberNutritionScreen({
                 })}
               </View>
             </View>
-
-            {/* Öğün Tipi Seçici */}
-            <View style={styles.paramBlock}>
-              <Text style={styles.fieldLabel}>Öğün tipi</Text>
-              <View style={styles.optionRow}>
-                {MEAL_TYPE_OPTIONS.map((opt) => {
-                  const active = mealType === opt;
-                  return (
-                    <TouchableOpacity
-                      key={opt}
-                      style={[
-                        styles.optionChip,
-                        active && styles.optionChipActive,
-                      ]}
-                      onPress={() => setMealType(opt)}
-                      activeOpacity={0.78}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                    >
-                      <Text
-                        style={[
-                          styles.optionChipText,
-                          active && styles.optionChipTextActive,
-                        ]}
-                      >
-                        {opt}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* Porsiyon Ölçeği Seçici */}
-            <View style={styles.paramBlock}>
-              <Text style={styles.fieldLabel}>Porsiyon ölçeği</Text>
-              <View style={styles.optionRow}>
-                {PORTION_SIZE_OPTIONS.map((opt) => {
-                  const active = portionSize === opt;
-                  return (
-                    <TouchableOpacity
-                      key={opt}
-                      style={[
-                        styles.optionChip,
-                        styles.optionChipEqual,
-                        active && styles.optionChipActive,
-                      ]}
-                      onPress={() => setPortionSize(opt)}
-                      activeOpacity={0.78}
-                      accessibilityRole="button"
-                      accessibilityState={{ selected: active }}
-                    >
-                      <Text
-                        style={[
-                          styles.optionChipText,
-                          active && styles.optionChipTextActive,
-                        ]}
-                      >
-                        {opt}
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })}
-              </View>
-            </View>
-
-            {/* İçerik İpucu (Opsiyonel) */}
-            <View style={styles.paramBlock}>
-              <Text style={styles.fieldLabel}>İçerik ipucu (opsiyonel)</Text>
-              <TextInput
-                style={styles.notesInput}
-                value={photoNotes}
-                onChangeText={setPhotoNotes}
-                placeholder="Örn. Az yağlı, sossuz, yanında ayran var"
-                placeholderTextColor={COLORS.textMuted}
-                multiline
-                numberOfLines={2}
-                textAlignVertical="top"
-              />
-            </View>
-
-            {/* Birincil Analiz Butonu */}
-            <TouchableOpacity
-              style={[
-                styles.primaryCta,
-                (photoAnalyzing || !selectedPhotoUri) && styles.primaryCtaMuted,
-              ]}
-              onPress={() => executePhotoAnalysis()}
-              disabled={photoAnalyzing}
-              activeOpacity={0.84}
-              accessibilityRole="button"
-            >
-              {photoAnalyzing ? (
-                <View style={styles.ctaLoadingRow}>
-                  <ActivityIndicator size="small" color={COLORS.white} />
-                  <Text style={styles.primaryCtaText}>
-                    Fotoğraf analiz ediliyor
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.ctaLoadingRow}>
-                  <ScanLine size={17} color={COLORS.white} strokeWidth={1.7} />
-                  <Text style={styles.primaryCtaText}>
-                    Fotoğrafı AI ile analiz et
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
-
-            {/* DETAYLI BESİN ANALİZ RAPOR KARTI */}
-            {photoResult && photoHealthTone && (
-              <View style={styles.reportCard}>
-                {/* Rapor Başlık ve Sağlık Skoru */}
-                <View style={styles.reportTopRow}>
-                  <View style={styles.reportTitleCol}>
-                    <Text style={styles.reportMealTitle}>
-                      {photoResult.meal_title}
-                    </Text>
-                    <Text style={styles.reportMetaLine}>
-                      {photoResult.meal_type} · {photoResult.portion_size} porsiyon
-                      {photoResult.analysis_engine
-                        ? ` · ${photoResult.analysis_engine}`
-                        : ''}
-                    </Text>
-                  </View>
-
-                  <View
-                    style={[
-                      styles.healthBadge,
-                      {
-                        backgroundColor: photoHealthTone.bg,
-                        borderColor: photoHealthTone.border,
-                      },
-                    ]}
-                  >
-                    <Text
-                      style={[
-                        styles.healthBadgeScore,
-                        { color: photoHealthTone.text },
-                      ]}
-                    >
-                      {Math.round(photoResult.health_score)}/100
-                    </Text>
-                    <Text
-                      style={[
-                        styles.healthBadgeLabel,
-                        { color: photoHealthTone.text },
-                      ]}
-                    >
-                      Sağlık skoru
-                    </Text>
-                  </View>
-                </View>
-
-                {/* Büyük Kalori + Glisemik Yük & Egzersiz Yakım Eşdeğeri */}
-                <View style={styles.reportHeroStats}>
-                  <View style={styles.reportCalorieBlock}>
-                    <Text style={styles.reportCalorieValue}>
-                      {formatNumber(photoResult.total_calories)}
-                    </Text>
-                    <Text style={styles.reportCalorieUnit}>kcal toplam</Text>
-                  </View>
-
-                  <View style={styles.reportSecondaryStats}>
-                    <View style={styles.reportMetaTile}>
-                      <Text style={styles.reportMetaTileLabel}>Glisemik yük</Text>
-                      <Text style={styles.reportMetaTileValue}>
-                        {photoResult.glycemic_load || 'Dengeli'}
-                      </Text>
-                    </View>
-                    <View style={styles.reportMetaTile}>
-                      <Text style={styles.reportMetaTileLabel}>
-                        Egzersiz eşdeğeri
-                      </Text>
-                      <Text style={styles.reportMetaTileValue}>
-                        {photoResult.burn_equivalent || 'Reformer Pilates'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-
-                {/* 5'li Makro Izgarası */}
-                <View style={styles.macroGrid5}>
-                  {[
-                    {
-                      label: 'Protein',
-                      value: `${formatDecimalGram(photoResult.protein_g)} g`,
-                      dot: COLORS.success,
-                    },
-                    {
-                      label: 'Karb',
-                      value: `${formatDecimalGram(photoResult.carbs_g)} g`,
-                      dot: COLORS.walnut,
-                    },
-                    {
-                      label: 'Yağ',
-                      value: `${formatDecimalGram(photoResult.fat_g)} g`,
-                      dot: COLORS.secondary,
-                    },
-                    {
-                      label: 'Lif',
-                      value: `${formatDecimalGram(photoResult.fiber_g)} g`,
-                      dot: COLORS.primary,
-                    },
-                    {
-                      label: 'Şeker',
-                      value: `${formatDecimalGram(photoResult.sugar_g)} g`,
-                      dot: COLORS.warning,
-                    },
-                  ].map((item) => (
-                    <View key={item.label} style={styles.macroGridCell}>
-                      <View style={styles.macroGridLabelRow}>
-                        <View
-                          style={[
-                            styles.macroGridDot,
-                            { backgroundColor: item.dot },
-                          ]}
-                        />
-                        <Text style={styles.macroGridLabel}>{item.label}</Text>
-                      </View>
-                      <Text style={styles.macroGridValue}>{item.value}</Text>
-                    </View>
-                  ))}
-                </View>
-
-                {/* Tespit Edilen Yiyecek Kalemleri */}
-                {photoResult.detected_items.length > 0 && (
-                  <View style={styles.detectedSection}>
-                    <Text style={styles.reportSubHeading}>
-                      Tespit edilen yiyecek kalemleri
-                    </Text>
-                    <View style={styles.detectedTable}>
-                      {photoResult.detected_items.map((item, idx) => (
-                        <View
-                          key={`${item.name}-${idx}`}
-                          style={[
-                            styles.detectedRow,
-                            idx > 0 && styles.detectedRowBorder,
-                          ]}
-                        >
-                          <View style={styles.detectedNameCol}>
-                            <Text style={styles.detectedName}>{item.name}</Text>
-                            <Text style={styles.detectedPortion}>
-                              {item.portion} · K {formatDecimalGram(item.carbs_g)}g
-                              {' · '}Y {formatDecimalGram(item.fat_g)}g
-                            </Text>
-                          </View>
-
-                          <View style={styles.detectedStatsCol}>
-                            <Text style={styles.detectedCalories}>
-                              {formatNumber(item.calories)} kcal ·{' '}
-                              {formatDecimalGram(item.protein_g)}g P
-                            </Text>
-                            <Text style={styles.detectedConfidence}>
-                              Güven %{Math.round(item.confidence_pct)}
-                            </Text>
-                          </View>
-                        </View>
-                      ))}
-                    </View>
-                  </View>
-                )}
-
-                {/* AI Beslenme Koçu Değerlendirmesi & Öneriler */}
-                <View style={styles.coachBox}>
-                  <Text style={styles.coachBoxHeading}>
-                    Beslenme koçu değerlendirmesi
-                  </Text>
-                  <Text style={styles.coachBoxText}>
-                    {normalizeCoachNote(photoResult.coach_note)}
-                  </Text>
-
-                  {photoResult.suggestions.length > 0 && (
-                    <View style={styles.suggestionsList}>
-                      {photoResult.suggestions.map((tip, idx) => (
-                        <View key={`${tip}-${idx}`} style={styles.suggestionRow}>
-                          <View style={styles.suggestionBullet} />
-                          <Text style={styles.suggestionText}>{tip}</Text>
-                        </View>
-                      ))}
-                    </View>
-                  )}
-                </View>
-              </View>
-            )}
           </View>
         ) : (
           /* METİNLE HIZLI YAZ MODU */
@@ -1850,7 +1656,10 @@ export function MemberNutritionScreen({
               const scoreTone = getHealthScoreTone(Number(log.health_score || 0));
               const items = Array.isArray(log.detected_items)
                 ? log.detected_items
+                : Array.isArray(log.items)
+                ? log.items
                 : [];
+              const coachText = log.coach_note || log.coach_tip || '';
 
               return (
                 <View
@@ -1916,7 +1725,7 @@ export function MemberNutritionScreen({
                               { color: scoreTone.text },
                             ]}
                           >
-                            {Math.round(log.health_score)}/100
+                            {Math.round(Number(log.health_score || 0))}/100
                           </Text>
                         )}
                       </View>
@@ -1927,7 +1736,7 @@ export function MemberNutritionScreen({
                           {formatDecimalGram(log.carbs_g)}g · Y{' '}
                           {formatDecimalGram(log.fat_g)}g
                           {Number(log.fiber_g) > 0
-                            ? ` · Lif ${formatDecimalGram(log.fiber_g)}g`
+                            ? ` · Lif ${formatDecimalGram(Number(log.fiber_g || 0))}g`
                             : ''}
                         </Text>
                         {isExpanded ? (
@@ -1966,26 +1775,35 @@ export function MemberNutritionScreen({
 
                       {items.length > 0 && (
                         <View style={styles.logDetectedList}>
-                          {items.map((dItem, dIdx) => (
-                            <View
-                              key={`${dItem.name}-${dIdx}`}
-                              style={styles.logDetectedItemRow}
-                            >
-                              <Text style={styles.logDetectedName}>
-                                {dItem.name} ({dItem.portion})
-                              </Text>
-                              <Text style={styles.logDetectedCal}>
-                                {formatNumber(dItem.calories)} kcal ·{' '}
-                                {formatDecimalGram(dItem.protein_g)}g P
-                              </Text>
-                            </View>
-                          ))}
+                          {items.map((dItem, dIdx) => {
+                            const portionLabel =
+                              'portion' in dItem && dItem.portion
+                                ? dItem.portion
+                                : dItem.estimated_grams
+                                ? `~${Math.round(dItem.estimated_grams)}g`
+                                : '';
+                            return (
+                              <View
+                                key={`${dItem.name}-${dIdx}`}
+                                style={styles.logDetectedItemRow}
+                              >
+                                <Text style={styles.logDetectedName}>
+                                  {dItem.name}
+                                  {portionLabel ? ` (${portionLabel})` : ''}
+                                </Text>
+                                <Text style={styles.logDetectedCal}>
+                                  {formatNumber(dItem.calories)} kcal ·{' '}
+                                  {formatDecimalGram(dItem.protein_g)}g P
+                                </Text>
+                              </View>
+                            );
+                          })}
                         </View>
                       )}
 
-                      {log.coach_note ? (
+                      {coachText ? (
                         <Text style={styles.logCoachNote}>
-                          {normalizeCoachNote(log.coach_note)}
+                          {normalizeCoachNote(coachText)}
                         </Text>
                       ) : null}
                     </View>
@@ -2007,6 +1825,25 @@ export function MemberNutritionScreen({
         </Text>
       </View>
       </ScrollView>
+
+      {/* AI FOOD VISION DÜZENLENEBİLİR ANALİZ SONUÇ MODALI */}
+      <FoodVisionResultModal
+        visible={visionModalVisible}
+        memberId={member.id}
+        photoUri={selectedPhoto?.previewUri ?? null}
+        photoThumbnail={selectedPhoto?.thumbnailDataUri ?? null}
+        defaultMealType={mealType}
+        analysis={visionResult}
+        submitting={loggingVisionMeal}
+        submitError={visionLogError}
+        onClose={() => {
+          if (!loggingVisionMeal) {
+            setVisionModalVisible(false);
+            setVisionLogError(null);
+          }
+        }}
+        onConfirm={handleConfirmVisionMeal}
+      />
     </KeyboardAvoidingView>
   );
 }
@@ -2250,24 +2087,121 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(34, 29, 25, 0.68)',
+    backgroundColor: 'rgba(34, 29, 25, 0.56)',
     alignItems: 'center',
     justifyContent: 'center',
     padding: 20,
-    gap: 8,
+    overflow: 'hidden',
+  },
+  scanBeam: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    height: 3,
+    backgroundColor: COLORS.primaryGlow,
+    shadowColor: COLORS.primaryGlow,
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.95,
+    shadowRadius: 10,
+  },
+  scanningBadge: {
+    backgroundColor: 'rgba(34, 29, 25, 0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(229, 193, 108, 0.48)',
+    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    alignItems: 'center',
+    gap: 6,
+    maxWidth: 290,
   },
   scanningTitle: {
     fontFamily: FONTS.sans,
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: COLORS.white,
+    textAlign: 'center',
   },
   scanningSub: {
     fontFamily: FONTS.sans,
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: '400',
     color: '#E6DCCB',
     textAlign: 'center',
+  },
+  ghostBtnTextPrimary: {
+    fontFamily: FONTS.sans,
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  notesInputSingle: {
+    minHeight: 42,
+    backgroundColor: COLORS.backgroundAlt,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontFamily: FONTS.sans,
+    fontSize: 13.5,
+    fontWeight: '400',
+    color: COLORS.textPrimary,
+  },
+  photoErrorBox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: COLORS.dangerBg,
+    borderWidth: 1,
+    borderColor: COLORS.dangerBorder,
+    borderRadius: 12,
+    padding: 12,
+  },
+  photoErrorText: {
+    flex: 1,
+    fontFamily: FONTS.sans,
+    fontSize: 12.5,
+    fontWeight: '600',
+    color: COLORS.dangerText,
+    lineHeight: 18,
+  },
+  reopenVisionBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 10,
+    backgroundColor: COLORS.successBg,
+    borderWidth: 1,
+    borderColor: COLORS.successBorder,
+    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+  },
+  reopenVisionLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+  },
+  reopenVisionTitle: {
+    fontFamily: FONTS.sans,
+    fontSize: 13.5,
+    fontWeight: '600',
+    color: COLORS.textPrimary,
+  },
+  reopenVisionSub: {
+    fontFamily: FONTS.sans,
+    fontSize: 11.5,
+    fontWeight: '400',
+    color: COLORS.textSecondary,
+  },
+  reopenVisionAction: {
+    fontFamily: FONTS.sans,
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: COLORS.success,
   },
   previewFooter: {
     flexDirection: 'row',

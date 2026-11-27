@@ -402,6 +402,50 @@ class NutritionMealLogOut(BaseModel):
     is_today: bool = False
 
 
+class FoodVisionItemOut(BaseModel):
+    name: str
+    estimated_grams: int = 100
+    calories: int
+    protein_g: int
+    carbs_g: int
+    fat_g: int
+
+
+class FoodVisionAnalyzeOut(BaseModel):
+    meal_name: str
+    confidence: int = 90
+    items: List[FoodVisionItemOut] = Field(default_factory=list)
+    total_calories: int
+    total_protein_g: int
+    total_carbs_g: int
+    total_fat_g: int
+    coach_tip: str
+    is_mock: bool = False
+
+
+class NutritionLogMealRequest(BaseModel):
+    member_id: int
+    meal_name: str
+    meal_type: Optional[str] = None
+    portion_multiplier: float = 1.0
+    total_calories: int
+    total_protein_g: int
+    total_carbs_g: int
+    total_fat_g: int
+    coach_tip: Optional[str] = ""
+    items: List[FoodVisionItemOut] = Field(default_factory=list)
+    photo_thumbnail: Optional[str] = None
+    source: str = "photo"
+
+
+class NutritionLogMealOut(BaseModel):
+    logged: bool = True
+    log_id: int
+    meal_log: NutritionMealLogOut
+    wellness: DailyWellnessOut
+    message: str = "Öğün günlüğünüze eklendi."
+
+
 class ReferralInfoOut(BaseModel):
     member_id: int
     member_name: str

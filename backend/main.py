@@ -1,5 +1,7 @@
 import hashlib
+import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -10,10 +12,11 @@ from typing import Dict, List, Literal, Optional, Tuple
 
 import httpx
 from dotenv import load_dotenv
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
+from fastapi import Body, Depends, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from PIL import Image, ImageOps, UnidentifiedImageError
 from sqlalchemy.orm import Session, joinedload
 
 import auth_admin_models  # noqa: F401
@@ -74,6 +77,8 @@ from schemas import (
     CompleteClassResponseOut,
     DailyWellnessOut,
     DetectedFoodItemOut,
+    FoodVisionAnalyzeOut,
+    FoodVisionItemOut,
     HealthOut,
     HourlyForecastItemOut,
     InstagramWebhookRequest,
@@ -88,6 +93,8 @@ from schemas import (
     MemberWaitlistItemOut,
     NutritionAnalyzeOut,
     NutritionAnalyzeRequest,
+    NutritionLogMealOut,
+    NutritionLogMealRequest,
     NutritionMealLogOut,
     NutritionPhotoAnalyzeOut,
     NutritionPhotoAnalyzeRequest,
@@ -115,6 +122,8 @@ from schemas import (
 from seed import seed_initial_data
 
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 _APP_BOOTSTRAPPED = False
 
@@ -1704,123 +1713,446 @@ def _run_fitclub_vision_ai_engine(
     }
 
 
-@app.post("/nutrition/analyze-photo", response_model=NutritionPhotoAnalyzeOut)
-def analyze_nutrition_photo(
-    payload: NutritionPhotoAnalyzeRequest,
+_INVALID_IMAGE_ERROR_MSG = "Geçerli bir yemek fotoğrafı yükleyin."
+_NO_FOOD_DETECTED_ERROR_MSG = (
+    "Fotoğrafta net bir yemek tespit edilemedi, lütfen tabağınızı daha aydınlık bir açıyla çekin."
+)
+
+
+class _FoodNotDetectedError(Exception):
+    pass
+
+
+def _validate_and_optimize_food_image(raw_bytes: bytes) -> bytes:
+    if not raw_bytes:
+        raise ValueError(_INVALID_IMAGE_ERROR_MSG)
+    try:
+        with Image.open(io.BytesIO(raw_bytes)) as opened:
+            img = ImageOps.exif_transpose(opened)
+            img.load()
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            if max(img.size) > 1280:
+                resampling = getattr(Image, "Resampling", Image).LANCZOS
+                img.thumbnail((1280, 1280), resampling)
+            out_buf = io.BytesIO()
+            img.save(out_buf, format="JPEG", quality=82, optimize=True)
+            return out_buf.getvalue()
+    except (UnidentifiedImageError, OSError, ValueError, SyntaxError) as exc:
+        raise ValueError(_INVALID_IMAGE_ERROR_MSG) from exc
+
+
+def _extract_grams_from_portion_label(portion_label: str, default_grams: int = 150) -> int:
+    m = re.search(r"(\d+)\s*(?:g|gr|ml)\b", portion_label or "", flags=re.IGNORECASE)
+    if m:
+        return max(10, int(m.group(1)))
+    return default_grams
+
+
+def _analyze_food_photo_with_gemini(
+    optimized_bytes: bytes,
+    note: Optional[str],
+    api_key: str,
+) -> FoodVisionAnalyzeOut:
+    from google import genai
+    from google.genai import types
+
+    system_instruction = (
+        "Sen uzman bir Türk spor diyetisyeni ve besin görüntü analizi yapay zeka motorusun. "
+        "Sana verilen fotoğrafı dikkatle incele ve yalnızca geçerli bir JSON nesnesi döndür. "
+        "Eğer fotoğrafta net bir yemek, içecek veya tüketilebilir gıda görünmüyorsa "
+        "(örneğin boş masa, belge, insan yüzü, manzara, karanlık/bulanık anlaşılmaz görsel) "
+        'kesinlikle {"is_food": false, "meal_name": "", "confidence": 0, "items": [], '
+        '"total_calories": 0, "total_protein_g": 0, "total_carbs_g": 0, "total_fat_g": 0, "coach_tip": ""} döndür. '
+        "Yemek varsa tabaktaki her ana bileşeni Türkçe adıyla, tahmini gramajıyla (estimated_grams) ve "
+        "makro değerleriyle (calories, protein_g, carbs_g, fat_g) listele; toplamları hesapla ve "
+        "spor yapan bir üye için motive edici, kısa ve pratik bir Türkçe koç önerisi (coach_tip) yaz."
+    )
+    user_prompt = (
+        "Bu fotoğrafı analiz et ve aşağıdaki tam JSON şemasına uygun yanıt ver:\n"
+        "{\n"
+        '  "is_food": true,\n'
+        '  "meal_name": "Izgara Tavuk ve Bulgur Pilavı",\n'
+        '  "confidence": 92,\n'
+        '  "items": [\n'
+        '    {"name": "Izgara Tavuk Göğsü", "estimated_grams": 180, "calories": 297, "protein_g": 55, "carbs_g": 0, "fat_g": 6}\n'
+        "  ],\n"
+        '  "total_calories": 482,\n'
+        '  "total_protein_g": 60,\n'
+        '  "total_carbs_g": 36,\n'
+        '  "total_fat_g": 8,\n'
+        '  "coach_tip": "Antrenman sonrası kas onarımı için harika bir protein-karbonhidrat dengesi!"\n'
+        "}\n"
+        f"Kullanıcı notu: {(note or '').strip() or 'Yok'}"
+    )
+
+    client = genai.Client(api_key=api_key)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=[
+            user_prompt,
+            types.Part.from_bytes(data=optimized_bytes, mime_type="image/jpeg"),
+        ],
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            response_mime_type="application/json",
+            temperature=0.2,
+        ),
+    )
+
+    raw_text = (getattr(response, "text", None) or "").strip()
+    if not raw_text:
+        raise RuntimeError("Gemini Vision boş yanıt döndürdü.")
+
+    cleaned_json = re.sub(r"^```(?:json)?|```$", "", raw_text, flags=re.MULTILINE).strip()
+    parsed = json.loads(cleaned_json)
+    if not isinstance(parsed, dict):
+        raise RuntimeError("Gemini Vision geçersiz JSON yapısı döndürdü.")
+
+    is_food_val = parsed.get("is_food", True)
+    if isinstance(is_food_val, str):
+        is_food_bool = is_food_val.strip().lower() not in ("false", "0", "no", "hayır", "hayir")
+    else:
+        is_food_bool = bool(is_food_val)
+
+    items_raw = parsed.get("items") or []
+    if (not is_food_bool) or (not isinstance(items_raw, list)) or len(items_raw) == 0:
+        raise _FoodNotDetectedError(_NO_FOOD_DETECTED_ERROR_MSG)
+
+    items: List[FoodVisionItemOut] = []
+    for raw_item in items_raw[:10]:
+        if not isinstance(raw_item, dict):
+            continue
+        items.append(
+            FoodVisionItemOut(
+                name=str(raw_item.get("name") or "Tespit Edilen Besin")[:80],
+                estimated_grams=max(1, int(round(float(raw_item.get("estimated_grams", 100))))),
+                calories=max(0, int(round(float(raw_item.get("calories", 0))))),
+                protein_g=max(0, int(round(float(raw_item.get("protein_g", 0))))),
+                carbs_g=max(0, int(round(float(raw_item.get("carbs_g", 0))))),
+                fat_g=max(0, int(round(float(raw_item.get("fat_g", 0))))),
+            )
+        )
+
+    if not items:
+        raise _FoodNotDetectedError(_NO_FOOD_DETECTED_ERROR_MSG)
+
+    sum_cal = sum(it.calories for it in items)
+    sum_prot = sum(it.protein_g for it in items)
+    sum_carb = sum(it.carbs_g for it in items)
+    sum_fat = sum(it.fat_g for it in items)
+
+    total_calories = (
+        int(round(float(parsed["total_calories"])))
+        if parsed.get("total_calories") is not None and float(parsed["total_calories"]) > 0
+        else sum_cal
+    )
+    total_protein_g = (
+        int(round(float(parsed["total_protein_g"])))
+        if parsed.get("total_protein_g") is not None and float(parsed["total_protein_g"]) >= 0
+        else sum_prot
+    )
+    total_carbs_g = (
+        int(round(float(parsed["total_carbs_g"])))
+        if parsed.get("total_carbs_g") is not None and float(parsed["total_carbs_g"]) >= 0
+        else sum_carb
+    )
+    total_fat_g = (
+        int(round(float(parsed["total_fat_g"])))
+        if parsed.get("total_fat_g") is not None and float(parsed["total_fat_g"]) >= 0
+        else sum_fat
+    )
+
+    try:
+        confidence = max(0, min(100, int(round(float(parsed.get("confidence", 90))))))
+    except Exception:
+        confidence = 90
+
+    meal_name = str(parsed.get("meal_name") or items[0].name).strip()[:120]
+    coach_tip = str(parsed.get("coach_tip") or "").strip() or (
+        f"{meal_name} ({total_calories} kcal, {total_protein_g}g protein) günlük hedefleriniz için dengeli bir seçim."
+    )
+
+    return FoodVisionAnalyzeOut(
+        meal_name=meal_name,
+        confidence=confidence,
+        items=items,
+        total_calories=max(0, total_calories),
+        total_protein_g=max(0, total_protein_g),
+        total_carbs_g=max(0, total_carbs_g),
+        total_fat_g=max(0, total_fat_g),
+        coach_tip=coach_tip,
+        is_mock=False,
+    )
+
+
+def _build_mock_food_vision_analysis(
+    filename: Optional[str],
+    note: Optional[str],
+) -> FoodVisionAnalyzeOut:
+    note_low = (note or "").replace("İ", "i").replace("I", "ı").lower().strip()
+    if any(phrase in note_low for phrase in ("yemek yok", "boş masa", "bos masa", "not food")):
+        raise _FoodNotDetectedError(_NO_FOOD_DETECTED_ERROR_MSG)
+
+    hint_text = f"{filename or ''} {note or ''}".replace("İ", "i").replace("I", "ı").lower().strip()
+    matched_items: List[FoodVisionItemOut] = []
+    if hint_text:
+        for kws, d_name, p_lbl, kcal, prot, carb, fat, _fib, _sug in _VISION_KEYWORD_CATALOG:
+            if any(kw in hint_text for kw in kws):
+                matched_items.append(
+                    FoodVisionItemOut(
+                        name=d_name,
+                        estimated_grams=_extract_grams_from_portion_label(p_lbl, 150),
+                        calories=kcal,
+                        protein_g=prot,
+                        carbs_g=carb,
+                        fat_g=fat,
+                    )
+                )
+                if len(matched_items) >= 4:
+                    break
+
+    if matched_items:
+        total_cal = sum(it.calories for it in matched_items)
+        total_prot = sum(it.protein_g for it in matched_items)
+        total_carb = sum(it.carbs_g for it in matched_items)
+        total_fat = sum(it.fat_g for it in matched_items)
+        meal_name = " ve ".join(it.name for it in matched_items[:2])
+        if len(matched_items) > 2:
+            meal_name += f" (+{len(matched_items) - 2})"
+        if total_prot >= 30:
+            coach_tip = (
+                f"{total_prot}g yüksek protein içeriğiyle antrenman sonrası kas onarımı için harika bir seçim!"
+            )
+        else:
+            coach_tip = (
+                f"Dengeli makro dağılımına sahip fit bir tabak ({total_cal} kcal). "
+                "Yanına bir bardak su eklemeyi unutmayın."
+            )
+        return FoodVisionAnalyzeOut(
+            meal_name=meal_name[:120],
+            confidence=90,
+            items=matched_items,
+            total_calories=total_cal,
+            total_protein_g=total_prot,
+            total_carbs_g=total_carb,
+            total_fat_g=total_fat,
+            coach_tip=coach_tip,
+            is_mock=True,
+        )
+
+    default_items = [
+        FoodVisionItemOut(
+            name="Izgara Tavuk Göğsü",
+            estimated_grams=180,
+            calories=297,
+            protein_g=55,
+            carbs_g=0,
+            fat_g=6,
+        ),
+        FoodVisionItemOut(
+            name="Bulgur Pilavı",
+            estimated_grams=150,
+            calories=185,
+            protein_g=5,
+            carbs_g=36,
+            fat_g=2,
+        ),
+    ]
+    return FoodVisionAnalyzeOut(
+        meal_name="Izgara Tavuk ve Bulgur Pilavı",
+        confidence=92,
+        items=default_items,
+        total_calories=482,
+        total_protein_g=60,
+        total_carbs_g=36,
+        total_fat_g=8,
+        coach_tip="Antrenman sonrası kas onarımı için harika bir protein-karbonhidrat dengesi!",
+        is_mock=True,
+    )
+
+
+def _format_portion_label(portion_multiplier: float) -> str:
+    try:
+        mult = float(portion_multiplier)
+    except Exception:
+        return "Normal"
+    if abs(mult - 0.5) < 0.01:
+        return "Yarım"
+    if abs(mult - 1.0) < 0.01:
+        return "Normal"
+    if abs(mult - 1.5) < 0.01:
+        return "Büyük"
+    return f"{round(mult, 2):g}x"
+
+
+@app.post("/nutrition/analyze-photo", response_model=FoodVisionAnalyzeOut)
+async def analyze_nutrition_photo(
+    image: UploadFile = File(...),
+    note: Optional[str] = Form(default=None),
+    member_id: Optional[int] = Form(default=None),
+):
+    _ = member_id  # Yalnızca önizleme analizi yapar; veritabanına kayıt log-meal ile yapılır.
+    raw_bytes = await image.read()
+    try:
+        optimized_bytes = _validate_and_optimize_food_image(raw_bytes)
+    except ValueError:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": _INVALID_IMAGE_ERROR_MSG,
+                "detail": _INVALID_IMAGE_ERROR_MSG,
+            },
+        )
+
+    api_key = (os.getenv("GEMINI_API_KEY") or "").strip()
+    if api_key:
+        try:
+            return _analyze_food_photo_with_gemini(
+                optimized_bytes=optimized_bytes,
+                note=note,
+                api_key=api_key,
+            )
+        except _FoodNotDetectedError:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "error": _NO_FOOD_DETECTED_ERROR_MSG,
+                    "detail": _NO_FOOD_DETECTED_ERROR_MSG,
+                },
+            )
+        except Exception as exc:
+            logger.warning(
+                "Gemini Vision API çağrısı başarısız oldu, fallback analize geçiliyor: %s",
+                exc,
+            )
+
+    try:
+        return _build_mock_food_vision_analysis(
+            filename=image.filename,
+            note=note,
+        )
+    except _FoodNotDetectedError:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": _NO_FOOD_DETECTED_ERROR_MSG,
+                "detail": _NO_FOOD_DETECTED_ERROR_MSG,
+            },
+        )
+
+
+@app.post("/nutrition/log-meal", response_model=NutritionLogMealOut)
+def log_nutrition_meal(
+    payload: NutritionLogMealRequest,
     db: Session = Depends(get_db),
 ):
     row = _get_or_create_today_wellness(db, payload.member_id)
 
-    raw_b64 = (payload.image_base64 or "").strip()
-    mime_type = "image/jpeg"
-    clean_b64 = raw_b64
-    if raw_b64.startswith("data:") and "," in raw_b64:
-        header_part, clean_b64 = raw_b64.split(",", 1)
-        m_mime = re.search(r"data:([^;]+);", header_part)
-        if m_mime:
-            mime_type = m_mime.group(1)
+    total_calories = max(0, int(payload.total_calories))
+    total_protein_g = max(0, int(payload.total_protein_g))
+    total_carbs_g = max(0, int(payload.total_carbs_g))
+    total_fat_g = max(0, int(payload.total_fat_g))
 
-    if not clean_b64 and not (payload.notes and payload.notes.strip()):
-        raise HTTPException(
-            status_code=400,
-            detail="Analiz için yemek fotoğrafı (image_base64) veya öğün açıklaması gereklidir.",
-        )
+    row.calories_intake = max(0, (row.calories_intake or 0) + total_calories)
+    row.protein_g = max(0, (row.protein_g or 0) + total_protein_g)
+    row.carbs_g = max(0, (row.carbs_g or 0) + total_carbs_g)
+    row.fat_g = max(0, (row.fat_g or 0) + total_fat_g)
 
-    meal_type = _normalize_meal_type_label(payload.meal_type)
-    portion_size = payload.portion_size if payload.portion_size in _PORTION_MULTIPLIERS else "Normal"
-
-    ai_result = _try_gemini_vision_nutrition(
-        clean_b64=clean_b64,
-        mime_type=mime_type,
-        meal_type=meal_type,
-        portion_size=portion_size,
-        notes=(payload.notes or "").strip(),
+    meal_type = (
+        _normalize_meal_type_label(payload.meal_type)
+        if (payload.meal_type and payload.meal_type.strip())
+        else _infer_default_meal_type_by_clock()
     )
-    if ai_result is None:
-        ai_result = _run_fitclub_vision_ai_engine(
-            clean_b64=clean_b64,
-            filename=payload.filename,
-            meal_type=meal_type,
-            portion_size=portion_size,
-            notes=payload.notes,
-        )
+    portion_label = _format_portion_label(payload.portion_multiplier)
+    meal_title = (payload.meal_name or "Öğün").strip()[:160]
+    coach_note = (payload.coach_tip or "").strip() or (
+        f"{meal_title} ({total_calories} kcal, {total_protein_g}g protein) günlüğünüze eklendi."
+    )
 
-    detected_items: List[DetectedFoodItemOut] = ai_result["detected_items"]  # type: ignore[assignment]
-    total_calories = max(25, sum(i.calories for i in detected_items))
-    protein_g = max(1, sum(i.protein_g for i in detected_items))
-    carbs_g = max(0, sum(i.carbs_g for i in detected_items))
-    fat_g = max(0, sum(i.fat_g for i in detected_items))
-    fiber_g = int(ai_result["fiber_g"])  # type: ignore[arg-type]
-    sugar_g = int(ai_result["sugar_g"])  # type: ignore[arg-type]
-    health_score = _compute_meal_health_score(total_calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g)
-    glycemic_load = _compute_glycemic_load(carbs_g, fiber_g, sugar_g)
+    fiber_est = max(2, int(round(total_carbs_g * 0.14))) if total_carbs_g > 0 else 2
+    sugar_est = max(1, int(round(total_carbs_g * 0.18))) if total_carbs_g > 0 else 1
+    health_score = _compute_meal_health_score(
+        total_calories, total_protein_g, total_carbs_g, total_fat_g, fiber_est, sugar_est
+    )
+    glycemic_load = _compute_glycemic_load(total_carbs_g, fiber_est, sugar_est)
     burn_equivalent = _compute_burn_equivalent(total_calories)
-    meal_title = str(ai_result["meal_title"])
-    coach_note = str(ai_result["coach_note"]) or (
-        f"💡 AI Koç Notu: {meal_title} ({total_calories} kcal, {protein_g}g protein) başarıyla analiz edildi."
-    )
-    suggestions: List[str] = list(ai_result["suggestions"])  # type: ignore[arg-type]
-    if not suggestions:
-        suggestions = [
-            "Öğünle birlikte en az 300 ml su tüketerek sindirimi ve hidrasyonu destekle.",
-            "Günlük protein hedefine ulaşmak için akşam öğününde hafif protein kaynaklarını tercih et.",
-        ]
-    analysis_engine = str(ai_result["analysis_engine"])
 
-    log_id = 0
-    if payload.auto_log:
-        row.calories_intake = max(0, (row.calories_intake or 0) + total_calories)
-        row.protein_g = max(0, (row.protein_g or 0) + protein_g)
-        row.carbs_g = max(0, (row.carbs_g or 0) + carbs_g)
-        row.fat_g = max(0, (row.fat_g or 0) + fat_g)
-
-        thumb_to_store = raw_b64 if (raw_b64 and len(raw_b64) <= 45000) else None
-        meal_log = NutritionMealLog(
-            member_id=payload.member_id,
-            date=_today_iso(),
-            created_at=_now_str(),
-            source="photo",
-            meal_type=meal_type,
-            portion_size=portion_size,
-            meal_description=meal_title,
-            photo_thumbnail=thumb_to_store,
-            calories=total_calories,
-            protein_g=protein_g,
-            carbs_g=carbs_g,
-            fat_g=fat_g,
-            fiber_g=fiber_g,
-            sugar_g=sugar_g,
-            health_score=health_score,
-            glycemic_load=glycemic_load,
-            burn_equivalent=burn_equivalent,
-            detected_items_json=json.dumps([i.model_dump() for i in detected_items], ensure_ascii=False),
-            coach_note=coach_note,
+    detected_items: List[DetectedFoodItemOut] = [
+        DetectedFoodItemOut(
+            name=(it.name or "Besin")[:80],
+            portion=f"{max(0, int(it.estimated_grams))}g",
+            calories=max(0, int(it.calories)),
+            protein_g=max(0, int(it.protein_g)),
+            carbs_g=max(0, int(it.carbs_g)),
+            fat_g=max(0, int(it.fat_g)),
+            confidence_pct=92,
         )
-        db.add(meal_log)
-        db.commit()
-        db.refresh(meal_log)
-        db.refresh(row)
-        log_id = meal_log.id
+        for it in (payload.items or [])
+    ]
 
-    return NutritionPhotoAnalyzeOut(
-        log_id=log_id,
+    raw_thumb = (payload.photo_thumbnail or "").strip()
+    thumb_to_store = raw_thumb if (raw_thumb and len(raw_thumb) <= 65000) else None
+    today_str = _today_iso()
+    created_at_str = _now_str()
+    source_val = (payload.source or "photo").strip()[:20] or "photo"
+
+    meal_log = NutritionMealLog(
+        member_id=payload.member_id,
+        date=today_str,
+        created_at=created_at_str,
+        source=source_val,
         meal_type=meal_type,
-        portion_size=portion_size,
-        meal_title=meal_title,
-        total_calories=total_calories,
-        protein_g=protein_g,
-        carbs_g=carbs_g,
-        fat_g=fat_g,
-        fiber_g=fiber_g,
-        sugar_g=sugar_g,
+        portion_size=portion_label,
+        meal_description=meal_title,
+        photo_thumbnail=thumb_to_store,
+        calories=total_calories,
+        protein_g=total_protein_g,
+        carbs_g=total_carbs_g,
+        fat_g=total_fat_g,
+        fiber_g=fiber_est,
+        sugar_g=sugar_est,
         health_score=health_score,
         glycemic_load=glycemic_load,
         burn_equivalent=burn_equivalent,
-        analysis_engine=analysis_engine,
-        detected_items=detected_items,
+        detected_items_json=json.dumps([i.model_dump() for i in detected_items], ensure_ascii=False),
         coach_note=coach_note,
-        suggestions=suggestions,
+    )
+    db.add(meal_log)
+    db.commit()
+    db.refresh(meal_log)
+    db.refresh(row)
+
+    meal_log_out = NutritionMealLogOut(
+        id=meal_log.id,
+        member_id=meal_log.member_id,
+        date=meal_log.date,
+        created_at=meal_log.created_at,
+        source=meal_log.source,
+        meal_type=meal_log.meal_type,
+        portion_size=meal_log.portion_size,
+        meal_description=meal_log.meal_description,
+        photo_thumbnail=meal_log.photo_thumbnail,
+        calories=int(meal_log.calories or 0),
+        protein_g=int(meal_log.protein_g or 0),
+        carbs_g=int(meal_log.carbs_g or 0),
+        fat_g=int(meal_log.fat_g or 0),
+        fiber_g=int(meal_log.fiber_g or 0),
+        sugar_g=int(meal_log.sugar_g or 0),
+        health_score=int(meal_log.health_score or 75),
+        glycemic_load=meal_log.glycemic_load or "Orta",
+        burn_equivalent=meal_log.burn_equivalent or "",
+        detected_items=detected_items,
+        coach_note=meal_log.coach_note or "",
+        is_today=True,
+    )
+
+    return NutritionLogMealOut(
+        logged=True,
+        log_id=meal_log.id,
+        meal_log=meal_log_out,
         wellness=_to_daily_wellness_out(row),
+        message="Öğün günlüğünüze eklendi.",
     )
 
 

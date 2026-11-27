@@ -96,6 +96,86 @@ export interface NutritionAnalyzeResponse {
   wellness: DailyWellness;
 }
 
+export interface FoodVisionItem {
+  name: string;
+  estimated_grams: number;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+}
+
+export interface FoodVisionAnalyzeResponse {
+  meal_name: string;
+  confidence: number;
+  items: FoodVisionItem[];
+  total_calories: number;
+  total_protein_g: number;
+  total_carbs_g: number;
+  total_fat_g: number;
+  coach_tip: string;
+  is_mock?: boolean;
+}
+
+export interface NutritionMealLogDetectedItem {
+  name: string;
+  portion?: string;
+  estimated_grams?: number;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  confidence_pct?: number;
+}
+
+export interface NutritionMealLog {
+  id: number;
+  date: string;
+  created_at: string;
+  source: string;
+  meal_type: string;
+  portion_size?: string;
+  portion_multiplier?: number;
+  meal_description: string;
+  photo_thumbnail?: string | null;
+  calories: number;
+  protein_g: number;
+  carbs_g: number;
+  fat_g: number;
+  fiber_g?: number;
+  sugar_g?: number;
+  health_score?: number;
+  glycemic_load?: string;
+  burn_equivalent?: string;
+  detected_items?: NutritionMealLogDetectedItem[];
+  items?: FoodVisionItem[];
+  coach_note?: string;
+  coach_tip?: string;
+}
+
+export interface NutritionLogMealRequest {
+  member_id: number;
+  meal_name: string;
+  meal_type?: string;
+  portion_multiplier: number;
+  total_calories: number;
+  total_protein_g: number;
+  total_carbs_g: number;
+  total_fat_g: number;
+  coach_tip: string;
+  items: FoodVisionItem[];
+  photo_thumbnail?: string | null;
+  source: 'photo';
+}
+
+export interface NutritionLogMealResponse {
+  logged: boolean;
+  log_id: number;
+  meal_log: NutritionMealLog;
+  wellness: DailyWellness;
+  message: string;
+}
+
 export interface MemberReferralInfo {
   member_id: number;
   member_name: string;

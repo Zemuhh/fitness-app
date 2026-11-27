@@ -143,12 +143,31 @@ export async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const normalizedPath = endpoint.startsWith('/') ? endpoint : `/${endpoint}`;
+  const isFormData =
+    typeof FormData !== 'undefined' && options.body instanceof FormData;
+
+  const baseHeaders: Record<string, string> = isFormData
+    ? {}
+    : { 'Content-Type': 'application/json' };
+
+  const mergedHeaders =
+    options.headers instanceof Headers
+      ? (() => {
+          const next = new Headers(baseHeaders);
+          options.headers.forEach((value, key) => {
+            if (isFormData && key.toLowerCase() === 'content-type') return;
+            next.set(key, value);
+          });
+          return next;
+        })()
+      : {
+          ...baseHeaders,
+          ...(options.headers as Record<string, string> | undefined),
+        };
+
   const requestInit: RequestInit = {
     ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
+    headers: mergedHeaders,
   };
 
   let response: Response;
